@@ -1,0 +1,33 @@
+{
+  "statistics": [
+    "ANOVA", "MANOVA", "ANCOVA", "t-test", "chi-square",
+    "regression", "correlation", "p-value", "confidence interval",
+    "standard deviation", "standard error", "effect size",
+    "Cohen's d", "Cronbach's alpha", "factor analysis",
+    "principal component analysis", "PCA", "ICA",
+    "maximum likelihood", "Bayesian", "Monte Carlo"
+  ],
+  "machine_learning": [
+    "neural network", "deep learning", "machine learning",
+    "convolutional neural network", "CNN", "RNN", "LSTM", "GRU",
+    "transformer", "attention mechanism", "backpropagation",
+    "gradient descent", "stochastic gradient descent", "SGD",
+    "Adam", "RMSprop", "dropout", "batch normalization",
+    "cross-entropy", "softmax", "sigmoid", "ReLU", "tanh",
+    "overfitting", "underfitting", "regularization", "L1", "L2",
+    "hyperparameter", "epoch", "batch size", "learning rate",
+    "precision", "recall", "F1 score", "accuracy", "AUC", "ROC",
+    "confusion matrix", "cross-validation", "k-fold"
+  ],
+  "methodology": [
+    "hypothesis", "null hypothesis", "alternative hypothesis",
+    "independent variable", "dependent variable", "control variable",
+    "randomized controlled trial", "RCT", "double-blind",
+    "placebo", "longitudinal study", "cross-sectional",
+    "qualitative", "quantitative", "mixed methods",
+    "validity", "reliability", "generalizability"
+  ],
+  "abbreviations": [
+    "et al.", "i.e.", "e.g.", "cf.", "viz.", "vs."
+  ]
+}

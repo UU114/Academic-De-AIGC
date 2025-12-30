@@ -1,0 +1,28 @@
+{
+  "phrases": {
+    "it is important to note that": {"weight": 0.9, "replacement": "note that"},
+    "it is worth noting that": {"weight": 0.8, "replacement": "notably"},
+    "it should be noted that": {"weight": 0.8, "replacement": "note that"},
+    "plays a crucial role": {"weight": 0.8, "replacement": "is important"},
+    "plays a pivotal role": {"weight": 0.9, "replacement": "is key"},
+    "plays an important role": {"weight": 0.5, "replacement": "matters"},
+    "in the context of": {"weight": 0.6, "replacement": "in"},
+    "in the realm of": {"weight": 0.8, "replacement": "in"},
+    "a wide range of": {"weight": 0.5, "replacement": "many"},
+    "a myriad of": {"weight": 0.8, "replacement": "many"},
+    "a plethora of": {"weight": 0.9, "replacement": "many"},
+    "due to the fact that": {"weight": 0.7, "replacement": "because"},
+    "in order to": {"weight": 0.4, "replacement": "to"},
+    "as a result of": {"weight": 0.4, "replacement": "because of"},
+    "with respect to": {"weight": 0.5, "replacement": "about"},
+    "in terms of": {"weight": 0.4, "replacement": "for"},
+    "on the other hand": {"weight": 0.3, "replacement": "but"},
+    "it is evident that": {"weight": 0.7, "replacement": "clearly"},
+    "it is clear that": {"weight": 0.5, "replacement": "clearly"},
+    "serves as a": {"weight": 0.5, "replacement": "is a"},
+    "can be seen as": {"weight": 0.5, "replacement": "is"},
+    "has the potential to": {"weight": 0.5, "replacement": "can"},
+    "is of paramount importance": {"weight": 0.9, "replacement": "is very important"},
+    "the advent of": {"weight": 0.6, "replacement": "the arrival of"}
+  }
+}

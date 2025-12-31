@@ -3,7 +3,10 @@ Suggestion generation API routes
 建议生成API路由
 """
 
+import logging
 from fastapi import APIRouter, HTTPException, Depends
+
+logger = logging.getLogger(__name__)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.database import get_db
@@ -46,15 +49,32 @@ async def get_suggestions(
     """
     Get humanization suggestions for a sentence
     获取句子的人源化建议
+
+    CAASS v2.0 Phase 2: Uses whitelist and context_baseline for accurate scoring
     """
     # Initialize suggestion tracks
     # 初始化建议轨道
     llm_track = LLMTrack(colloquialism_level=request.colloquialism_level)
     rule_track = RuleTrack(colloquialism_level=request.colloquialism_level)
 
-    # Calculate original risk score using actual scorer
-    # 使用实际评分器计算原始风险分数
-    original_analysis = _scorer.analyze(request.sentence)
+    # CAASS v2.0 Phase 2: Convert whitelist to set and get context baseline
+    # CAASS v2.0 第二阶段：将白名单转换为集合并获取上下文基准
+    whitelist_set = set(request.whitelist) if request.whitelist else None
+    context_baseline = request.context_baseline
+
+    # Calculate original risk score using actual scorer (CAASS v2.0 Phase 2)
+    # 使用实际评分器计算原始风险分数（CAASS v2.0 第二阶段）
+    # Use fixed tone_level=4 to match document upload scoring (documents.py)
+    # This ensures consistent scoring between upload time and suggestion time
+    # 使用固定的tone_level=4以匹配文档上传时的评分（documents.py）
+    # 这确保上传时和建议生成时的评分一致
+    tone_level = 4
+    original_analysis = _scorer.analyze(
+        request.sentence,
+        tone_level=tone_level,
+        whitelist=whitelist_set,
+        context_baseline=context_baseline
+    )
     original_risk = original_analysis.risk_score
 
     # Generate LLM suggestion (Track A)
@@ -68,9 +88,14 @@ async def get_suggestions(
             target_lang=request.target_lang
         )
         if llm_result:
-            # Calculate actual risk score for rewritten text
-            # 为改写文本计算实际风险分数
-            llm_analysis = _scorer.analyze(llm_result.rewritten)
+            # Calculate actual risk score for rewritten text (CAASS v2.0 Phase 2)
+            # 为改写文本计算实际风险分数（CAASS v2.0 第二阶段）
+            llm_analysis = _scorer.analyze(
+                llm_result.rewritten,
+                tone_level=tone_level,
+                whitelist=whitelist_set,
+                context_baseline=context_baseline
+            )
             actual_risk = llm_analysis.risk_score
 
             llm_suggestion = Suggestion(
@@ -101,10 +126,21 @@ async def get_suggestions(
         issues=request.issues,
         locked_terms=request.locked_terms
     )
-    # Calculate actual risk score for rule-based rewrite
-    # 为规则改写计算实际风险分数
-    rule_analysis = _scorer.analyze(rule_result.rewritten)
+    # Calculate actual risk score for rule-based rewrite (CAASS v2.0 Phase 2)
+    # 为规则改写计算实际风险分数（CAASS v2.0 第二阶段）
+    rule_analysis = _scorer.analyze(
+        rule_result.rewritten,
+        tone_level=tone_level,
+        whitelist=whitelist_set,
+        context_baseline=context_baseline
+    )
     rule_actual_risk = rule_analysis.risk_score
+
+    # DEBUG: Log Track B scoring to diagnose the 0-score issue
+    # 调试：记录轨道B评分以诊断0分问题
+    # Use logger for cross-platform compatibility (Windows GBK / Linux UTF-8)
+    # 使用logger以实现跨平台兼容（Windows GBK / Linux UTF-8）
+    logger.info(f"[DEBUG Track B] Changes: {len(rule_result.changes)}, Text unchanged: {rule_result.rewritten == request.sentence}, Original risk: {original_risk}, Rule risk: {rule_actual_risk}")
 
     rule_suggestion = Suggestion(
         source=SuggestionSource.RULE,
@@ -165,11 +201,13 @@ async def apply_suggestion(
     # 确定用于计算风险的文本
     text_for_risk = modified_text if modified_text else sentence.original_text
 
-    # Calculate new risk score using RiskScorer
-    # 使用RiskScorer计算新风险分数
+    # Calculate new risk score using RiskScorer (CAASS v2.0)
+    # 使用RiskScorer计算新风险分数（CAASS v2.0）
+    # Use default tone_level=4 (standard academic) for apply endpoint
+    # 对apply端点使用默认语气等级4（标准学术）
     new_risk_score = 0
     if text_for_risk:
-        analysis = _scorer.analyze(text_for_risk)
+        analysis = _scorer.analyze(text_for_risk, tone_level=4)
         new_risk_score = analysis.risk_score
 
     # Check if modification already exists for this sentence

@@ -56,32 +56,211 @@ LEVEL_1_FINGERPRINTS: Set[str] = {
 
 # Level 2: AI habitual phrases - common but not definitive (+15 points each)
 # 二级：AI惯用语 - 常见但非决定性（每个+15分）
+# CLEANED: Removed domain-specific terms (remediation, circular economy, etc.)
+# 已清理：移除学科特定术语
 LEVEL_2_FINGERPRINTS: Set[str] = {
+    # Academic clichés (not domain-specific)
+    # 学术套话（非学科特定）
     "crucial", "pivotal", "paramount",
     "it is crucial to", "it is important to note",
     "underscores the importance", "underscore", "underscores",
     "plays a pivotal role", "plays a crucial role",
     "foster a culture", "foster", "fosters",
-    "furthermore", "moreover", "additionally",
-    "in conclusion", "to summarize", "in summary",
     "comprehensive", "holistic approach", "holistic",
     "facilitate", "facilitates", "facilitating",
     "leverage", "leveraging",
     "robust", "seamless",
     "noteworthy", "groundbreaking",
-    # Additional Level 2 patterns (AI academic style)
-    # 额外二级模式（AI学术风格）
-    "life-cycle", "trade-offs", "trade-off",
-    "circular pathway", "circular economy",
-    "ecosystem stability", "food security",
-    "soil salinization", "solid waste",
-    "integrated amendment", "amendment systems",
-    "functional soil", "soil conditioner",
-    "industrial by-products", "agricultural residues",
-    "remediation", "reclamation",
-    "synergistic", "synergy",
-    "mechanisms", "dynamics",
+    # Structural connectors (AI overuse)
+    # 结构连接词（AI过度使用）
+    "furthermore", "moreover", "additionally",
+    "in conclusion", "to summarize", "in summary",
 }
+
+
+# ============================================================================
+# CAASS v2.0: Tone-Adaptive Weight Matrix
+# CAASS v2.0: 语气自适应权重矩阵
+# ============================================================================
+# Tone Level 0-2: Hardcore Academic (allows complex vocabulary)
+# Tone Level 3-4: Standard Academic (default thesis level)
+# Tone Level 5: Simple/Accessible (penalizes all fancy words)
+# 语气等级 0-2: 硬核学术（允许复杂词汇）
+# 语气等级 3-4: 标准学术（默认论文级别）
+# 语气等级 5: 简单易懂（惩罚所有花哨词汇）
+
+TONE_WEIGHT_MATRIX = {
+    # Type A: Dead Giveaways (AI-specific, always high penalty)
+    # A类: 确凿证据（AI特有，始终高惩罚）
+    "type_a": {
+        0: 40, 1: 40, 2: 40,  # Academic: still penalized (AI marker, not academic)
+        3: 40, 4: 45,         # Standard: normal penalty
+        5: 50                 # Simple: even more penalty
+    },
+    # Type B: Academic Clichés (tone-dependent)
+    # B类: 学术套话（取决于语气等级）
+    "type_b": {
+        0: 5,  1: 8,  2: 10,  # Academic: almost exempt (professors use these)
+        3: 15, 4: 18,         # Standard: moderate penalty
+        5: 25                 # Simple: strongly penalized
+    },
+    # Type C: Structural/Connector words (tone-dependent)
+    # C类: 结构/连接词（取决于语气等级）
+    "type_c": {
+        0: 10, 1: 12, 2: 15,  # Academic: light penalty (normal in papers)
+        3: 18, 4: 22,         # Standard: moderate penalty
+        5: 30                 # Simple: strongly penalized
+    }
+}
+
+
+def get_tone_adjusted_weight(word_type: str, tone_level: int) -> int:
+    """
+    Get the weight for a word type based on tone level (CAASS v2.0)
+    根据语气等级获取词类权重（CAASS v2.0）
+
+    Args:
+        word_type: "type_a", "type_b", or "type_c"
+        tone_level: 0-5 (0=most academic, 5=most simple)
+
+    Returns:
+        Weight value for scoring
+    """
+    # Clamp tone_level to 0-5 range
+    # 将语气等级限制在 0-5 范围内
+    tone_level = max(0, min(5, tone_level))
+
+    matrix = TONE_WEIGHT_MATRIX.get(word_type, TONE_WEIGHT_MATRIX["type_b"])
+    return matrix.get(tone_level, matrix.get(3, 15))  # Default to level 3
+
+
+def classify_fingerprint_type(word: str) -> str:
+    """
+    Classify a fingerprint word into Type A/B/C
+    将指纹词分类为 A/B/C 类型
+
+    Type A: Dead giveaways (delve, tapestry, etc.)
+    Type B: Academic clichés (crucial, utilize, etc.)
+    Type C: Structural connectors (furthermore, moreover, etc.)
+    """
+    word_lower = word.lower()
+
+    # Type A: Level 1 fingerprints are always dead giveaways
+    # A类: 一级指纹词始终是确凿证据
+    if word_lower in LEVEL_1_FINGERPRINTS or any(fp in word_lower for fp in LEVEL_1_FINGERPRINTS):
+        return "type_a"
+
+    # Type C: Connectors and structural words
+    # C类: 连接词和结构词
+    connectors = {"furthermore", "moreover", "additionally", "consequently",
+                  "therefore", "thus", "hence", "subsequently", "accordingly",
+                  "nevertheless", "nonetheless", "in conclusion", "to summarize"}
+    if word_lower in connectors or any(c in word_lower for c in connectors):
+        return "type_c"
+
+    # Type B: Everything else (academic clichés)
+    # B类: 其他所有（学术套话）
+    return "type_b"
+
+
+# ============================================================================
+# CAASS v2.0 Phase 2: Context-Aware Baseline Scoring
+# CAASS v2.0 第二阶段: 上下文感知基准评分
+# ============================================================================
+
+def calculate_text_ppl(text: str) -> float:
+    """
+    Calculate perplexity proxy using zlib compression ratio
+    使用zlib压缩比计算困惑度代理
+
+    Returns:
+        PPL-like score (lower = more AI-like, higher = more human-like)
+    """
+    if not text or len(text) < 20:
+        return 50.0  # Neutral for very short text
+
+    try:
+        text_bytes = text.encode('utf-8')
+        compressed = zlib.compress(text_bytes, level=9)
+        compression_ratio = len(compressed) / len(text_bytes)
+
+        # Map compression ratio to PPL-like score
+        # Lower compression ratio = more unique content = more human-like
+        # 较低压缩比 = 更独特内容 = 更像人类
+        if compression_ratio < 0.35:
+            ppl = 15.0 + (compression_ratio * 30)
+        elif compression_ratio < 0.50:
+            ppl = 25.0 + (compression_ratio * 40)
+        elif compression_ratio < 0.65:
+            ppl = 45.0 + (compression_ratio * 30)
+        else:
+            ppl = 60.0 + (compression_ratio * 40)
+
+        return max(5.0, min(100.0, ppl))
+
+    except Exception:
+        return 50.0
+
+
+def calculate_context_baseline(
+    paragraph_text: str,
+    paragraph_ppl: Optional[float] = None
+) -> int:
+    """
+    Calculate context baseline score based on paragraph-level PPL
+    根据段落级PPL计算上下文基准分
+
+    If the paragraph has very low PPL (strong AI signal), sentences within it
+    get a baseline score added. This helps identify AI-generated paragraphs
+    even when individual sentences seem acceptable.
+    如果段落PPL非常低（强AI信号），其中的句子会获得基准分加成。
+    这有助于识别AI生成的段落，即使单个句子看起来可接受。
+
+    Args:
+        paragraph_text: The full paragraph text
+        paragraph_ppl: Pre-calculated PPL (optional)
+
+    Returns:
+        Context baseline score (0-25)
+    """
+    if paragraph_ppl is None:
+        paragraph_ppl = calculate_text_ppl(paragraph_text)
+
+    # Very low PPL = high AI probability = add baseline
+    # 非常低的PPL = 高AI概率 = 添加基准分
+    if paragraph_ppl < 20:
+        return 25  # Strong AI signal
+    elif paragraph_ppl < 30:
+        return 15  # Moderate AI signal
+    elif paragraph_ppl < 40:
+        return 8   # Weak AI signal
+    else:
+        return 0   # Likely human
+
+
+@dataclass
+class ParagraphContext:
+    """
+    Context information for a paragraph
+    段落的上下文信息
+    """
+    text: str
+    ppl: float
+    baseline: int
+    sentence_count: int
+
+    @classmethod
+    def from_sentences(cls, sentences: List[str]) -> "ParagraphContext":
+        """Create context from a list of sentences"""
+        text = " ".join(sentences)
+        ppl = calculate_text_ppl(text)
+        baseline = calculate_context_baseline(text, ppl)
+        return cls(
+            text=text,
+            ppl=ppl,
+            baseline=baseline,
+            sentence_count=len(sentences)
+        )
 
 
 @dataclass
@@ -162,11 +341,15 @@ class RiskScorer:
         fingerprints: Optional[List[FingerprintMatch]] = None,
         context_sentences: Optional[List[str]] = None,
         include_turnitin: bool = True,
-        include_gptzero: bool = True
+        include_gptzero: bool = True,
+        tone_level: int = 4,
+        whitelist: Optional[Set[str]] = None,
+        context_baseline: int = 0,
+        paragraph_context: Optional[ParagraphContext] = None
     ) -> SentenceAnalysisResult:
         """
-        Perform complete risk analysis on text
-        对文本进行完整的风险分析
+        Perform complete risk analysis on text (CAASS v2.0 Phase 2)
+        对文本进行完整的风险分析（CAASS v2.0 第二阶段）
 
         Args:
             text: Text to analyze
@@ -174,14 +357,23 @@ class RiskScorer:
             context_sentences: Surrounding sentences for burstiness calculation
             include_turnitin: Include Turnitin perspective
             include_gptzero: Include GPTZero perspective
+            tone_level: User's target tone (0-5, 0=academic, 5=simple)
+            whitelist: Domain-specific terms to exempt from scoring
+            context_baseline: Pre-calculated paragraph context baseline (0-25)
+            paragraph_context: Full paragraph context for baseline calculation
 
         Returns:
             SentenceAnalysisResult with all scores and issues
         """
+        # Phase 2: Calculate context baseline from paragraph if provided
+        # 第二阶段：如果提供了段落上下文，计算上下文基准分
+        if paragraph_context is not None:
+            context_baseline = paragraph_context.baseline
         issues = []
+        whitelist = whitelist or set()
 
-        # Calculate PPL score
-        # 计算PPL分数
+        # Calculate PPL score (used for context baseline in future)
+        # 计算PPL分数（未来用于上下文基准）
         ppl = self._calculate_ppl(text)
         ppl_score, ppl_risk = self._score_ppl(ppl)
 
@@ -193,23 +385,35 @@ class RiskScorer:
                 severity=ppl_risk
             ))
 
-        # Calculate fingerprint score
-        # 计算指纹分数
+        # Detect fingerprints
+        # 检测指纹词
         if fingerprints is None:
             fingerprints = self.fingerprint_detector.detect(text)
 
-        fingerprint_density = self.fingerprint_detector.calculate_density(text, fingerprints)
-        fingerprint_score = self._score_fingerprint(fingerprint_density, fingerprints)
+        # Filter out whitelisted terms
+        # 过滤白名单术语
+        if whitelist:
+            fingerprints = [fp for fp in fingerprints if fp.word.lower() not in whitelist]
 
-        # Add fingerprint issues
-        # 添加指纹问题
+        fingerprint_density = self.fingerprint_detector.calculate_density(text, fingerprints)
+
+        # CAASS v2.0: Calculate fingerprint score using absolute weights + tone adaptation
+        # CAASS v2.0: 使用绝对权重 + 语气适配计算指纹分数
+        fingerprint_score = self._score_fingerprint_caass(fingerprints, tone_level)
+
+        # Add fingerprint issues with type classification
+        # 添加带类型分类的指纹问题
         for fp in fingerprints:
-            if fp.risk_weight >= 0.7:
+            fp_type = classify_fingerprint_type(fp.word)
+            weight = get_tone_adjusted_weight(fp_type, tone_level)
+            if weight >= 15:  # Only report significant issues
+                type_label = {"type_a": "Dead Giveaway", "type_b": "AI Cliché", "type_c": "Connector"}
+                type_label_zh = {"type_a": "确凿证据", "type_b": "AI套话", "type_c": "连接词"}
                 issues.append(Issue(
                     type="fingerprint",
-                    description=f"AI fingerprint word: '{fp.word}'",
-                    description_zh=f"AI指纹词: '{fp.word}'",
-                    severity="high" if fp.risk_weight >= 0.8 else "medium",
+                    description=f"{type_label.get(fp_type, 'AI')} word: '{fp.word}' (+{weight})",
+                    description_zh=f"{type_label_zh.get(fp_type, 'AI')}词: '{fp.word}' (+{weight}分)",
+                    severity="high" if fp_type == "type_a" else "medium",
                     position=fp.position,
                     word=fp.word
                 ))
@@ -218,34 +422,36 @@ class RiskScorer:
         # 计算突发性分数
         burstiness_score = self._score_burstiness(text, context_sentences)
 
-        # Calculate structure score (includes tiered fingerprint detection)
-        # 计算结构分数（包含分级指纹检测）
-        structure_score = self._score_structure(text)
+        # CAASS v2.0: Calculate structure score with tone adaptation
+        # CAASS v2.0: 使用语气适配计算结构分数
+        structure_score = self._score_structure_caass(text, tone_level)
 
         # Calculate human feature deduction
         # 计算人类特征减分
         human_deduction = self._calculate_human_deduction(text)
 
-        # Calculate weighted total score
-        # 计算加权总分
-        raw_score = int(
-            ppl_score * self.weights["perplexity"] +
-            fingerprint_score * self.weights["fingerprint"] +
-            burstiness_score * self.weights["burstiness"] +
-            structure_score * self.weights["structure"]
-        )
+        # CAASS v2.0 Phase 2: Scoring formula with context baseline
+        # CAASS v2.0 第二阶段: 带上下文基准的评分公式
+        # Score = Context_baseline + FP_absolute + Structure_patterns - Human_bonus
+        # 评分 = 上下文基准分 + 指纹词绝对分 + 结构模式分 - 人类特征减分
+        raw_score = context_baseline + fingerprint_score + structure_score
 
         # Apply human deduction (but don't go below 0)
         # 应用人类减分（但不低于0）
-        total_score = max(0, raw_score - human_deduction)
+        total_score = max(0, min(100, raw_score - human_deduction))
 
         # Log scoring details for debugging
         # 记录评分详情用于调试
         logger.debug(
-            f"Score breakdown: PPL={ppl_score}, FP={fingerprint_score}, "
-            f"Burst={burstiness_score}, Struct={structure_score}, "
-            f"Human=-{human_deduction}, Total={total_score}"
+            f"CAASS v2.0 Phase 2: Ctx={context_baseline}, FP={fingerprint_score}, "
+            f"Struct={structure_score}, Human=-{human_deduction}, "
+            f"Total={total_score}, Tone={tone_level}"
         )
+        # DEBUG: Print scoring details to diagnose Track B 0-score issue
+        # 调试：打印评分详情以诊断轨道B 0分问题
+        # Use logger instead of print for cross-platform compatibility (Windows GBK / Linux UTF-8)
+        # 使用logger而非print以实现跨平台兼容（Windows GBK / Linux UTF-8）
+        logger.info(f"[DEBUG Scorer] Text len={len(text)}, Ctx={context_baseline}, FP={fingerprint_score}, Struct={structure_score}, Human=-{human_deduction}, Total={total_score}")
 
         # Determine risk level (adjusted thresholds for better sensitivity)
         # 确定风险等级（调整阈值以提高敏感度）
@@ -389,8 +595,8 @@ class RiskScorer:
         fingerprints: List[FingerprintMatch]
     ) -> int:
         """
-        Calculate fingerprint risk score
-        计算指纹风险分数
+        Calculate fingerprint risk score (legacy method)
+        计算指纹风险分数（旧方法）
         """
         # Base score from density
         # 基于密度的基础分数
@@ -402,6 +608,36 @@ class RiskScorer:
         high_risk_bonus = min(30, high_risk_count * 10)
 
         return min(100, density_score + high_risk_bonus)
+
+    def _score_fingerprint_caass(
+        self,
+        fingerprints: List[FingerprintMatch],
+        tone_level: int = 4
+    ) -> int:
+        """
+        CAASS v2.0: Calculate fingerprint score using absolute weights
+        CAASS v2.0: 使用绝对权重计算指纹分数
+
+        Unlike density-based scoring, this uses fixed per-word penalties
+        adjusted by tone level. This solves the short-sentence bias problem.
+        与基于密度的评分不同，这使用按语气等级调整的固定每词惩罚。
+        这解决了短句偏差问题。
+        """
+        total_score = 0
+
+        for fp in fingerprints:
+            # Classify the fingerprint word
+            # 分类指纹词
+            fp_type = classify_fingerprint_type(fp.word)
+
+            # Get tone-adjusted weight
+            # 获取语气调整后的权重
+            weight = get_tone_adjusted_weight(fp_type, tone_level)
+            total_score += weight
+
+        # Cap at 80 to leave room for structure patterns
+        # 上限80，为结构模式留出空间
+        return min(80, total_score)
 
     def _score_burstiness(
         self,
@@ -597,6 +833,75 @@ class RiskScorer:
                 break
 
         return min(100, score)
+
+    def _score_structure_caass(self, text: str, tone_level: int = 4) -> int:
+        """
+        CAASS v2.0: Calculate structure pattern score with tone adaptation
+        CAASS v2.0: 使用语气适配计算结构模式分数
+
+        This method focuses on structural patterns only (not fingerprint words,
+        which are handled by _score_fingerprint_caass). This eliminates the
+        double-counting issue in the original implementation.
+        此方法仅关注结构模式（不包括指纹词，由 _score_fingerprint_caass 处理）。
+        这消除了原实现中的重复计算问题。
+        """
+        score = 0
+        text_lower = text.lower().strip()
+        words = text.split()
+        word_count = len(words)
+
+        # Get tone-adjusted weights for structural patterns
+        # 获取结构模式的语气调整权重
+        type_c_weight = get_tone_adjusted_weight("type_c", tone_level)
+        base_pattern_weight = max(10, type_c_weight // 2)  # Half of type_c for patterns
+
+        # === PATTERN DETECTION (not fingerprint words) ===
+        # === 模式检测（非指纹词）===
+
+        # Double emphasis pattern: "not only... but also"
+        # 双重强调模式
+        if "not only" in text_lower and "but also" in text_lower:
+            score += base_pattern_weight
+
+        # Enumeration markers at sentence start
+        # 句首列举标记
+        if any(text_lower.startswith(m) for m in ["firstly", "secondly", "thirdly"]):
+            score += base_pattern_weight
+
+        # Very long single sentence (AI tendency)
+        # 非常长的单句（AI倾向）
+        if word_count > 40:
+            score += 20
+        elif word_count > 30:
+            score += 10
+
+        # Connector at sentence start (use type_c weight)
+        # 句首连接词（使用C类权重）
+        connector_starts = ["furthermore", "moreover", "additionally", "consequently",
+                          "therefore", "hence", "subsequently", "accordingly"]
+        if any(text_lower.startswith(c) for c in connector_starts):
+            score += type_c_weight
+
+        # AI passive constructions
+        # AI被动结构
+        ai_passives = ["it is important to note", "it is worth noting",
+                       "it should be noted", "it is evident that", "it is crucial to"]
+        if any(p in text_lower for p in ai_passives):
+            score += base_pattern_weight
+
+        # Long sentence with many commas (rigid structure)
+        # 多逗号长句（僵化结构）
+        if word_count > 25 and text.count(',') >= 3:
+            score += 15
+
+        # "offers/provides a [adjective] pathway/approach/framework"
+        # AI典型句式
+        if re.search(r'\b(offers?|provides?)\s+a\s+\w+\s+(pathway|approach|framework|solution)\b', text_lower):
+            score += base_pattern_weight
+
+        # Cap structure score to leave room for fingerprint score
+        # 结构分数上限，为指纹分数留出空间
+        return min(40, score)
 
     def _calculate_human_deduction(self, text: str) -> int:
         """

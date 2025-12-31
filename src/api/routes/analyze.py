@@ -56,13 +56,14 @@ async def analyze_text(
         # 检测指纹词
         fingerprints = fingerprint_detector.detect(sentence.text)
 
-        # Calculate risk score
-        # 计算风险分数
+        # Calculate risk score (CAASS v2.0)
+        # 计算风险分数（CAASS v2.0）
         analysis = risk_scorer.analyze(
             sentence.text,
             fingerprints=fingerprints,
             include_turnitin=request.include_turnitin,
-            include_gptzero=request.include_gptzero
+            include_gptzero=request.include_gptzero,
+            tone_level=4  # Default to standard academic level
         )
 
         # Build response

@@ -158,6 +158,216 @@
 
 ## 变更日志 | Change Log
 
+### 2025-01-01 (Update 27)
+
+**修复 Review 页面假数据和 Track B 分数不一致 Fix Review Page Fake Data and Track B Score Inconsistency:**
+
+**1. Review 页面假数据问题 Review Page Fake Data Issue:**
+- 问题：用户没有进行任何修改，但 Review 页面显示"72降低到了28"
+- 原因：`frontend/src/pages/Review.tsx` 硬编码了假数据
+- 解决：
+  - 新增后端 API `GET /session/{id}/review-stats`
+    - `src/api/routes/session.py:520-580`
+    - 返回：总句子数、修改数、平均风险降低分、来源分布
+  - 新增前端 API 方法 `sessionApi.getReviewStats()`
+    - `frontend/src/services/api.ts:369-377`
+  - 更新 Review 页面使用真实数据
+    - `frontend/src/pages/Review.tsx:63-77`
+    - 简化显示：修改数量 + 平均风险降低分
+
+**2. Track B 分数不一致问题 Track B Score Inconsistency:**
+- 问题：相同文本，原文分数34，Track B 分数10
+- 原因：
+  - 上传时使用 `tone_level=4`（hardcoded in `documents.py:139-144`）
+  - 建议生成时使用 `tone_level = colloquialism_level // 2`（variable in `suggest.py:69`）
+- 解决：
+  - `src/api/routes/suggest.py:65-71`
+  - 将 `tone_level` 固定为 4，与文档上传时保持一致
+  - 确保评分前后一致
+
+**3. 跨平台日志兼容 Cross-Platform Logging Compatibility:**
+- 问题：Windows 控制台 GBK 编码无法显示特殊字符导致 `UnicodeEncodeError`
+- 解决：
+  - `src/api/routes/suggest.py:6-9,141` - 使用 `logger` 替代 `print`
+  - `src/core/analyzer/scorer.py:450-453` - 使用 `logger` 替代 `print`
+  - 兼容 Windows GBK 和 Linux UTF-8
+
+**效果 Effects:**
+- ✅ Review 页面显示真实统计数据
+- ✅ Track A/B 评分与原文评分一致
+- ✅ 跨平台日志兼容
+
+---
+
+### 2025-01-01 (Update 26)
+
+**调查轨道B分数问题 Investigate Track B Score Issue:**
+
+- 用户反馈：轨道B显示"无需修改"但分数为0，而原文分数为42
+- 用户询问：轨道A/B的分数是否按照原文规则计算
+
+**分析 Analysis:**
+1. **轨道A/B评分机制确认**：是的，轨道A和B的分数都使用相同的评分器（RiskScorer）计算
+   - `src/api/routes/suggest.py:67-73` - 原文评分
+   - `src/api/routes/suggest.py:88-94` - 轨道A评分（对改写后的文本）
+   - `src/api/routes/suggest.py:126-132` - 轨道B评分（对改写后的文本）
+   - 三者使用相同的参数：tone_level, whitelist, context_baseline
+
+2. **问题根源**：如果轨道B未做修改，rewritten应该等于原文，分数也应该相同。显示0分是一个bug
+
+**修改内容 Changes Made:**
+1. **添加调试日志** - `src/api/routes/suggest.py:134-142`
+   - 记录轨道B的修改数量
+   - 检查文本是否真的相同
+   - 比较原文和轨道B的分数
+
+2. **添加评分器调试日志** - `src/core/analyzer/scorer.py:450-453`
+   - 打印每次评分的详细组成：上下文基准、指纹分、结构分、人类减分、总分
+   - 输出文本预览便于对比
+
+**下一步 Next Steps:**
+- 用户需要重启后端，然后查看控制台输出以确定问题根源
+- 根据调试输出确定是文本变化问题还是评分器问题
+
+---
+
+### 2025-01-01 (Update 25)
+
+**CAASS v2.0 Phase 2: 上下文感知与白名单机制 Context-Aware and Whitelist Mechanism:**
+
+- 用户需求：实现 CAASS v2.0 第二阶段功能
+- 核心变更：
+
+**1. 段落级 PPL 上下文基准 Paragraph-Level PPL Context Baseline:**
+- `src/core/analyzer/scorer.py:166-263`
+  - 新增 `calculate_text_ppl()` 函数计算文本 PPL（使用 zlib 压缩比作为代理）
+  - 新增 `calculate_context_baseline()` 函数返回段落上下文基准分 (0-25分)
+    - PPL < 20: 强 AI 信号，+25 分
+    - PPL 20-30: 中等 AI 信号，+15 分
+    - PPL 30-40: 弱 AI 信号，+8 分
+    - PPL > 40: 人类特征，+0 分
+  - 新增 `ParagraphContext` 数据类，包含段落文本、PPL、基准分、句子数
+
+**2. 智能白名单提取 Smart Whitelist Extraction:**
+- 新增 `src/core/preprocessor/whitelist_extractor.py`
+  - `WhitelistExtractor` 类从 Abstract 提取学科特定术语
+  - 检测技术复合词、缩写定义、带技术后缀的词汇
+  - 内置已知学科术语（remediation, circular economy, biodiversity 等）
+  - `extract_from_abstract()` 和 `extract_from_document()` 方法
+  - 支持用户自定义白名单合并
+
+**3. 文档处理集成 Document Processing Integration:**
+- `src/api/routes/documents.py:68-244, 310-426`
+  - 导入 `ParagraphContext`, `calculate_context_baseline`, `WhitelistExtractor`
+  - 文档上传时自动提取白名单
+  - 使用 `segment_with_paragraphs()` 保留段落信息
+  - 新增 `_build_paragraph_contexts()` 函数构建段落上下文
+  - `analysis_json` 现在包含 `paragraph_index` 和 `context_baseline`
+
+**4. 会话配置存储 Session Config Storage:**
+- `src/api/routes/session.py:84-169, 490-518`
+  - 会话启动时提取并存储白名单到 `config_json`
+  - 新增 `GET /session/{id}/config` 端点返回白名单和语气等级
+  - `config_json` 现在包含 `whitelist` 和 `tone_level`
+
+**5. 建议 API 支持 Suggest API Support:**
+- `src/api/schemas.py:55-68`
+  - `SuggestRequest` 新增 `whitelist` 和 `context_baseline` 字段
+- `src/api/routes/suggest.py:41-162`
+  - `get_suggestions()` 端点使用白名单和上下文基准评分
+  - 所有 `_scorer.analyze()` 调用现在传递白名单和上下文基准
+
+**6. 前端集成 Frontend Integration:**
+- `frontend/src/types/index.ts:75-78`
+  - `SentenceAnalysis` 新增 `contextBaseline` 和 `paragraphIndex` 字段
+- `frontend/src/services/api.ts:191-212, 347-363`
+  - `suggestApi.getSuggestions()` 新增 `whitelist` 和 `contextBaseline` 参数
+  - 新增 `sessionApi.getConfig()` 获取会话配置
+- `frontend/src/stores/sessionStore.ts:29-35, 92-161, 444-453`
+  - 新增 `SessionConfigCache` 接口和 `sessionConfig` 状态
+  - `startSession()` 和 `loadCurrentState()` 自动加载会话配置
+  - `loadSuggestions()` 传递白名单和上下文基准
+
+**效果 Effects:**
+- ✅ 段落级上下文感知，低 PPL 段落中的句子获得额外基准分
+- ✅ 智能白名单自动提取，学科术语不再被误判
+- ✅ 前后端完整集成，白名单随会话存储和使用
+- ✅ 实时 Delta 反馈已存在（SuggestionPanel 第 363-399 行显示风险变化）
+
+**CAASS v2.0 Phase 2 评分公式 Scoring Formula:**
+```
+Score_Final = Clamp(Context_baseline + Score_fp + Score_st - Bonus_hu, 0, 100)
+
+其中 Where:
+- Context_baseline = 段落 PPL 基准分 (0-25)
+- Score_fp = 指纹词绝对权重分 (白名单术语豁免)
+- Score_st = 结构模式分数
+- Bonus_hu = 人类特征减分
+```
+
+---
+
+### 2025-01-01 (Update 24)
+
+**CAASS v2.0 评分系统重构 CAASS v2.0 Scoring System Refactor:**
+
+- 用户需求：根据优化报告实现 CAASS v2.0 (Context-Aware Absolute Scoring System)
+- 核心变更：
+
+**1. 清理指纹词库 Clean Fingerprint Dictionary:**
+- `src/core/analyzer/scorer.py:57-78`
+  - 从 Level 2 移除所有学科特定术语 (remediation, circular economy, soil salinization 等)
+  - 仅保留真正的 AI 惯用词（学术套话和结构连接词）
+
+**2. 语气自适应权重矩阵 Tone-Adaptive Weight Matrix:**
+- `src/core/analyzer/scorer.py:81-163`
+  - 新增 `TONE_WEIGHT_MATRIX` 常量，定义三类词汇在不同语气等级下的权重
+  - Type A (死罪词): 始终高惩罚 (40-50分)，如 delve, tapestry
+  - Type B (学术套话): 语气相关 (5-25分)，如 crucial, utilize
+  - Type C (连接词): 语气相关 (10-30分)，如 furthermore, moreover
+  - 新增 `get_tone_adjusted_weight()` 和 `classify_fingerprint_type()` 函数
+
+**3. 绝对权重评分算法 Absolute Weight Scoring:**
+- `src/core/analyzer/scorer.py:499-527`
+  - 新增 `_score_fingerprint_caass()` 方法
+  - 使用绝对权重累加替代密度计算，解决短句评分失真问题
+  - 公式: `Score = Σ(word_weight × tone_modifier)`
+
+**4. 结构模式评分重构 Structure Pattern Scoring Refactor:**
+- `src/core/analyzer/scorer.py:724-791`
+  - 新增 `_score_structure_caass()` 方法
+  - 仅检测结构模式（非指纹词），消除重复计算问题
+  - 结构分数上限 40 分，为指纹分数留出空间
+
+**5. 白名单支持 Whitelist Support:**
+- `src/core/analyzer/scorer.py:238-288`
+  - `analyze()` 方法新增 `whitelist` 参数
+  - 白名单术语自动豁免，不参与评分
+
+**6. API 端点更新 API Endpoint Updates:**
+- `src/api/routes/suggest.py:55-110` - 传递 tone_level
+- `src/api/routes/analyze.py:59-67` - 使用默认 tone_level=4
+- `src/api/routes/documents.py:117-120, 287-290` - 使用默认 tone_level=4
+- `src/core/validator/quality_gate.py:198-204` - 支持 tone_level 参数
+
+**效果 Effects:**
+- ✅ 解决短句评分失真问题（不再使用密度计算）
+- ✅ 解决学科术语误判问题（清理词库 + 白名单机制）
+- ✅ Tone Level 真正生效（语气自适应权重矩阵）
+- ✅ 消除评分重复计算（分离指纹词和结构模式评分）
+
+**CAASS v2.0 评分公式 Scoring Formula:**
+```
+Score_Final = Clamp(Score_fp + Score_st - Bonus_hu, 0, 100)
+
+其中 Where:
+- Score_fp = Σ(fingerprint_weight × tone_modifier), 上限 80
+- Score_st = 结构模式分数, 上限 40
+- Bonus_hu = 人类特征减分, 上限 50
+```
+
+---
+
 ### 2025-12-31 (Update 23)
 
 **新增 Gemini API 支持 Add Gemini API Support:**
@@ -918,6 +1128,34 @@ Casual Human: Score=0 (safe) ✓
 
 **删除 Removed:**
 - N/A
+
+### 2024-12-31 - Track C分析功能修复 | Track C Analysis Fix
+
+**用户需求 User Request:**
+- 修复轨道C的分析句子功能卡住的问题
+- Track C sentence analysis feature was stuck
+
+**问题分析 Issue Analysis:**
+- 当用户切换句子时，`analysisState` 没有被正确重置
+- 导致API返回结果时，当前句子已变化，但状态更新针对的是旧句子
+- 表现为加载状态永远不结束或显示错误
+
+**方法 Approach:**
+1. 在 `Intervention.tsx` 中添加 effect，当句子变化时重置 `analysisState`
+2. 在 `handleAnalysisToggle` 中添加句子ID变化检查
+3. 即使句子变化也缓存API结果供将来使用
+
+**修改 Modified:**
+- `frontend/src/pages/Intervention.tsx`:
+  - 添加 `analysisStartSentenceIdRef` ref 追踪分析起始句子ID (line 104-106)
+  - 添加句子变化时重置 `analysisState` 的 effect (line 227-253)
+  - 在 API 返回时检查当前句子是否仍为发起请求的句子 (line 182-191, 204-210)
+  - 即使句子变化也缓存结果 (line 175-179, 186-190)
+
+**结果 Result:**
+- 切换句子时分析状态正确重置
+- 避免了竞态条件导致的状态混乱
+- 分析结果仍会被缓存，下次访问同一句子时可直接使用
 
 ### 2024-12-29
 

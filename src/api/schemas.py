@@ -56,12 +56,16 @@ class SuggestRequest(BaseModel):
     """
     Suggestion generation request
     建议生成请求
+
+    CAASS v2.0 Phase 2: Added whitelist and context_baseline support
     """
     sentence: str = Field(..., min_length=1, description="Sentence to humanize")
     issues: List[Dict[str, Any]] = Field(default=[], description="Detected issues")
     locked_terms: List[str] = Field(default=[], description="Terms to protect")
     colloquialism_level: int = Field(default=4, ge=0, le=10, description="Colloquialism level 0-10")
     target_lang: str = Field(default="zh", description="Target language for explanations")
+    whitelist: List[str] = Field(default=[], description="Domain-specific terms to exempt from scoring")
+    context_baseline: int = Field(default=0, ge=0, le=25, description="Paragraph context baseline score")
 
 
 class SessionStartRequest(BaseModel):

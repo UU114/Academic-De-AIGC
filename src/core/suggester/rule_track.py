@@ -657,20 +657,26 @@ class RuleTrack:
         locked_terms: List[str]
     ) -> Tuple[str, List[Change]]:
         """
-        Replace fingerprint words
-        替换指纹词
+        Replace fingerprint words (avoiding chain replacements)
+        替换指纹词（避免链式替换）
+
+        Uses two-pass approach: first find all matches in original text,
+        then apply replacements from end to start.
+        使用两遍方法：先在原文中找到所有匹配，然后从后往前应用替换。
         """
         changes = []
-        result = text
+
+        # First pass: find all fingerprint words and their positions in original text
+        # 第一遍：在原文中找到所有指纹词及其位置
+        replacements_to_make = []
 
         for word, replacements in self.FINGERPRINT_REPLACEMENTS.items():
-            # Word boundary matching
-            # 词边界匹配
             pattern = re.compile(r'\b' + re.escape(word) + r'\b', re.IGNORECASE)
-            match = pattern.search(result)
 
-            if match:
+            for match in pattern.finditer(text):
                 original = match.group(0)
+                start = match.start()
+                end = match.end()
 
                 # Check if part of locked term
                 # 检查是否是锁定术语的一部分
@@ -681,6 +687,17 @@ class RuleTrack:
                         break
 
                 if skip:
+                    continue
+
+                # Check if this position overlaps with existing replacement
+                # 检查此位置是否与现有替换重叠
+                overlaps = False
+                for existing in replacements_to_make:
+                    if not (end <= existing['start'] or start >= existing['end']):
+                        overlaps = True
+                        break
+
+                if overlaps:
                     continue
 
                 # Get level-appropriate replacement
@@ -695,13 +712,32 @@ class RuleTrack:
                 if original.isupper():
                     replacement = replacement.upper()
 
-                result = pattern.sub(replacement, result, count=1)
-                changes.append(Change(
-                    original=original,
-                    replacement=replacement,
-                    reason="AI fingerprint word replacement",
-                    reason_zh="AI指纹词替换"
-                ))
+                replacements_to_make.append({
+                    'start': start,
+                    'end': end,
+                    'original': original,
+                    'replacement': replacement
+                })
+
+        # Sort by position (reverse order to maintain indices)
+        # 按位置排序（逆序以保持索引正确）
+        replacements_to_make.sort(key=lambda x: x['start'], reverse=True)
+
+        # Apply replacements from end to start (to preserve indices)
+        # 从后往前应用替换（以保持索引正确）
+        result = text
+        for rep in replacements_to_make:
+            result = result[:rep['start']] + rep['replacement'] + result[rep['end']:]
+            changes.append(Change(
+                original=rep['original'],
+                replacement=rep['replacement'],
+                reason="AI fingerprint word replacement",
+                reason_zh="AI指纹词替换"
+            ))
+
+        # Reverse changes list to match original order in text
+        # 反转changes列表以匹配文本中的原始顺序
+        changes.reverse()
 
         return result, changes
 

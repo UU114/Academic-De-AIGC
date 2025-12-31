@@ -21,9 +21,8 @@ interface ReviewStats {
   modified: number;
   skipped: number;
   flagged: number;
-  originalRiskScore: number;
-  finalRiskScore: number;
-  riskReduction: number;
+  avgRiskReduction: number;
+  sourceDistribution: { llm: number; rule: number; custom: number };
 }
 
 interface ModificationRecord {
@@ -59,36 +58,27 @@ export default function Review() {
     const loadData = async () => {
       setIsLoading(true);
       try {
-        // Get session progress
-        // 获取会话进度
-        const progress = await sessionApi.getProgress(sessionId);
+        // Get session progress and review stats
+        // 获取会话进度和审核统计数据
+        const [progress, reviewStats] = await Promise.all([
+          sessionApi.getProgress(sessionId),
+          sessionApi.getReviewStats(sessionId)
+        ]);
 
-        // Simulate stats (in real app, would come from backend)
-        // 模拟统计数据（实际应用中会从后端获取）
+        // Use real data from backend
+        // 使用后端返回的真实数据
         setStats({
-          totalSentences: progress.total,
-          modified: progress.processed - progress.skipped,
+          totalSentences: reviewStats.totalSentences,
+          modified: reviewStats.modifiedCount,
           skipped: progress.skipped,
           flagged: progress.flagged,
-          originalRiskScore: 72,
-          finalRiskScore: 28,
-          riskReduction: 61,
+          avgRiskReduction: reviewStats.avgRiskReduction,
+          sourceDistribution: reviewStats.sourceDistribution,
         });
 
-        // Simulate modifications list
-        // 模拟修改列表
-        const mockModifications: ModificationRecord[] = Array.from(
-          { length: Math.min(5, progress.processed) },
-          (_, i) => ({
-            index: i + 1,
-            original: `This is the original sentence ${i + 1} with some AI-generated patterns that need to be modified.`,
-            modified: `This is the revised sentence ${i + 1} with human-like expressions that appear more natural.`,
-            source: (['llm', 'rule', 'custom'] as const)[i % 3],
-            riskBefore: 65 + Math.random() * 20,
-            riskAfter: 15 + Math.random() * 20,
-          })
-        );
-        setModifications(mockModifications);
+        // Note: Modification details would need another API call
+        // 注意：修改详情需要另一个API调用
+        setModifications([]);
       } catch (error) {
         console.error('Failed to load review data:', error);
       } finally {
@@ -161,13 +151,26 @@ export default function Review() {
       </div>
 
       {/* Success Banner */}
-      <div className="card p-6 mb-6 bg-gradient-to-r from-green-50 to-blue-50 border-green-200">
+      {/* 成功提示 */}
+      <div className={clsx(
+        "card p-6 mb-6 bg-gradient-to-r border",
+        stats && stats.modified > 0
+          ? "from-green-50 to-blue-50 border-green-200"
+          : "from-gray-50 to-blue-50 border-gray-200"
+      )}>
         <div className="flex items-center">
-          <CheckCircle className="w-10 h-10 text-green-500 mr-4" />
+          <CheckCircle className={clsx(
+            "w-10 h-10 mr-4",
+            stats && stats.modified > 0 ? "text-green-500" : "text-gray-400"
+          )} />
           <div>
-            <h2 className="text-xl font-semibold text-gray-800">处理完成！</h2>
+            <h2 className="text-xl font-semibold text-gray-800">
+              {stats && stats.modified > 0 ? '处理完成！' : '会话已结束'}
+            </h2>
             <p className="text-gray-600">
-              您的文档已成功优化，AIGC检测风险显著降低
+              {stats && stats.modified > 0
+                ? `已修改 ${stats.modified} 个句子，平均降低风险 ${stats.avgRiskReduction} 分`
+                : '未进行任何修改'}
             </p>
           </div>
         </div>
@@ -199,38 +202,25 @@ export default function Review() {
       {/* Tab Content */}
       {activeTab === 'summary' && stats && (
         <div className="space-y-6">
-          {/* Risk Comparison */}
+          {/* Risk Reduction Summary */}
+          {/* 风险降低摘要 */}
           <div className="card p-6">
             <h3 className="text-lg font-semibold text-gray-800 mb-4">
-              风险评分变化 / Risk Score Change
+              风险降低效果 / Risk Reduction Effect
             </h3>
-            <div className="grid md:grid-cols-3 gap-6">
-              <div className="text-center">
-                <p className="text-sm text-gray-500 mb-2">原始风险</p>
-                <div className="text-4xl font-bold text-red-500">
-                  {stats.originalRiskScore}
-                </div>
-                <RiskBadge level="high" size="sm" />
+            <div className="text-center">
+              <p className="text-sm text-gray-500 mb-2">已修改句子平均降低风险分数</p>
+              <div className="text-5xl font-bold text-green-500">
+                {stats.avgRiskReduction > 0 ? '-' : ''}{stats.avgRiskReduction}
               </div>
-              <div className="flex items-center justify-center">
-                <div className="text-center">
-                  <p className="text-green-600 font-semibold">
-                    降低 {stats.riskReduction}%
-                  </p>
-                  <div className="w-24 h-1 bg-green-500 rounded-full mx-auto mt-2" />
-                </div>
-              </div>
-              <div className="text-center">
-                <p className="text-sm text-gray-500 mb-2">最终风险</p>
-                <div className="text-4xl font-bold text-green-500">
-                  {stats.finalRiskScore}
-                </div>
-                <RiskBadge level="low" size="sm" />
-              </div>
+              <p className="text-sm text-gray-400 mt-2">
+                Average risk score reduction per modified sentence
+              </p>
             </div>
           </div>
 
           {/* Processing Stats */}
+          {/* 处理统计 */}
           <div className="card p-6">
             <h3 className="text-lg font-semibold text-gray-800 mb-4">
               处理统计 / Processing Statistics
@@ -244,16 +234,19 @@ export default function Review() {
           </div>
 
           {/* Source Distribution */}
-          <div className="card p-6">
-            <h3 className="text-lg font-semibold text-gray-800 mb-4">
-              修改来源分布 / Modification Sources
-            </h3>
-            <div className="space-y-3">
-              <SourceBar label="LLM智能改写" percent={60} color="purple" />
-              <SourceBar label="规则建议" percent={30} color="blue" />
-              <SourceBar label="自定义修改" percent={10} color="gray" />
+          {/* 修改来源分布 */}
+          {stats.modified > 0 && (
+            <div className="card p-6">
+              <h3 className="text-lg font-semibold text-gray-800 mb-4">
+                修改来源分布 / Modification Sources
+              </h3>
+              <div className="space-y-3">
+                <SourceBar label="LLM智能改写" percent={stats.sourceDistribution.llm} color="purple" />
+                <SourceBar label="规则建议" percent={stats.sourceDistribution.rule} color="blue" />
+                <SourceBar label="自定义修改" percent={stats.sourceDistribution.custom} color="gray" />
+              </div>
             </div>
-          </div>
+          )}
         </div>
       )}
 

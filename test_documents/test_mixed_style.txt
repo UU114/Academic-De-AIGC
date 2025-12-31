@@ -1,0 +1,42 @@
+The Impact of Social Media on Academic Performance: A Mixed-Methods Study
+
+Abstract
+
+This research examines how social media usage affects student grades. We surveyed 342 undergraduate students and, honestly, some of the results surprised us. The data suggests a more nuanced picture than previous studies indicated.
+
+1. Introduction
+
+Social media has become ubiquitous among college students. Previous research has delved into various aspects of this phenomenon, but gaps remain. We wanted to figure out what's actually happening, not just confirm existing assumptions.
+
+The relationship between screen time and academic outcomes is complicated. It's not as simple as "more scrolling equals worse grades." Some students told us they use Instagram to form study groups, which was kind of unexpected.
+
+2. Literature Review
+
+Studies from the past decade present conflicting findings. Smith et al. (2019) found a negative correlation (r = -0.34, p < 0.01), while Johnson's 2021 paper showed basically no effect. Furthermore, the methodological approaches vary significantly across the literature.
+
+We noticed that most previous research treats "social media" as one thing. But there's a huge difference between passive scrolling and active engagement. This distinction, we argue, is crucial for understanding the actual effects.
+
+3. Methodology
+
+Our mixed-methods approach combined quantitative surveys with qualitative interviews. The comprehensive questionnaire included 47 items measuring usage patterns, academic performance, and self-regulation. Additionally, we conducted 28 semi-structured interviews.
+
+Here's where it gets interesting. We tracked actual app usage through screen time data - not just self-reports, which are notoriously unreliable. Students think they spend about 2 hours daily on social media; the real number was closer to 4.7 hours.
+
+4. Results
+
+The quantitative findings reveal several significant patterns:
+- Active users (posting, commenting) showed no grade difference (mean GPA: 3.21)
+- Passive scrollers had slightly lower GPAs (mean: 2.89, p = 0.03)
+- Students using social media for academic purposes actually performed better
+
+One student put it this way: "I literally would have failed organic chemistry without the Discord study group." This sentiment was echoed in about 40% of our interviews.
+
+5. Discussion
+
+These results underscore the importance of distinguishing between usage types. The multifaceted nature of social media engagement means blanket recommendations are probably useless. It's not about how much time you spend, but how you spend it.
+
+That said, we found some concerning patterns. Students who checked their phones during study sessions (which was like, almost everyone) took 23% longer to complete assignments. The constant task-switching seems to be the real problem.
+
+6. Conclusion
+
+Our findings suggest that the relationship between social media and academics isn't straightforward. Instead of telling students to "just use it less," maybe we should help them use it better? I don't know, seems worth trying anyway.

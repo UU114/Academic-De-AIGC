@@ -26,6 +26,14 @@ type AnalysisCache = Map<string, DetailedSentenceAnalysis>;
 // 用于存储每个句子自定义文本草稿的缓存
 type CustomTextCache = Map<string, string>;
 
+// CAASS v2.0 Phase 2: Session config type
+// CAASS v2.0 第二阶段：会话配置类型
+interface SessionConfigCache {
+  whitelist: string[];
+  toneLevel: number;
+  colloquialismLevel: number;
+}
+
 // Counter for tracking suggestion request IDs to handle race conditions
 // 用于追踪建议请求ID的计数器，处理竞态条件
 let suggestionRequestCounter = 0;
@@ -48,6 +56,7 @@ interface SessionStore {
   analysisCache: AnalysisCache;  // Cache for analysis results by sentence ID
   customTextCache: CustomTextCache;  // Cache for custom text drafts by sentence ID
   currentSuggestionRequestId: number;  // Track current request to handle race conditions / 追踪当前请求ID以处理竞态条件
+  sessionConfig: SessionConfigCache | null;  // CAASS v2.0 Phase 2: Session config with whitelist
 
   // Actions
   // 动作
@@ -94,6 +103,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   analysisCache: new Map(),  // Cache: sentenceId -> DetailedSentenceAnalysis
   customTextCache: new Map(),  // Cache: sentenceId -> custom text draft
   currentSuggestionRequestId: 0,  // Track current request ID / 追踪当前请求ID
+  sessionConfig: null,  // CAASS v2.0 Phase 2: Session config with whitelist
 
   // Start a new session
   // 开始新会话
@@ -106,10 +116,21 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       suggestionsCache: new Map(),
       analysisCache: new Map(),
       customTextCache: new Map(),
+      sessionConfig: null,
     });
     try {
       const session = await sessionApi.start(documentId, options);
-      set({ session, isLoading: false });
+
+      // CAASS v2.0 Phase 2: Load session config with whitelist
+      // CAASS v2.0 第二阶段：加载包含白名单的会话配置
+      const config = await sessionApi.getConfig(session.sessionId);
+      const sessionConfig: SessionConfigCache = {
+        whitelist: config.whitelist,
+        toneLevel: config.toneLevel,
+        colloquialismLevel: config.colloquialismLevel,
+      };
+
+      set({ session, sessionConfig, isLoading: false });
     } catch (error) {
       set({ error: (error as Error).message, isLoading: false });
     }
@@ -121,7 +142,20 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     set({ isLoading: true, error: null });
     try {
       const session = await sessionApi.getCurrent(sessionId);
-      set({ session, isLoading: false });
+
+      // CAASS v2.0 Phase 2: Load session config if not already loaded
+      // CAASS v2.0 第二阶段：如果尚未加载，则加载会话配置
+      let { sessionConfig } = get();
+      if (!sessionConfig) {
+        const config = await sessionApi.getConfig(sessionId);
+        sessionConfig = {
+          whitelist: config.whitelist,
+          toneLevel: config.toneLevel,
+          colloquialismLevel: config.colloquialismLevel,
+        };
+      }
+
+      set({ session, sessionConfig, isLoading: false });
     } catch (error) {
       set({ error: (error as Error).message, isLoading: false });
     }
@@ -129,8 +163,9 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
 
   // Load suggestions for current sentence (with caching and race condition handling)
   // 为当前句子加载建议（带缓存和竞态条件处理）
+  // CAASS v2.0 Phase 2: Now passes whitelist and context baseline for accurate scoring
   loadSuggestions: async (sentence, colloquialismLevel, forceRefresh = false) => {
-    const { suggestionsCache } = get();
+    const { suggestionsCache, sessionConfig } = get();
     const cacheKey = sentence.id;
 
     // Check cache first (unless force refresh requested)
@@ -147,6 +182,8 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     set({ isLoadingSuggestions: true, suggestions: null, currentSuggestionRequestId: requestId });
 
     try {
+      // CAASS v2.0 Phase 2: Pass whitelist and context baseline
+      // CAASS v2.0 第二阶段：传递白名单和上下文基准
       const suggestions = await suggestApi.getSuggestions(sentence.text, {
         issues: sentence.issues.map((i) => ({
           type: i.type,
@@ -154,6 +191,8 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
         })),
         lockedTerms: sentence.lockedTerms,
         colloquialismLevel,
+        whitelist: sessionConfig?.whitelist || [],
+        contextBaseline: sentence.contextBaseline || 0,
       });
 
       // Check if this request is still the current one (race condition guard)
@@ -387,9 +426,12 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   // Set analysis result for a specific sentence (save to cache)
   // 为特定句子设置分析结果（保存到缓存）
   setAnalysisForSentence: (sentenceId, analysis) => {
+    console.log('[sessionStore] setAnalysisForSentence called for:', sentenceId);
+    console.log('[sessionStore] Analysis data:', analysis ? 'present' : 'null');
     const { analysisCache } = get();
     const newCache = new Map(analysisCache);
     newCache.set(sentenceId, analysis);
+    console.log('[sessionStore] New cache size:', newCache.size);
     set({ analysisCache: newCache });
   },
 
@@ -406,6 +448,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     suggestionsCache: new Map(),
     analysisCache: new Map(),
     customTextCache: new Map(),
+    sessionConfig: null,  // CAASS v2.0 Phase 2: Clear session config
   }),
 
   // Reset store
@@ -423,5 +466,6 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       analysisCache: new Map(),
       customTextCache: new Map(),
       currentSuggestionRequestId: 0,
+      sessionConfig: null,  // CAASS v2.0 Phase 2: Clear session config
     }),
 }));

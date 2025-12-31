@@ -101,6 +101,10 @@ export default function Intervention() {
   // 从store获取分析缓存方法
   const { getAnalysisForSentence, setAnalysisForSentence } = useSessionStore();
 
+  // Ref to store the sentence ID that started the analysis request
+  // 用于存储发起分析请求的句子ID的ref
+  const analysisStartSentenceIdRef = useRef<string | null>(null);
+
   // Handle analysis toggle from CustomInputSection (with race condition handling)
   // 处理CustomInputSection的分析切换（带竞态条件处理）
   const handleAnalysisToggle = useCallback(async (show: boolean) => {
@@ -110,7 +114,9 @@ export default function Intervention() {
     }
 
     const sentenceId = session?.currentSentence?.id;
-    const originalText = suggestions?.original;
+    // IMPORTANT: Use current sentence text directly, not from suggestions (which may be stale)
+    // 重要：直接使用当前句子文本，而不是 suggestions（可能是旧数据）
+    const originalText = session?.currentSentence?.text;
 
     // Early return with error if no sentence data
     // 如果没有句子数据则提前返回并显示错误
@@ -142,6 +148,9 @@ export default function Intervention() {
     // Generate unique request ID for race condition handling
     // 生成唯一请求ID用于竞态条件处理
     const requestId = ++analysisRequestIdRef.current;
+    // Store the sentence ID that started this request
+    // 存储发起此请求的句子ID
+    analysisStartSentenceIdRef.current = sentenceId;
 
     // Load analysis - also ensure expandedTrack is set to 'custom'
     // 加载分析 - 同时确保expandedTrack设置为'custom'
@@ -166,6 +175,20 @@ export default function Intervention() {
       // 检查此请求是否仍然是当前请求（竞态条件保护）
       if (analysisRequestIdRef.current !== requestId) {
         console.log('[handleAnalysisToggle] Discarding stale analysis response for:', sentenceId);
+        // Still cache the result for future use
+        // 仍然缓存结果供将来使用
+        setAnalysisForSentence(sentenceId, result);
+        return;
+      }
+
+      // Check if the current sentence is still the same (user might have switched)
+      // 检查当前句子是否仍然相同（用户可能已切换）
+      const currentSentenceId = session?.currentSentence?.id;
+      if (currentSentenceId !== sentenceId) {
+        console.log('[handleAnalysisToggle] Sentence changed, caching result but not updating UI:', sentenceId);
+        // Cache the result but don't update UI state (sentence reset effect will handle it)
+        // 缓存结果但不更新UI状态（句子重置effect会处理）
+        setAnalysisForSentence(sentenceId, result);
         return;
       }
 
@@ -178,6 +201,13 @@ export default function Intervention() {
       // 仅当这仍然是当前请求时才更新错误状态
       if (analysisRequestIdRef.current !== requestId) {
         console.log('[handleAnalysisToggle] Discarding stale error for:', sentenceId);
+        return;
+      }
+      // Also check if sentence hasn't changed
+      // 同时检查句子是否未变化
+      const currentSentenceId = session?.currentSentence?.id;
+      if (currentSentenceId !== sentenceId) {
+        console.log('[handleAnalysisToggle] Sentence changed, not showing error for:', sentenceId);
         return;
       }
       console.error('[DEBUG] Failed to load analysis:', err);
@@ -195,6 +225,36 @@ export default function Intervention() {
   const handleAnalysisStateChange = useCallback((state: typeof analysisState) => {
     setAnalysisState(state);
   }, []);
+
+  // Track previous sentence ID to detect changes
+  // 追踪上一个句子ID以检测变化
+  const prevSentenceIdRef = useRef<string | null>(null);
+
+  // Reset analysis state when sentence changes (fix for "stuck" issue)
+  // 当句子变化时重置分析状态（修复"卡住"问题）
+  useEffect(() => {
+    const currentId = session?.currentSentence?.id || null;
+
+    // Only reset if sentence actually changed (not on initial mount with same id)
+    // 仅在句子实际变化时重置（不是初始挂载时）
+    if (prevSentenceIdRef.current !== null && prevSentenceIdRef.current !== currentId) {
+      console.log('[DEBUG] Sentence changed from', prevSentenceIdRef.current, 'to', currentId);
+      // Check if there's cached analysis for the new sentence
+      // 检查新句子是否有缓存的分析结果
+      const cached = currentId ? getAnalysisForSentence(currentId) : null;
+      setAnalysisState({
+        showAnalysis: false,
+        loadingAnalysis: false,
+        hasResult: !!cached,
+        expandedTrack: 'llm',  // Reset to Track A
+        error: undefined,
+      });
+    }
+
+    // Update ref for next comparison
+    // 更新ref用于下次比较
+    prevSentenceIdRef.current = currentId;
+  }, [session?.currentSentence?.id, getAnalysisForSentence]);
 
   // Load session on mount
   // 挂载时加载会话
@@ -244,39 +304,52 @@ export default function Intervention() {
   // 追踪当前句子索引，避免不必要的建议重新加载
   const [lastLoadedIndex, setLastLoadedIndex] = useState<number | null>(null);
 
-  // Load suggestions when current sentence INDEX changes (not on every object change)
-  // Skip loading for already processed sentences
-  // 当前句子索引变化时加载建议（不是每次对象变化时）
-  // 跳过已处理的句子
+  // Note: suggestionsCache is already destructured from useSessionStore at the top
+  // 注意：suggestionsCache 已经在顶部从 useSessionStore 解构出来了
+
+  // Load suggestions when current sentence INDEX changes
+  // Logic: 1. Write current to cache (handled by store) -> 2. Clear display -> 3. Read from cache -> 4. If not found & not processed, call LLM
+  // 当前句子索引变化时加载建议
+  // 逻辑：1. 当前写入缓存（由store处理）-> 2. 清除显示 -> 3. 从缓存读取 -> 4. 未找到且未处理则调用LLM
   useEffect(() => {
-    // Only load suggestions if:
-    // 1. We have a current sentence
-    // 2. The index has actually changed (not just a state refresh after applying)
-    // 3. The sentence is not already processed
-    // 只有在以下情况加载建议：
-    // 1. 有当前句子
-    // 2. 索引实际发生了变化（不是应用后的状态刷新）
-    // 3. 句子尚未处理
     if (
       session?.currentSentence &&
       session.currentIndex !== lastLoadedIndex
     ) {
       setLastLoadedIndex(session.currentIndex);
+      const currentSentenceId = session.currentSentence.id;
 
-      // Check if this sentence is already processed from allSentences
-      // 检查这个句子是否已在 allSentences 中标记为已处理
-      const sentenceInList = allSentences.find(s => s.id === session.currentSentence?.id);
-      const isAlreadyProcessed = sentenceInList?.status === 'processed' ||
-        sentenceInList?.status === 'skip' ||
-        sentenceInList?.status === 'flag';
+      // Step 1: Check cache for the NEW sentence
+      // 步骤1：检查新句子的缓存
+      const cachedSuggestions = suggestionsCache.get(currentSentenceId);
 
-      if (!isAlreadyProcessed) {
+      if (cachedSuggestions) {
+        // Step 2a: Found in cache - load from cache (this also updates store state)
+        // 步骤2a：缓存命中 - 从缓存加载（这也会更新store状态）
+        console.log('[Intervention] Loading suggestions from cache for:', currentSentenceId);
         loadSuggestions(session.currentSentence, colloquialismLevel);
+      } else {
+        // Step 2b: Not in cache - check if sentence is already processed
+        // 步骤2b：缓存未命中 - 检查句子是否已处理
+        const sentenceInList = allSentences.find(s => s.id === currentSentenceId);
+        const isAlreadyProcessed = sentenceInList?.status === 'processed' ||
+          sentenceInList?.status === 'skip' ||
+          sentenceInList?.status === 'flag';
+
+        if (!isAlreadyProcessed) {
+          // Not processed - call LLM to generate suggestions
+          // 未处理 - 调用LLM生成建议
+          console.log('[Intervention] No cache, calling LLM for:', currentSentenceId);
+          loadSuggestions(session.currentSentence, colloquialismLevel);
+        } else {
+          // Already processed and no cache - clear suggestions to show "已处理" state
+          // 已处理且无缓存 - 清除suggestions以显示"已处理"状态
+          console.log('[Intervention] Already processed, clearing suggestions for:', currentSentenceId);
+          useSessionStore.setState({ suggestions: null, isLoadingSuggestions: false });
+        }
       }
-      // If already processed, don't call LLM - the UI will show "已处理" state
-      // 如果已处理，不调用 LLM - UI 会显示"已处理"状态
     }
-  }, [session?.currentIndex, session?.currentSentence, colloquialismLevel, loadSuggestions, lastLoadedIndex, allSentences]);
+  }, [session?.currentIndex, session?.currentSentence, colloquialismLevel, loadSuggestions, lastLoadedIndex, allSentences, suggestionsCache]);
 
   // Handle apply suggestion
   // 处理应用建议

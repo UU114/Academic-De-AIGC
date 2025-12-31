@@ -195,12 +195,12 @@ class QualityGate:
                 message_zh="所有锁定术语已保留"
             )
 
-    def _check_risk(self, modified: str, target: int) -> QualityCheckResult:
+    def _check_risk(self, modified: str, target: int, tone_level: int = 4) -> QualityCheckResult:
         """
-        Check that risk score is reduced
-        检查风险分数是否降低
+        Check that risk score is reduced (CAASS v2.0)
+        检查风险分数是否降低（CAASS v2.0）
         """
-        analysis = self.risk_scorer.analyze(modified)
+        analysis = self.risk_scorer.analyze(modified, tone_level=tone_level)
         new_score = analysis.risk_score
 
         if new_score <= target:

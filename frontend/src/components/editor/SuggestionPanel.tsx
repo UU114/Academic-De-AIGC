@@ -72,11 +72,14 @@ export default function SuggestionPanel({
 
   // Subscribe to analysisCache directly from store for reactivity
   // 直接从store订阅analysisCache以获得响应性
-  const analysisCache = useSessionStore(state => state.analysisCache);
-
-  // Get cached analysis result - now reactive to cache updates
-  // 获取缓存的分析结果 - 现在对缓存更新具有响应性
-  const analysisResult = sentenceId ? analysisCache.get(sentenceId) || null : null;
+  // Use a selector that extracts the specific entry to ensure reactivity
+  // 使用提取特定条目的选择器以确保响应性
+  const analysisResult = useSessionStore(state => {
+    if (!sentenceId) return null;
+    const cached = state.analysisCache.get(sentenceId);
+    console.log('[SuggestionPanel] Reading cache for', sentenceId, ':', cached ? 'found' : 'not found');
+    return cached || null;
+  });
 
   // Use external state if provided, otherwise use defaults
   // 如果提供外部状态则使用，否则使用默认值
@@ -96,10 +99,15 @@ export default function SuggestionPanel({
 
   // Notify parent of expanded track changes
   // 通知父组件展开轨道变化
+  // IMPORTANT: When analysisResult is available, force loadingAnalysis to false
+  // 重要：当分析结果可用时，强制将加载状态设为false
   useEffect(() => {
+    // Only notify if there's actually a change to report
+    // 仅在有变化需要报告时通知
+    const effectiveLoadingAnalysis = analysisResult ? false : loadingAnalysis;
     onAnalysisStateChange?.({
       showAnalysis,
-      loadingAnalysis,
+      loadingAnalysis: effectiveLoadingAnalysis,
       hasResult: !!analysisResult,
       expandedTrack,
     });
@@ -280,8 +288,16 @@ export default function SuggestionPanel({
 
           {/* Analysis content */}
           {/* 分析内容 */}
+          {/* Priority: show result if available, then loading, then error */}
+          {/* 优先级：有结果就显示结果，然后是加载，最后是错误 */}
           <div className="p-4 max-h-[60vh] overflow-y-auto">
-            {loadingAnalysis ? (
+            {analysisResult ? (
+              <SentenceAnalysisPanel
+                analysis={analysisResult}
+                onClose={handleCloseAnalysis}
+                hideCloseButton
+              />
+            ) : loadingAnalysis ? (
               <div className="p-6 bg-gray-50 rounded-lg text-center">
                 <Loader2 className="w-6 h-6 animate-spin text-gray-400 mx-auto mb-2" />
                 <p className="text-sm text-gray-500">正在分析句子结构...</p>
@@ -298,12 +314,6 @@ export default function SuggestionPanel({
                   重试 / Retry
                 </button>
               </div>
-            ) : analysisResult ? (
-              <SentenceAnalysisPanel
-                analysis={analysisResult}
-                onClose={handleCloseAnalysis}
-                hideCloseButton
-              />
             ) : (
               <div className="p-4 bg-red-50 rounded-lg text-center">
                 <p className="text-sm text-red-600">分析失败，请重试</p>

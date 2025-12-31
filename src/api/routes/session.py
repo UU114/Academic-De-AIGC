@@ -1,6 +1,8 @@
 """
 Session management API routes
 会话管理API路由
+
+CAASS v2.0 Phase 2: Added whitelist storage and context support
 """
 
 from fastapi import APIRouter, HTTPException, Depends
@@ -19,9 +21,11 @@ from src.api.schemas import (
     SentenceAnalysis,
     RiskLevel
 )
+from src.core.preprocessor.whitelist_extractor import WhitelistExtractor
 from typing import List
 
 router = APIRouter()
+whitelist_extractor = WhitelistExtractor()
 
 
 @router.get("/list", response_model=List[SessionInfo])
@@ -85,6 +89,8 @@ async def start_session(
     """
     Start a new processing session
     启动新的处理会话
+
+    CAASS v2.0 Phase 2: Extracts and stores whitelist for the session
     """
     # Verify document exists and is ready
     # 验证文档存在且已就绪
@@ -101,6 +107,11 @@ async def start_session(
             status_code=400,
             detail=f"Document not ready for processing. Status: {doc.status}"
         )
+
+    # CAASS v2.0 Phase 2: Extract whitelist from document
+    # CAASS v2.0 第二阶段：从文档提取白名单
+    whitelist_result = whitelist_extractor.extract_from_document(doc.original_text)
+    whitelist_terms = list(whitelist_result.terms)  # Convert set to list for JSON storage
 
     # Get sentences for processing (only those marked as should_process=True)
     # 获取要处理的句子（仅标记为should_process=True的）
@@ -120,8 +131,8 @@ async def start_session(
         if s.risk_level in process_levels
     ]
 
-    # Create session
-    # 创建会话
+    # Create session with whitelist in config
+    # 创建带白名单的会话配置
     session = Session(
         document_id=request.document_id,
         mode=request.mode.value,
@@ -129,7 +140,9 @@ async def start_session(
         target_lang=request.target_lang,
         config_json={
             "process_levels": process_levels,
-            "sentence_ids": [s.id for s in filtered_sentences]
+            "sentence_ids": [s.id for s in filtered_sentences],
+            "whitelist": whitelist_terms,  # CAASS v2.0 Phase 2: Store whitelist
+            "tone_level": request.colloquialism_level  # Map colloquialism to tone
         },
         status="active",
         current_index=0
@@ -471,6 +484,100 @@ async def get_progress(
         "current_index": state.current_index,
         "progress_percent": state.progress_percent,
         "status": "completed" if state.progress_percent >= 100 else "in_progress"
+    }
+
+
+@router.get("/{session_id}/review-stats")
+async def get_review_stats(
+    session_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get review statistics for completed session
+    获取已完成会话的审核统计数据
+    """
+    # Get all modifications for this session
+    # 获取此会话的所有修改记录
+    result = await db.execute(
+        select(Modification).where(Modification.session_id == session_id)
+    )
+    modifications = result.scalars().all()
+
+    # Get sentences to calculate original risk
+    # 获取句子以计算原始风险
+    result = await db.execute(
+        select(Sentence).join(Session, Session.document_id == Sentence.document_id)
+        .where(Session.id == session_id)
+        .where(Sentence.should_process == True)
+    )
+    sentences = result.scalars().all()
+
+    # Calculate statistics
+    # 计算统计数据
+    total_sentences = len(sentences)
+    modified_count = len(modifications)
+
+    # Source distribution
+    # 来源分布
+    source_counts = {"llm": 0, "rule": 0, "custom": 0}
+    total_risk_reduction = 0
+
+    for mod in modifications:
+        source_counts[mod.source] = source_counts.get(mod.source, 0) + 1
+        # Get original sentence risk
+        # 获取原始句子风险分数
+        sentence = next((s for s in sentences if s.id == mod.sentence_id), None)
+        if sentence and mod.new_risk_score is not None:
+            original_risk = sentence.risk_score or 0
+            new_risk = mod.new_risk_score
+            total_risk_reduction += (original_risk - new_risk)
+
+    # Calculate averages
+    # 计算平均值
+    avg_risk_reduction = total_risk_reduction / modified_count if modified_count > 0 else 0
+
+    # Calculate source percentages
+    # 计算来源百分比
+    source_percent = {}
+    for source, count in source_counts.items():
+        source_percent[source] = round(count / modified_count * 100) if modified_count > 0 else 0
+
+    return {
+        "total_sentences": total_sentences,
+        "modified_count": modified_count,
+        "avg_risk_reduction": round(avg_risk_reduction, 1),
+        "source_distribution": source_percent
+    }
+
+
+@router.get("/{session_id}/config")
+async def get_session_config(
+    session_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get session configuration including whitelist
+    获取会话配置，包括白名单
+
+    CAASS v2.0 Phase 2: Returns whitelist and tone_level for suggestion scoring
+    """
+    result = await db.execute(
+        select(Session).where(Session.id == session_id)
+    )
+    session = result.scalar_one_or_none()
+
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    config = session.config_json or {}
+
+    return {
+        "session_id": session_id,
+        "whitelist": config.get("whitelist", []),
+        "tone_level": config.get("tone_level", session.colloquialism_level),
+        "process_levels": config.get("process_levels", []),
+        "colloquialism_level": session.colloquialism_level,
+        "target_lang": session.target_lang
     }
 
 

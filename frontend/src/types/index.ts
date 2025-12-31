@@ -72,6 +72,10 @@ export interface SentenceAnalysis {
   status?: SentenceStatus;  // Status in session context
   newRiskScore?: number;  // Risk score after modification
   newRiskLevel?: RiskLevel;  // Risk level after modification
+  // CAASS v2.0 Phase 2: Context baseline from paragraph
+  // CAASS v2.0 第二阶段：来自段落的上下文基准分
+  contextBaseline?: number;
+  paragraphIndex?: number;
 }
 
 // Change detail

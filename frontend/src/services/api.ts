@@ -185,6 +185,8 @@ export const suggestApi = {
   /**
    * Get suggestions for a sentence
    * 获取句子的建议
+   *
+   * CAASS v2.0 Phase 2: Added whitelist and contextBaseline support
    */
   getSuggestions: async (
     sentence: string,
@@ -193,6 +195,8 @@ export const suggestApi = {
       lockedTerms?: string[];
       colloquialismLevel?: number;
       targetLang?: string;
+      whitelist?: string[];        // CAASS v2.0 Phase 2: Domain-specific terms to exempt
+      contextBaseline?: number;    // CAASS v2.0 Phase 2: Paragraph context baseline
     }
   ): Promise<SuggestResponse> => {
     const response = await api.post('/suggest', {
@@ -201,6 +205,8 @@ export const suggestApi = {
       locked_terms: options.lockedTerms || [],
       colloquialism_level: options.colloquialismLevel ?? 4,
       target_lang: options.targetLang || 'zh',
+      whitelist: options.whitelist || [],
+      context_baseline: options.contextBaseline ?? 0,
     });
     return transformKeys<SuggestResponse>(response.data);
   },
@@ -335,6 +341,38 @@ export const sessionApi = {
     status: string;
   }> => {
     const response = await api.get(`/session/${sessionId}/progress`);
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Get session configuration including whitelist
+   * 获取会话配置，包括白名单
+   *
+   * CAASS v2.0 Phase 2: Returns whitelist and tone_level for scoring
+   */
+  getConfig: async (sessionId: string): Promise<{
+    sessionId: string;
+    whitelist: string[];
+    toneLevel: number;
+    processLevels: string[];
+    colloquialismLevel: number;
+    targetLang: string;
+  }> => {
+    const response = await api.get(`/session/${sessionId}/config`);
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Get review statistics for completed session
+   * 获取已完成会话的审核统计数据
+   */
+  getReviewStats: async (sessionId: string): Promise<{
+    totalSentences: number;
+    modifiedCount: number;
+    avgRiskReduction: number;
+    sourceDistribution: { llm: number; rule: number; custom: number };
+  }> => {
+    const response = await api.get(`/session/${sessionId}/review-stats`);
     return transformKeys(response.data);
   },
 

@@ -1,6 +1,8 @@
 """
 Document management API routes
 文档管理API路由
+
+CAASS v2.0 Phase 2: Added paragraph context baseline and whitelist extraction
 """
 
 import uuid
@@ -8,17 +10,19 @@ from datetime import datetime
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from typing import List
+from typing import List, Dict, Optional
 
 from src.db.database import get_db
 from src.db.models import Document, Sentence as SentenceModel
 from src.api.schemas import DocumentInfo
 from src.core.preprocessor.segmenter import SentenceSegmenter
-from src.core.analyzer.scorer import RiskScorer
+from src.core.analyzer.scorer import RiskScorer, ParagraphContext, calculate_context_baseline
+from src.core.preprocessor.whitelist_extractor import WhitelistExtractor
 
 router = APIRouter()
 segmenter = SentenceSegmenter()
 scorer = RiskScorer()
+whitelist_extractor = WhitelistExtractor()
 
 
 @router.get("/", response_model=List[DocumentInfo])
@@ -69,6 +73,8 @@ async def upload_document(
     """
     Upload a document for processing
     上传文档进行处理
+
+    CAASS v2.0 Phase 2: Uses paragraph context baseline and whitelist extraction
     """
     # Read file content
     # 读取文件内容
@@ -84,6 +90,11 @@ async def upload_document(
     doc_id = str(uuid.uuid4())
     now = datetime.utcnow()
 
+    # CAASS v2.0 Phase 2: Extract whitelist from document
+    # CAASS v2.0 第二阶段：从文档提取白名单
+    whitelist_result = whitelist_extractor.extract_from_document(text)
+    whitelist_terms = whitelist_result.terms
+
     # Create document record with status "analyzing"
     # 创建文档记录，状态为"analyzing"
     doc = Document(
@@ -95,9 +106,13 @@ async def upload_document(
     db.add(doc)
     await db.commit()
 
-    # Segment text into sentences
-    # 将文本分割为句子
-    sentences = segmenter.segment(text)
+    # CAASS v2.0 Phase 2: Segment text with paragraph info
+    # CAASS v2.0 第二阶段：带段落信息分割文本
+    sentences = segmenter.segment_with_paragraphs(text)
+
+    # Build paragraph contexts for context baseline calculation
+    # 构建段落上下文用于计算上下文基准
+    paragraph_contexts = _build_paragraph_contexts(sentences)
 
     # Analyze each sentence and create records
     # 分析每个句子并创建记录
@@ -115,9 +130,18 @@ async def upload_document(
         # Only analyze sentences that should be processed
         # 只分析应该处理的句子
         if sent.should_process:
-            # Analyze sentence risk
-            # 分析句子风险
-            analysis = scorer.analyze(sent.text)
+            # Get paragraph context for this sentence
+            # 获取该句子的段落上下文
+            para_ctx = paragraph_contexts.get(sent.paragraph_index)
+
+            # Analyze sentence risk (CAASS v2.0 Phase 2)
+            # 分析句子风险（CAASS v2.0 第二阶段）
+            analysis = scorer.analyze(
+                sent.text,
+                tone_level=4,
+                whitelist=whitelist_terms,
+                paragraph_context=para_ctx
+            )
             processable_count += 1
 
             # Create sentence record with analysis
@@ -136,7 +160,9 @@ async def upload_document(
                     "ppl_risk": analysis.ppl_risk,
                     "fingerprint_density": analysis.fingerprint_density,
                     "turnitin_score": analysis.turnitin_score,
-                    "gptzero_score": analysis.gptzero_score
+                    "gptzero_score": analysis.gptzero_score,
+                    "paragraph_index": sent.paragraph_index,
+                    "context_baseline": para_ctx.baseline if para_ctx else 0
                 }
             )
 
@@ -162,14 +188,15 @@ async def upload_document(
                 risk_level="safe",
                 analysis_json={
                     "filtered": True,
-                    "reason": f"Content type: {sent.content_type}"
+                    "reason": f"Content type: {sent.content_type}",
+                    "paragraph_index": sent.paragraph_index
                 }
             )
 
         db.add(sentence_record)
 
-    # Update document status to "ready"
-    # 更新文档状态为"ready"
+    # Update document status to "ready" and store whitelist
+    # 更新文档状态为"ready"并存储白名单
     result = await db.execute(
         select(Document).where(Document.id == doc_id)
     )
@@ -187,6 +214,34 @@ async def upload_document(
         low_risk_count=low_count,
         created_at=now
     )
+
+
+def _build_paragraph_contexts(sentences) -> Dict[int, ParagraphContext]:
+    """
+    Build paragraph contexts from sentences
+    从句子构建段落上下文
+
+    Groups sentences by paragraph_index and creates ParagraphContext for each.
+    按 paragraph_index 分组句子并为每个创建 ParagraphContext。
+    """
+    # Group sentences by paragraph
+    # 按段落分组句子
+    paragraphs: Dict[int, List[str]] = {}
+    for sent in sentences:
+        para_idx = sent.paragraph_index or 0
+        if para_idx not in paragraphs:
+            paragraphs[para_idx] = []
+        if sent.should_process:
+            paragraphs[para_idx].append(sent.text)
+
+    # Build context for each paragraph
+    # 为每个段落构建上下文
+    contexts = {}
+    for para_idx, sent_texts in paragraphs.items():
+        if sent_texts:
+            contexts[para_idx] = ParagraphContext.from_sentences(sent_texts)
+
+    return contexts
 
 
 @router.get("/{document_id}", response_model=DocumentInfo)
@@ -260,8 +315,15 @@ async def upload_text(
     """
     Upload text directly (alternative to file upload)
     直接上传文本（文件上传的替代方案）
+
+    CAASS v2.0 Phase 2: Uses paragraph context baseline and whitelist extraction
     """
     doc_id = str(uuid.uuid4())
+
+    # CAASS v2.0 Phase 2: Extract whitelist from text
+    # CAASS v2.0 第二阶段：从文本提取白名单
+    whitelist_result = whitelist_extractor.extract_from_document(text)
+    whitelist_terms = whitelist_result.terms
 
     # Create document with status "analyzing"
     # 创建文档，状态为"analyzing"
@@ -274,9 +336,14 @@ async def upload_text(
     db.add(doc)
     await db.commit()
 
-    # Segment and analyze text
-    # 分割并分析文本
-    sentences = segmenter.segment(text)
+    # CAASS v2.0 Phase 2: Segment text with paragraph info
+    # CAASS v2.0 第二阶段：带段落信息分割文本
+    sentences = segmenter.segment_with_paragraphs(text)
+
+    # Build paragraph contexts for context baseline calculation
+    # 构建段落上下文用于计算上下文基准
+    paragraph_contexts = _build_paragraph_contexts(sentences)
+
     high_count = 0
     medium_count = 0
     low_count = 0
@@ -285,7 +352,18 @@ async def upload_text(
         sentence_id = str(uuid.uuid4())
 
         if sent.should_process:
-            analysis = scorer.analyze(sent.text)
+            # Get paragraph context for this sentence
+            # 获取该句子的段落上下文
+            para_ctx = paragraph_contexts.get(sent.paragraph_index)
+
+            # CAASS v2.0 Phase 2: Use paragraph context and whitelist
+            # CAASS v2.0 第二阶段：使用段落上下文和白名单
+            analysis = scorer.analyze(
+                sent.text,
+                tone_level=4,
+                whitelist=whitelist_terms,
+                paragraph_context=para_ctx
+            )
             sentence_record = SentenceModel(
                 id=sentence_id,
                 document_id=doc_id,
@@ -298,7 +376,9 @@ async def upload_text(
                 analysis_json={
                     "ppl": analysis.ppl,
                     "ppl_risk": analysis.ppl_risk,
-                    "fingerprint_density": analysis.fingerprint_density
+                    "fingerprint_density": analysis.fingerprint_density,
+                    "paragraph_index": sent.paragraph_index,
+                    "context_baseline": para_ctx.baseline if para_ctx else 0
                 }
             )
 
@@ -318,7 +398,11 @@ async def upload_text(
                 should_process=False,
                 risk_score=0,
                 risk_level="safe",
-                analysis_json={"filtered": True, "reason": f"Content type: {sent.content_type}"}
+                analysis_json={
+                    "filtered": True,
+                    "reason": f"Content type: {sent.content_type}",
+                    "paragraph_index": sent.paragraph_index
+                }
             )
 
         db.add(sentence_record)

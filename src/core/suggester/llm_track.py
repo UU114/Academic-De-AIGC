@@ -249,12 +249,18 @@ Replace with SPECIFIC descriptions of what actually happens
         try:
             # Try to use configured LLM provider
             # 尝试使用配置的LLM提供商
-            if settings.llm_provider == "deepseek" and settings.deepseek_api_key:
+            if settings.llm_provider == "gemini" and settings.gemini_api_key:
+                response = await self._call_gemini(prompt)
+            elif settings.llm_provider == "deepseek" and settings.deepseek_api_key:
                 response = await self._call_deepseek(prompt)
             elif settings.llm_provider == "anthropic" and settings.anthropic_api_key:
                 response = await self._call_anthropic(prompt)
             elif settings.llm_provider == "openai" and settings.openai_api_key:
                 response = await self._call_openai(prompt)
+            elif settings.gemini_api_key:
+                # Fallback to Gemini if available (default)
+                # 如果可用则回退到Gemini（默认）
+                response = await self._call_gemini(prompt)
             elif settings.deepseek_api_key:
                 # Fallback to DeepSeek if available
                 # 如果可用则回退到DeepSeek
@@ -355,6 +361,38 @@ Replace with SPECIFIC descriptions of what actually happens
             raise
         except Exception as e:
             logger.error(f"DeepSeek API error: {e}")
+            raise
+
+    async def _call_gemini(self, prompt: str) -> str:
+        """
+        Call Google Gemini API using google-genai library
+        使用google-genai库调用Google Gemini API
+        """
+        try:
+            from google import genai
+
+            # Create client (will use GEMINI_API_KEY env var by default)
+            # 创建客户端（默认使用GEMINI_API_KEY环境变量）
+            client = genai.Client(api_key=settings.gemini_api_key)
+
+            # Use async API for non-blocking call
+            # 使用异步API进行非阻塞调用
+            response = await client.aio.models.generate_content(
+                model=settings.llm_model,
+                contents=prompt,
+                config={
+                    "max_output_tokens": settings.llm_max_tokens,
+                    "temperature": settings.llm_temperature
+                }
+            )
+
+            return response.text
+
+        except ImportError:
+            logger.error("google-genai package not installed (pip install google-genai)")
+            raise
+        except Exception as e:
+            logger.error(f"Gemini API error: {e}")
             raise
 
     def _parse_response(self, response: str, original: str) -> Optional[LLMSuggestionResult]:

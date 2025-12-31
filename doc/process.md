@@ -1,7 +1,7 @@
 # AcademicGuard 开发进度
 # AcademicGuard Development Progress
 
-> 最后更新 Last Updated: 2025-12-30
+> 最后更新 Last Updated: 2025-12-31
 
 ---
 
@@ -157,6 +157,377 @@
 ---
 
 ## 变更日志 | Change Log
+
+### 2025-12-31 (Update 23)
+
+**新增 Gemini API 支持 Add Gemini API Support:**
+- 用户需求：增加调用 Gemini 的功能，将默认模型换成 Gemini 的最新 Flash 模型
+- 环境变量：`GEMINI_API_KEY`
+- 修改内容：
+  - `src/config.py:43-45`
+    - 新增 `gemini_api_key` 配置项
+    - 将 `llm_provider` 默认值改为 `"gemini"`
+    - 将 `llm_model` 默认值改为 `"gemini-2.5-flash"`
+  - `src/core/suggester/llm_track.py:252-263`
+    - 在 `generate_suggestion` 方法中添加 Gemini provider 支持
+    - Gemini 作为首选 provider，DeepSeek 作为 fallback
+  - `src/core/suggester/llm_track.py:360-390`
+    - 新增 `_call_gemini` 异步方法
+    - 使用 `google-genai` 库的异步 API (`client.aio.models.generate_content`)
+  - `src/api/routes/suggest.py:498-511`
+    - 在 `analyze_sentence` 端点添加 Gemini API 调用
+  - `src/api/routes/suggest.py:766-779`
+    - 在 `_translate_sentence` 函数添加 Gemini API 调用
+  - `requirements.txt:29`
+    - 新增 `google-genai>=1.0.0` 依赖
+
+**效果**:
+- 默认使用 Gemini 2.5 Flash 模型（最新版本，速度快、成本低）
+- 保持对 DeepSeek、Anthropic、OpenAI 的兼容支持
+- 支持通过 `llm_provider` 环境变量切换 LLM 提供商
+
+---
+
+### 2025-12-31 (Update 22)
+
+**新增项目总结文档 Add Project Summary Document:**
+- 用户需求：总结项目结构和运行逻辑
+- 新增文件：`doc/project-summary.md`
+- 内容包括：
+  - 项目概述和核心理念
+  - 完整技术栈（后端Python + 前端TypeScript/React）
+  - 项目目录结构
+  - 四大核心功能模块详解（预处理、分析、建议、验证）
+  - 双模式架构（干预模式 + YOLO模式）
+  - API接口设计
+  - 数据流与运行逻辑图
+  - 数据库设计
+  - 项目创新点
+  - 与竞品对比
+  - 启动与运行说明
+  - 开发进度现状
+- 文档格式：中英双语
+
+---
+
+### 2025-12-31 (Update 21)
+
+**多项UX优化 Multiple UX Improvements:**
+
+1. **修复句子列表滚动位置重置 Fix Sidebar Scroll Position Reset:**
+   - 问题：点击选择方案后，左侧句子列表会刷新到最顶端
+   - 修复：`frontend/src/pages/Intervention.tsx:74-76, 210-230`
+     - 新增 `sidebarScrollRef` 保存滚动容器引用
+     - 在 `loadAllSentences` 中保存滚动位置
+     - 使用 `requestAnimationFrame` 在状态更新后恢复滚动位置
+
+2. **默认展开轨道A Default Expand Track A:**
+   - 问题：切换句子后保持上一个句子的轨道展开状态
+   - 修复：`frontend/src/components/editor/SuggestionPanel.tsx:65-69`
+     - 监听 `sentenceId` 变化，重置 `expandedTrack` 为 'llm'
+
+3. **统一句子序号显示 Unified Sentence Index Display:**
+   - 问题：句子列表显示 #12，当前句子页面显示 #33（数据库索引）
+   - 修复：
+     - `frontend/src/components/editor/SentenceCard.tsx:14, 27-31, 85`
+       - 新增 `displayIndex` 属性覆盖显示序号
+       - 使用 `indexToShow` 变量统一处理
+     - `frontend/src/pages/Intervention.tsx:618`
+       - 传递 `displayIndex={(session?.currentIndex ?? 0) + 1}`
+
+4. **进度条显示已完成/总共比例 Progress Bar Shows Completed/Total Ratio:**
+   - 问题：进度条显示当前选中位置而非已完成比例
+   - 修复：`frontend/src/pages/Intervention.tsx:572-582`
+     - 改用 `completedCount / totalSentences * 100` 计算进度
+
+5. **已处理句子不重新调用LLM Processed Sentences Don't Reload LLM:**
+   - 问题：重新登录后，选择已处理句子仍会调用LLM生成建议
+   - 修复：
+     - `frontend/src/pages/Intervention.tsx:292-299`
+       - 新增 `isCurrentSentenceProcessed` 检查当前句子状态
+     - `frontend/src/pages/Intervention.tsx:266-277`
+       - 在加载建议前检查句子是否已处理
+       - 已处理则跳过LLM调用，直接显示已处理状态
+     - `frontend/src/components/editor/SuggestionPanel.tsx:25, 54, 119-158`
+       - 新增 `sentenceProcessedType` 属性
+       - 根据处理类型显示不同图标和消息（处理✓/跳过⏭/标记🚩）
+
+**效果**:
+- 选择方案后侧边栏保持滚动位置
+- 切换句子时自动展开轨道A
+- 当前句子序号与侧边栏一致
+- 进度条准确反映已完成比例
+- 已处理句子直接显示状态，不浪费LLM调用
+
+---
+
+### 2025-12-31 (Update 20)
+
+**修复快速切换句子导致建议面板跳动 Fix Suggestions Panel Jumping on Fast Sentence Switching:**
+- 用户需求：快速切换句子时，修改建议页面会来回跳动，显示之前点击句子的修改意见
+- 问题分析：
+  - 这是典型的竞态条件 (race condition) 问题
+  - 用户快速切换句子时，多个 API 请求同时发出
+  - 由于网络延迟不确定，先发出的请求可能比后发出的请求更晚返回
+  - 导致显示旧请求的结果，而不是当前选中句子的建议
+- 修复内容：
+  - `frontend/src/stores/sessionStore.ts:29-31`
+    - 新增 `suggestionRequestCounter` 模块级计数器
+  - `frontend/src/stores/sessionStore.ts:50`
+    - 新增 `currentSuggestionRequestId` 状态追踪当前请求ID
+  - `frontend/src/stores/sessionStore.ts:130-188`
+    - `loadSuggestions` 函数使用请求ID验证机制：
+    - 发起请求前生成新的 requestId 并存入状态
+    - 请求返回后检查 requestId 是否仍是最新
+    - 如果不是最新则丢弃结果，避免覆盖当前句子的建议
+  - `frontend/src/pages/Intervention.tsx:1`
+    - 导入 `useRef` hook
+  - `frontend/src/pages/Intervention.tsx:70-72`
+    - 新增 `analysisRequestIdRef` 用于追踪分析请求ID
+  - `frontend/src/pages/Intervention.tsx:100-187`
+    - `handleAnalysisToggle` 函数增加竞态条件保护：
+    - 使用 ref 追踪分析请求ID
+    - 请求返回后验证是否为最新请求
+    - 过期请求的结果和错误都会被丢弃
+
+**效果**:
+- 快速切换句子时，只有最后点击句子的建议会被显示
+- 过期的请求结果会被静默丢弃，控制台会输出日志便于调试
+- 建议面板不再来回跳动，用户体验显著提升
+
+---
+
+### 2025-12-31 (Update 19)
+
+**新增算法逻辑总结文档 Add Algorithm Summary Document:**
+- 用户需求：总结AI评分逻辑和降低AIGC的逻辑
+- 新增文件：`doc/algorithm-summary.md`
+- 内容包括：
+  - 四维度评分系统详解（PPL、指纹词、突发性、结构模式）
+  - 分级指纹词系统（一级+40分/个，二级+15分/个）
+  - 人类特征减分机制
+  - 双轨道降AIGC策略（LLM改写 + 规则替换）
+  - 双检测器视角（Turnitin/GPTZero）
+  - 验证机制和质量门控
+
+---
+
+### 2025-12-30 (Update 18)
+
+**修复轨道C检测风险500错误 Fix Track C Validate Risk 500 Error:**
+- 问题：点击"检测风险"按钮时返回 500 Internal Server Error
+- 原因：`src/api/routes/suggest.py:237` 使用 `sentence.text` 但模型属性是 `original_text`
+- 修复内容：
+  - `src/api/routes/suggest.py:237`
+    - `sentence.text` → `sentence.original_text`
+
+---
+
+### 2025-12-30 (Update 17)
+
+**修复轨道C分析卡在加载状态 Fix Track C Analysis Stuck in Loading:**
+- 问题：点击"分析"按钮后，分析结果返回成功但UI一直显示加载中
+- 原因：`SuggestionPanel` 组件使用 `getAnalysisForSentence()` 获取缓存，但不是响应式的
+  - 当缓存更新时，组件没有重新渲染
+  - `loadingAnalysis` 变为 `false`，但 `analysisResult` 仍为 `null`
+- 修复内容：
+  - `frontend/src/components/editor/SuggestionPanel.tsx:65-71`
+    - 使用 `useSessionStore(state => state.analysisCache)` 直接订阅缓存
+    - 使 `analysisResult` 对缓存更新具有响应性
+
+---
+
+### 2025-12-30 (Update 16)
+
+**修复DOM嵌套警告 Fix DOM Nesting Warning:**
+- 问题：`<button> cannot appear as a descendant of <button>` 警告
+- 原因：`InfoTooltip` 组件使用 `<button>` 被嵌套在 `SuggestionTrack` 的 `<button>` 内
+- 修复内容：
+  - `frontend/src/components/common/InfoTooltip.tsx:74-95`
+    - 将内部 `<button>` 改为 `<span role="button">`
+    - 添加 `tabIndex={0}` 保持键盘可访问性
+    - 添加 `onKeyDown` 处理 Enter/Space 键
+    - 添加 `e.stopPropagation()` 防止触发父按钮
+
+---
+
+### 2025-12-30 (Update 15)
+
+**修复风险变化显示问题 Fix Risk Change Display Issues:**
+
+1. **修复已有数据缺少new_risk_score的问题 Fix Missing new_risk_score for Existing Data:**
+   - 问题：之前创建的修改记录没有`new_risk_score`，导致UI无法显示风险变化
+   - 解决：编写脚本重新计算并更新8条已有修改记录的`new_risk_score`
+   - 更新后的分数：4, 12, 12, 39, 27, 22, 12, 29
+
+2. **修复RiskLevel枚举大小写错误 Fix RiskLevel Enum Case Error:**
+   - 问题：`/session/{id}/sentences` API 返回 500 Internal Server Error
+   - 原因：`src/api/routes/session.py:412-419` 使用 `RiskLevel.safe` 而非 `RiskLevel.SAFE`
+   - Python枚举成员名称为大写（SAFE, LOW, MEDIUM, HIGH），值为小写字符串
+   - 修复内容：
+     - `src/api/routes/session.py:412-419`
+       - `RiskLevel.safe` → `RiskLevel.SAFE`
+       - `RiskLevel.low` → `RiskLevel.LOW`
+       - `RiskLevel.medium` → `RiskLevel.MEDIUM`
+       - `RiskLevel.high` → `RiskLevel.HIGH`
+
+**效果**:
+- `/session/{id}/sentences` API 正常返回数据
+- 已处理句子包含 `new_risk_score` 和 `new_risk_level`
+- 前端侧边栏可正确显示风险变化箭头（如 "56 高风险 → 4 安全"）
+
+---
+
+### 2025-12-30 (Update 14)
+
+**UI与数据显示优化 UI and Data Display Improvements:**
+
+1. **PPL提示信息修正 Fix PPL Tooltip:**
+   - 用户需求：PPL所有句子显示100.0
+   - 分析：PPL计算逻辑正确，但tooltip描述有误
+   - 修改内容：
+     - `frontend/src/components/editor/SentenceCard.tsx:188-192`
+     - 更正tooltip：PPL越低表示文本越可预测，AI特征越明显
+     - 阈值说明：<25高风险，25-45中风险，>45低风险
+
+2. **指纹词指标改用数量+emoji显示 Fingerprint Count with Emoji:**
+   - 用户需求：不要用密度，用数量和emoji表示（0=😊,1=😐,2=😰,3+=😡）
+   - 修改内容：
+     - `frontend/src/components/editor/SentenceCard.tsx:199-230`
+     - 新增 `FingerprintIndicator` 组件
+     - 根据数量显示不同emoji和颜色：
+       - 0个：😊 绿色 - 未检测到AI指纹词
+       - 1个：😐 黄色 - 建议替换
+       - 2个：😰 橙色 - 需要修改
+       - 3+个：😡 红色 - 强烈建议改写
+     - 移除旧的密度显示
+
+3. **句子列表风险变化显示 Risk Change Display in Sentence List:**
+   - 用户需求：已修改句子应显示"原风险指数 → 新风险指数"
+   - 问题分析：
+     - 前端UI代码已存在 (`Intervention.tsx:429-442`)
+     - 后端 `/apply` 接口没有计算和存储 `new_risk_score`
+   - 修改内容：
+     - `src/api/routes/suggest.py:165-201`
+       - 在 `/apply` 端点添加 `RiskScorer` 计算新风险分数
+       - 保存到 `Modification.new_risk_score` 字段
+       - 返回 `new_risk_score` 到前端
+     - `src/api/routes/session.py:408-419`
+       - `/sentences` 端点已包含 `new_risk_score` 和 `new_risk_level` 返回逻辑
+
+**效果**:
+- PPL提示信息准确描述低值=高风险
+- 指纹词显示直观的数量+emoji，用户一目了然
+- 应用修改后，侧边栏显示 `原风险分数 → 新风险分数` 变化
+
+---
+
+### 2025-12-30 (Update 13)
+
+**自定义输入语义相似度0%修复 Fix Custom Input Semantic Similarity 0%:**
+- 用户需求：用户改写后点击"检测风险"，语义相似度显示0%，明显不正确
+- 问题分析：
+  - `src/api/routes/suggest.py:213` 代码中 `original=""` 被硬编码为空字符串
+  - 注释写着 "Will be fetched from DB" 但从未实现
+  - 用户改写与空字符串比较，语义相似度始终为0%
+- 修复内容：
+  - `src/api/routes/suggest.py:193-239`
+    - 从数据库获取原始句子：`select(Sentence).where(Sentence.id == request.sentence_id)`
+    - 提取原文：`original_text = sentence.text`
+    - 提取锁定术语：`locked_terms = sentence.locked_terms_json or []`
+    - 正确调用质量门控验证
+
+**效果**: 语义相似度验证现在正确比较用户改写与原句，能正确判断语义保持程度
+
+---
+
+### 2025-12-30 (Update 12)
+
+**句子分析长时间无响应修复 Fix Sentence Analysis No Response:**
+- 用户需求：点击"分析"按钮后长时间无反应，需调查原因
+- 问题分析：
+  1. API本身正常，响应时间约5-10秒
+  2. 前端 `analysisState.expandedTrack` 没有在点击分析时同步为 'custom'，导致布局状态不一致
+  3. 错误处理没有给用户显示反馈
+- 修复内容：
+  - `frontend/src/pages/Intervention.tsx:72-84`
+    - `analysisState` 新增 `error?: string` 字段追踪错误状态
+  - `frontend/src/pages/Intervention.tsx:98-150`
+    - `handleAnalysisToggle` 增强：
+    - 验证 `sentenceId` 和 `originalText` 存在，否则显示错误
+    - 设置 `expandedTrack: 'custom'` 确保布局正确更新
+    - 添加console.log调试信息
+    - 捕获错误并显示到 `analysisState.error`
+  - `frontend/src/components/editor/SuggestionPanel.tsx:12-18`
+    - `AnalysisState` 接口新增 `error?: string` 字段
+  - `frontend/src/components/editor/SuggestionPanel.tsx:256-291`
+    - 加载状态新增提示：首次分析可能需要10-30秒
+    - 错误状态显示具体错误消息和重试按钮
+    - 失败状态也显示重试按钮
+
+**效果**:
+- 用户点击分析后能立即看到加载状态
+- 分析失败时显示具体错误消息，可一键重试
+- 状态同步问题修复，布局能正确切换
+
+---
+
+### 2025-12-30 (Update 11)
+
+**轨道C自定义输入布局优化 Track C Custom Input Layout:**
+- 用户需求：轨道C点击"分析"按钮后，输入框应显示在左侧"当前句子"下方，右侧只显示分析面板，便于左上看原文、左下输入修改、右边看分析
+- 修改内容：
+  - 新增 `frontend/src/components/editor/CustomInputSection.tsx`
+    - 独立的自定义输入组件，包含写作提示、输入框、验证结果和操作按钮
+    - 支持分析状态的切换回调
+  - `frontend/src/components/editor/SuggestionPanel.tsx`
+    - 轨道C展开时：
+      - 分析未显示：在右侧显示CustomInputSection（正常位置）
+      - 分析已显示：只显示分析面板，输入框移到左侧
+    - 分析状态由父组件管理，通过 `analysisState` props传入
+    - 新增 `handleCloseAnalysis` 处理关闭分析
+  - `frontend/src/pages/Intervention.tsx:70-131`
+    - 新增 `analysisState` 状态管理分析面板显示
+    - 新增 `handleAnalysisToggle` 处理分析加载和切换
+    - 条件：`expandedTrack === 'custom' && showAnalysis` 时，左侧显示CustomInputSection
+  - `frontend/src/components/editor/SentenceAnalysisPanel.tsx:15-18,44-63`
+    - 新增 `hideCloseButton` 属性，内嵌时隐藏标题栏
+
+**效果**:
+- 轨道C展开时：输入框在右侧（正常位置）
+- 点击"分析"后：输入框移到左侧，右侧显示分析面板
+- 左上原句、左下输入、右边分析，三区并列对照，改写体验大幅提升
+
+---
+
+### 2025-12-30 (Update 10)
+
+**当前句子区域固定布局 Fixed Current Sentence Area:**
+- 用户需求：红框里的"当前句子"部分不应随右边修改建议的滚动而滚动，当句子较长时可更好对照原句与修改意见
+- 修改内容：
+  - `frontend/src/pages/Intervention.tsx:458-527`
+    - 将主内容区域从 `overflow-y-auto` 改为 `overflow-hidden`（禁止整体滚动）
+    - 将两列布局从 `grid lg:grid-cols-2` 改为 `flex flex-col lg:flex-row`
+    - 左侧"当前句子"区域使用 `lg:w-1/2 flex-shrink-0` 固定宽度且不收缩
+    - 右侧"修改建议"区域使用 `lg:w-1/2 flex flex-col min-h-0`
+    - 右侧内部新增 `overflow-y-auto` 容器，使建议列表独立滚动
+    - 添加 `pr-2` 为滚动条预留空间
+
+**InfoTooltip组件改用Portal InfoTooltip Using React Portal:**
+- 用户需求：PPL信息提示框左边显示不全，被overflow:hidden裁剪
+- 修改内容：
+  - `frontend/src/components/common/InfoTooltip.tsx`
+    - 使用 React Portal (`createPortal`) 将tooltip渲染到 `document.body`
+    - 彻底解决被父容器 `overflow:hidden` 裁剪的问题
+    - 使用 `z-index: 9999` 确保始终在最顶层
+
+**效果**:
+- 左侧当前句子固定显示，不随右侧内容滚动
+- 右侧修改建议区域独立滚动
+- 长句子对照修改建议时体验更佳
+- 信息提示框不再被裁剪，始终完整显示
+
+---
 
 ### 2025-12-30 (Update 9)
 
@@ -490,6 +861,34 @@ Casual Human: Score=0 (safe) ✓
 **修复 Fixed:**
 - TypeScript类型错误：移除未使用的`DetailedSentenceAnalysis`导入
 - TypeScript类型错误：`NodeJS.Timeout`改为`ReturnType<typeof setTimeout>`
+
+---
+
+### 2025-12-30 - 计数器与完成按钮优化 | Counter and Complete Button Improvements
+
+**新增 Added:**
+- 进度计数器优化 (`frontend/src/pages/Intervention.tsx:146-149, 378-382`)
+  - 计数器显示"已完成 X 句"而非"第 X 句"
+  - 已完成数 = 已处理(processed) + 已跳过(skipped)
+  - 更准确反映实际处理进度
+- 完成按钮始终可用 (`frontend/src/pages/Intervention.tsx:516-522`)
+  - 移除 `disabled` 条件，按钮始终可点击
+  - 用户可随时选择结束处理
+- 中断确认对话框 (`frontend/src/pages/Intervention.tsx:527-558`)
+  - 当未完成所有句子时点击"完成处理"，弹出确认对话框
+  - 显示剩余未处理句子数量
+  - 提供"继续处理"和"确认中断"两个选项
+  - 确认后跳转到结果页面
+- 侧边栏风险变化显示 (`frontend/src/pages/Intervention.tsx:326-348`)
+  - 已处理句子显示风险变化：`54 高风险 → 14 低风险`
+  - 原风险和新风险均使用 RiskBadge 组件显示
+  - 底色保持红/黄/绿区分
+
+**修改 Modified:**
+- `frontend/src/pages/Intervention.tsx` - 计数器逻辑、完成按钮、确认对话框、风险变化显示
+- `frontend/src/types/index.ts` - SentenceAnalysis 新增 newRiskScore, newRiskLevel 字段
+- `src/api/schemas.py` - SentenceAnalysis 新增 new_risk_score, new_risk_level 字段
+- `src/api/routes/session.py` - get_all_sentences 返回处理后的新风险分数
 
 ---
 

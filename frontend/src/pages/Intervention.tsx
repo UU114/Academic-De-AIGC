@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
@@ -17,12 +17,13 @@ import { clsx } from 'clsx';
 import Button from '../components/common/Button';
 import SentenceCard from '../components/editor/SentenceCard';
 import SuggestionPanel from '../components/editor/SuggestionPanel';
+import CustomInputSection from '../components/editor/CustomInputSection';
 import ColloquialismSlider from '../components/settings/ColloquialismSlider';
 import ProgressBar from '../components/common/ProgressBar';
 import RiskBadge from '../components/common/RiskBadge';
 import { useSessionStore } from '../stores/sessionStore';
 import { useConfigStore } from '../stores/configStore';
-import { sessionApi } from '../services/api';
+import { sessionApi, suggestApi } from '../services/api';
 import type { SuggestionSource, SentenceAnalysis } from '../types';
 
 /**
@@ -64,6 +65,136 @@ export default function Intervention() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [allSentences, setAllSentences] = useState<SentenceAnalysis[]>([]);
   const [loadingSentences, setLoadingSentences] = useState(false);
+  const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+
+  // Counter ref for tracking analysis request IDs to handle race conditions
+  // 用于追踪分析请求ID的计数器ref，处理竞态条件
+  const analysisRequestIdRef = useRef(0);
+
+  // Ref for sidebar scroll position preservation
+  // 用于保持侧边栏滚动位置的ref
+  const sidebarScrollRef = useRef<HTMLDivElement>(null);
+
+  // Track C analysis state - when true, show input in left column
+  // 轨道C分析状态 - 为true时，输入区在左列显示
+  const [analysisState, setAnalysisState] = useState<{
+    showAnalysis: boolean;
+    loadingAnalysis: boolean;
+    hasResult: boolean;
+    expandedTrack: 'llm' | 'rule' | 'custom' | null;
+    error?: string;
+  }>({
+    showAnalysis: false,
+    loadingAnalysis: false,
+    hasResult: false,
+    expandedTrack: 'llm',
+    error: undefined,
+  });
+
+  // Determine if custom input should show in left column
+  // Only when Track C is expanded AND analysis is shown
+  // 判断自定义输入是否应该显示在左列
+  // 只有轨道C展开且分析显示时才移到左侧
+  const showCustomInputInLeft = analysisState.expandedTrack === 'custom' && analysisState.showAnalysis;
+
+  // Get analysis cache methods from store
+  // 从store获取分析缓存方法
+  const { getAnalysisForSentence, setAnalysisForSentence } = useSessionStore();
+
+  // Handle analysis toggle from CustomInputSection (with race condition handling)
+  // 处理CustomInputSection的分析切换（带竞态条件处理）
+  const handleAnalysisToggle = useCallback(async (show: boolean) => {
+    if (!show) {
+      setAnalysisState(prev => ({ ...prev, showAnalysis: false, error: undefined }));
+      return;
+    }
+
+    const sentenceId = session?.currentSentence?.id;
+    const originalText = suggestions?.original;
+
+    // Early return with error if no sentence data
+    // 如果没有句子数据则提前返回并显示错误
+    if (!sentenceId || !originalText) {
+      console.error('Analysis toggle: missing sentenceId or originalText', { sentenceId, originalText });
+      setAnalysisState(prev => ({
+        ...prev,
+        showAnalysis: true,
+        loadingAnalysis: false,
+        error: '无法分析：句子数据不完整 / Cannot analyze: sentence data incomplete',
+      }));
+      return;
+    }
+
+    // Check cache first
+    // 首先检查缓存
+    const cached = getAnalysisForSentence(sentenceId);
+    if (cached) {
+      setAnalysisState(prev => ({
+        ...prev,
+        showAnalysis: true,
+        hasResult: true,
+        error: undefined,
+        expandedTrack: 'custom',
+      }));
+      return;
+    }
+
+    // Generate unique request ID for race condition handling
+    // 生成唯一请求ID用于竞态条件处理
+    const requestId = ++analysisRequestIdRef.current;
+
+    // Load analysis - also ensure expandedTrack is set to 'custom'
+    // 加载分析 - 同时确保expandedTrack设置为'custom'
+    setAnalysisState(prev => ({
+      ...prev,
+      showAnalysis: true,
+      loadingAnalysis: true,
+      error: undefined,
+      expandedTrack: 'custom', // Ensure this is set so layout updates correctly
+    }));
+    console.log('[DEBUG] Starting sentence analysis for:', originalText.substring(0, 50) + '...');
+    console.log('[DEBUG] sentenceId:', sentenceId, 'colloquialismLevel:', colloquialismLevel, 'requestId:', requestId);
+
+    try {
+      console.log('[DEBUG] Calling suggestApi.analyzeSentence...');
+      const result = await suggestApi.analyzeSentence(
+        originalText,
+        colloquialismLevel
+      );
+
+      // Check if this request is still the current one (race condition guard)
+      // 检查此请求是否仍然是当前请求（竞态条件保护）
+      if (analysisRequestIdRef.current !== requestId) {
+        console.log('[handleAnalysisToggle] Discarding stale analysis response for:', sentenceId);
+        return;
+      }
+
+      console.log('[DEBUG] Analysis API returned:', result);
+      setAnalysisForSentence(sentenceId, result);
+      setAnalysisState(prev => ({ ...prev, loadingAnalysis: false, hasResult: true, error: undefined }));
+      console.log('[DEBUG] Analysis state updated successfully');
+    } catch (err) {
+      // Only update error state if this is still the current request
+      // 仅当这仍然是当前请求时才更新错误状态
+      if (analysisRequestIdRef.current !== requestId) {
+        console.log('[handleAnalysisToggle] Discarding stale error for:', sentenceId);
+        return;
+      }
+      console.error('[DEBUG] Failed to load analysis:', err);
+      const errorMessage = err instanceof Error ? err.message : '分析请求失败';
+      setAnalysisState(prev => ({
+        ...prev,
+        loadingAnalysis: false,
+        error: `分析失败: ${errorMessage} / Analysis failed`,
+      }));
+    }
+  }, [session?.currentSentence?.id, suggestions?.original, colloquialismLevel, getAnalysisForSentence, setAnalysisForSentence]);
+
+  // Handle analysis state change from SuggestionPanel
+  // 处理SuggestionPanel的分析状态变化
+  const handleAnalysisStateChange = useCallback((state: typeof analysisState) => {
+    setAnalysisState(state);
+  }, []);
 
   // Load session on mount
   // 挂载时加载会话
@@ -74,9 +205,13 @@ export default function Intervention() {
     }
   }, [sessionId, loadCurrentState]);
 
-  // Load all sentences for sidebar
-  // 为侧边栏加载所有句子
+  // Load all sentences for sidebar (preserving scroll position)
+  // 为侧边栏加载所有句子（保持滚动位置）
   const loadAllSentences = async (sid: string) => {
+    // Save scroll position before reloading
+    // 重新加载前保存滚动位置
+    const scrollTop = sidebarScrollRef.current?.scrollTop || 0;
+
     setLoadingSentences(true);
     try {
       const sentences = await sessionApi.getSentences(sid);
@@ -85,6 +220,13 @@ export default function Intervention() {
       console.error('Failed to load sentences:', err);
     } finally {
       setLoadingSentences(false);
+      // Restore scroll position after state update
+      // 状态更新后恢复滚动位置
+      requestAnimationFrame(() => {
+        if (sidebarScrollRef.current) {
+          sidebarScrollRef.current.scrollTop = scrollTop;
+        }
+      });
     }
   };
 
@@ -103,24 +245,38 @@ export default function Intervention() {
   const [lastLoadedIndex, setLastLoadedIndex] = useState<number | null>(null);
 
   // Load suggestions when current sentence INDEX changes (not on every object change)
+  // Skip loading for already processed sentences
   // 当前句子索引变化时加载建议（不是每次对象变化时）
+  // 跳过已处理的句子
   useEffect(() => {
     // Only load suggestions if:
     // 1. We have a current sentence
     // 2. The index has actually changed (not just a state refresh after applying)
-    // 3. We don't already have suggestions for this sentence
+    // 3. The sentence is not already processed
     // 只有在以下情况加载建议：
     // 1. 有当前句子
     // 2. 索引实际发生了变化（不是应用后的状态刷新）
-    // 3. 我们还没有这个句子的建议
+    // 3. 句子尚未处理
     if (
       session?.currentSentence &&
       session.currentIndex !== lastLoadedIndex
     ) {
       setLastLoadedIndex(session.currentIndex);
-      loadSuggestions(session.currentSentence, colloquialismLevel);
+
+      // Check if this sentence is already processed from allSentences
+      // 检查这个句子是否已在 allSentences 中标记为已处理
+      const sentenceInList = allSentences.find(s => s.id === session.currentSentence?.id);
+      const isAlreadyProcessed = sentenceInList?.status === 'processed' ||
+        sentenceInList?.status === 'skip' ||
+        sentenceInList?.status === 'flag';
+
+      if (!isAlreadyProcessed) {
+        loadSuggestions(session.currentSentence, colloquialismLevel);
+      }
+      // If already processed, don't call LLM - the UI will show "已处理" state
+      // 如果已处理，不调用 LLM - UI 会显示"已处理"状态
     }
-  }, [session?.currentIndex, session?.currentSentence, colloquialismLevel, loadSuggestions, lastLoadedIndex]);
+  }, [session?.currentIndex, session?.currentSentence, colloquialismLevel, loadSuggestions, lastLoadedIndex, allSentences]);
 
   // Handle apply suggestion
   // 处理应用建议
@@ -142,9 +298,39 @@ export default function Intervention() {
     }
   };
 
+  // Calculate completed count (processed + skipped)
+  // 计算已完成数量（已处理 + 已跳过）
+  const completedCount = (session?.processed || 0) + (session?.skipped || 0);
+  const isAllCompleted = session ? completedCount >= session.totalSentences : false;
+
+  // Check if current sentence is already processed (from allSentences list)
+  // 检查当前句子是否已处理（从 allSentences 列表中）
+  const currentSentenceStatus = allSentences.find(
+    s => s.id === session?.currentSentence?.id
+  )?.status;
+  const isCurrentSentenceProcessed = currentSentenceStatus === 'processed' ||
+    currentSentenceStatus === 'skip' ||
+    currentSentenceStatus === 'flag';
+
   // Handle complete session
   // 处理完成会话
   const handleComplete = async () => {
+    // If not all sentences completed, show confirmation dialog
+    // 如果没有完成所有句子，显示确认对话框
+    if (!isAllCompleted) {
+      setShowConfirmDialog(true);
+      return;
+    }
+    await completeSession();
+    if (sessionId) {
+      navigate(`/review/${sessionId}`);
+    }
+  };
+
+  // Confirm and complete session
+  // 确认并完成会话
+  const confirmComplete = async () => {
+    setShowConfirmDialog(false);
     await completeSession();
     if (sessionId) {
       navigate(`/review/${sessionId}`);
@@ -278,7 +464,7 @@ export default function Intervention() {
 
         {/* Sentence List */}
         {!sidebarCollapsed && (
-          <div className="flex-1 overflow-y-auto">
+          <div ref={sidebarScrollRef} className="flex-1 overflow-y-auto">
             {loadingSentences ? (
               <div className="flex items-center justify-center py-8">
                 <Loader2 className="w-5 h-5 animate-spin text-gray-400" />
@@ -301,11 +487,29 @@ export default function Intervention() {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between mb-1">
                           <span className="text-xs text-gray-500">#{idx + 1}</span>
-                          <RiskBadge
-                            level={sentence.riskLevel}
-                            score={sentence.riskScore}
-                            size="sm"
-                          />
+                          {/* Show risk change for processed sentences */}
+                          {/* 为已处理的句子显示风险变化 */}
+                          {sentence.newRiskScore !== undefined && sentence.newRiskLevel ? (
+                            <div className="flex items-center space-x-1">
+                              <RiskBadge
+                                level={sentence.riskLevel}
+                                score={sentence.riskScore}
+                                size="sm"
+                              />
+                              <span className="text-xs text-gray-400">→</span>
+                              <RiskBadge
+                                level={sentence.newRiskLevel}
+                                score={sentence.newRiskScore}
+                                size="sm"
+                              />
+                            </div>
+                          ) : (
+                            <RiskBadge
+                              level={sentence.riskLevel}
+                              score={sentence.riskScore}
+                              size="sm"
+                            />
+                          )}
                         </div>
                         <p className="text-xs text-gray-600 line-clamp-2">
                           {sentence.text.substring(0, 80)}
@@ -355,7 +559,7 @@ export default function Intervention() {
           <div>
             <h1 className="text-xl font-bold text-gray-800">干预模式</h1>
             <p className="text-sm text-gray-600">
-              第 {session ? session.currentIndex + 1 : '-'} 句，
+              已完成 {completedCount} 句，
               共 {session?.totalSentences || '-'} 句
             </p>
           </div>
@@ -388,12 +592,13 @@ export default function Intervention() {
           </div>
         )}
 
-        {/* Progress Bar */}
+        {/* Progress Bar - shows completed/total ratio */}
+        {/* 进度条 - 显示已完成/总数比例 */}
         {session && (
           <div className="px-4 py-2 bg-white border-b border-gray-200">
             <ProgressBar
-              value={session.progressPercent}
-              color={session.progressPercent === 100 ? 'success' : 'primary'}
+              value={session.totalSentences > 0 ? Math.round((completedCount / session.totalSentences) * 100) : 0}
+              color={completedCount >= session.totalSentences ? 'success' : 'primary'}
               showLabel
             />
           </div>
@@ -416,10 +621,16 @@ export default function Intervention() {
         )}
 
         {/* Main Content - Two Column Layout */}
-        <div className="flex-1 overflow-y-auto p-4">
-          <div className="grid lg:grid-cols-2 gap-6 max-w-6xl mx-auto">
-            {/* Left: Current Sentence */}
-            <div>
+        {/* Left column fixed, right column scrollable for better UX when comparing */}
+        {/* 左列固定，右列可滚动，便于对照原句与修改建议 */}
+        <div className="flex-1 flex overflow-hidden p-4">
+          <div className="flex flex-col lg:flex-row gap-6 max-w-6xl mx-auto w-full">
+            {/* Left: Current Sentence + Custom Input (when Track C expanded) */}
+            {/* 左侧：当前句子 + 自定义输入（轨道C展开时） */}
+            <div className={clsx(
+              'flex-shrink-0 flex flex-col',
+              showCustomInputInLeft ? 'lg:w-1/2' : 'lg:w-1/2'
+            )}>
               <h2 className="text-lg font-semibold text-gray-800 mb-3">
                 当前句子 / Current Sentence
               </h2>
@@ -428,6 +639,7 @@ export default function Intervention() {
                   sentence={session.currentSentence}
                   translation={suggestions?.translation}
                   isActive
+                  displayIndex={(session?.currentIndex ?? 0) + 1}
                 />
               ) : (
                 <div className="card p-6 text-center text-gray-500">
@@ -435,7 +647,8 @@ export default function Intervention() {
                 </div>
               )}
 
-              {/* Action Buttons */}
+              {/* Action Buttons - always show */}
+              {/* 操作按钮 - 始终显示 */}
               <div className="flex items-center justify-between mt-4">
                 <Button
                   variant="outline"
@@ -456,26 +669,55 @@ export default function Intervention() {
                   标记待审
                 </Button>
               </div>
+
+              {/* Custom Input Section - show when Track C is expanded */}
+              {/* 自定义输入区 - 轨道C展开时显示 */}
+              {showCustomInputInLeft && suggestions && (
+                <div className="mt-4 pt-4 border-t border-gray-200">
+                  <h3 className="text-sm font-medium text-gray-700 mb-3">
+                    自定义修改 / Custom Edit
+                  </h3>
+                  <CustomInputSection
+                    originalText={suggestions.original}
+                    customText={customText}
+                    onCustomTextChange={setCustomText}
+                    onValidateCustom={validateCustomText}
+                    validationResult={validationResult}
+                    onApplyCustom={applyCustom}
+                    onAnalysisToggle={handleAnalysisToggle}
+                    showAnalysis={analysisState.showAnalysis}
+                    loadingAnalysis={analysisState.loadingAnalysis}
+                    hasAnalysisResult={analysisState.hasResult}
+                    sentenceId={session?.currentSentence?.id}
+                  />
+                </div>
+              )}
             </div>
 
-            {/* Right: Suggestions */}
-            <div>
-              <h2 className="text-lg font-semibold text-gray-800 mb-3">
+            {/* Right: Suggestions - Independent scrollable area */}
+            {/* 右侧：修改建议 - 独立滚动区域 */}
+            <div className="lg:w-1/2 flex flex-col min-h-0">
+              <h2 className="text-lg font-semibold text-gray-800 mb-3 flex-shrink-0">
                 修改建议 / Suggestions
               </h2>
-              <SuggestionPanel
-                suggestions={suggestions}
-                isLoading={isLoadingSuggestions}
-                customText={customText}
-                onCustomTextChange={setCustomText}
-                onValidateCustom={validateCustomText}
-                validationResult={validationResult}
-                onApply={handleApply}
-                onApplyCustom={applyCustom}
-                sentenceProcessed={!suggestions && !isLoadingSuggestions && (session?.processed ?? 0) > 0}
-                colloquialismLevel={colloquialismLevel}
-                sentenceId={session?.currentSentence?.id}
-              />
+              <div className="flex-1 overflow-y-auto pr-2">
+                <SuggestionPanel
+                  suggestions={suggestions}
+                  isLoading={isLoadingSuggestions}
+                  onApply={handleApply}
+                  sentenceProcessed={isCurrentSentenceProcessed || (!suggestions && !isLoadingSuggestions && (session?.processed ?? 0) > 0)}
+                  sentenceProcessedType={currentSentenceStatus as 'processed' | 'skip' | 'flag' | undefined}
+                  sentenceId={session?.currentSentence?.id}
+                  analysisState={analysisState}
+                  onAnalysisStateChange={handleAnalysisStateChange}
+                  customText={customText}
+                  onCustomTextChange={setCustomText}
+                  onValidateCustom={validateCustomText}
+                  validationResult={validationResult}
+                  onApplyCustom={applyCustom}
+                  onAnalysisToggle={handleAnalysisToggle}
+                />
+              </div>
             </div>
           </div>
         </div>
@@ -494,7 +736,6 @@ export default function Intervention() {
             <Button
               variant="primary"
               onClick={handleComplete}
-              disabled={!session || session.processed < session.totalSentences * 0.5}
             >
               完成处理
               <ArrowRight className="w-4 h-4 ml-2" />
@@ -502,6 +743,39 @@ export default function Intervention() {
           </div>
         </div>
       </div>
+
+      {/* Confirmation Dialog */}
+      {/* 确认对话框 */}
+      {showConfirmDialog && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 max-w-md mx-4">
+            <div className="flex items-center mb-4">
+              <AlertCircle className="w-6 h-6 text-amber-500 mr-3" />
+              <h3 className="text-lg font-semibold text-gray-800">确认中断处理？</h3>
+            </div>
+            <p className="text-gray-600 mb-2">
+              您还有 <span className="font-semibold text-amber-600">{(session?.totalSentences || 0) - completedCount}</span> 句未处理。
+            </p>
+            <p className="text-sm text-gray-500 mb-6">
+              中断后可以从历史记录中继续处理，或直接查看当前结果。
+            </p>
+            <div className="flex justify-end space-x-3">
+              <Button
+                variant="outline"
+                onClick={() => setShowConfirmDialog(false)}
+              >
+                继续处理
+              </Button>
+              <Button
+                variant="primary"
+                onClick={confirmComplete}
+              >
+                确认中断
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

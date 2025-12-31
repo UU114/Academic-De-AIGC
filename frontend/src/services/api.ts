@@ -249,10 +249,12 @@ export const suggestApi = {
     sentence: string,
     colloquialismLevel: number = 5
   ): Promise<DetailedSentenceAnalysis> => {
+    console.log('[API] analyzeSentence called, sentence length:', sentence.length);
     const response = await api.post('/suggest/analyze', {
       sentence,
       colloquialism_level: colloquialismLevel,
     });
+    console.log('[API] analyzeSentence response received');
     return transformKeys<DetailedSentenceAnalysis>(response.data);
   },
 };

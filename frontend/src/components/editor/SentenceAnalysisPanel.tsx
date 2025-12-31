@@ -15,6 +15,7 @@ import type { DetailedSentenceAnalysis } from '../../types';
 interface SentenceAnalysisPanelProps {
   analysis: DetailedSentenceAnalysis;
   onClose: () => void;
+  hideCloseButton?: boolean;
 }
 
 /**
@@ -24,6 +25,7 @@ interface SentenceAnalysisPanelProps {
 export default function SentenceAnalysisPanel({
   analysis,
   onClose,
+  hideCloseButton = false,
 }: SentenceAnalysisPanelProps) {
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
     new Set(['grammar', 'aiWords', 'rewrite'])
@@ -40,19 +42,25 @@ export default function SentenceAnalysisPanel({
   };
 
   return (
-    <div className="bg-white border border-gray-200 rounded-lg shadow-lg max-h-[70vh] overflow-y-auto">
-      {/* Header */}
-      <div className="sticky top-0 bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between">
-        <h3 className="font-semibold text-gray-800">句子分析 / Sentence Analysis</h3>
-        <button
-          onClick={onClose}
-          className="p-1 hover:bg-gray-100 rounded transition-colors"
-        >
-          <X className="w-5 h-5 text-gray-500" />
-        </button>
-      </div>
+    <div className={clsx(
+      'bg-white rounded-lg',
+      !hideCloseButton && 'border border-gray-200 shadow-lg max-h-[70vh] overflow-y-auto'
+    )}>
+      {/* Header - hidden when used inside another container */}
+      {/* 标题 - 在其他容器内使用时隐藏 */}
+      {!hideCloseButton && (
+        <div className="sticky top-0 bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between">
+          <h3 className="font-semibold text-gray-800">句子分析 / Sentence Analysis</h3>
+          <button
+            onClick={onClose}
+            className="p-1 hover:bg-gray-100 rounded transition-colors"
+          >
+            <X className="w-5 h-5 text-gray-500" />
+          </button>
+        </div>
+      )}
 
-      <div className="p-4 space-y-4">
+      <div className={clsx('space-y-4', !hideCloseButton && 'p-4')}>
         {/* Grammar Structure Section */}
         <AnalysisSection
           title="语法结构"

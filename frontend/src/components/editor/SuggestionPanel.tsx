@@ -1,177 +1,109 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { Sparkles, Wrench, Edit3, Check, X, Loader2, ChevronDown, ChevronUp, Lightbulb, CheckCircle2, MousePointerClick, Search } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Sparkles, Wrench, Edit3, Loader2, ChevronDown, ChevronUp, CheckCircle2, MousePointerClick, X, SkipForward, Flag } from 'lucide-react';
 import { clsx } from 'clsx';
 import type { SuggestResponse, Suggestion, SuggestionSource } from '../../types';
 import Button from '../common/Button';
 import RiskBadge from '../common/RiskBadge';
 import InfoTooltip from '../common/InfoTooltip';
 import SentenceAnalysisPanel from './SentenceAnalysisPanel';
-import { suggestApi } from '../../services/api';
+import CustomInputSection from './CustomInputSection';
 import { useSessionStore } from '../../stores/sessionStore';
 
-interface WritingHint {
-  type: string;
-  title: string;
-  titleZh: string;
-  description: string;
-  descriptionZh: string;
+interface AnalysisState {
+  showAnalysis: boolean;
+  loadingAnalysis: boolean;
+  hasResult: boolean;
+  expandedTrack: 'llm' | 'rule' | 'custom' | null;
+  error?: string;
 }
 
 interface SuggestionPanelProps {
   suggestions: SuggestResponse | null;
   isLoading?: boolean;
-  customText: string;
-  onCustomTextChange: (text: string) => void;
-  onValidateCustom: () => void;
-  validationResult?: {
-    passed: boolean;
-    similarity: number;
-    message: string;
-  } | null;
   onApply: (source: SuggestionSource) => void;
-  onApplyCustom: () => void;
-  sentenceProcessed?: boolean;  // Show when sentence has been processed
-  colloquialismLevel?: number;  // Colloquialism level for analysis suggestions
-  sentenceId?: string;  // Sentence ID for caching
+  sentenceProcessed?: boolean;
+  sentenceProcessedType?: 'processed' | 'skip' | 'flag';  // Type of processing / 处理类型
+  sentenceId?: string;
+  // Analysis state from parent
+  // 来自父组件的分析状态
+  analysisState?: AnalysisState;
+  // Track C analysis state callbacks
+  // 轨道C分析状态回调
+  onAnalysisStateChange?: (state: AnalysisState) => void;
+  // Custom input props - for rendering in right panel when analysis not shown
+  // 自定义输入属性 - 分析未显示时在右侧渲染
+  customText?: string;
+  onCustomTextChange?: (text: string) => void;
+  onValidateCustom?: () => void;
+  validationResult?: { passed: boolean; similarity: number; message: string } | null;
+  onApplyCustom?: () => void;
+  onAnalysisToggle?: (show: boolean) => void;
 }
 
 /**
- * Suggestion panel with dual-track display and writing hints
- * 带写作提示的双轨建议面板
+ * Suggestion panel with dual-track display
+ * Track C input is rendered separately when analysis is shown
+ * 双轨建议面板
+ * 分析显示时，轨道C输入部分在外部渲染
  */
 export default function SuggestionPanel({
   suggestions,
   isLoading = false,
-  customText,
+  onApply,
+  sentenceProcessed = false,
+  sentenceProcessedType,
+  sentenceId,
+  analysisState: externalAnalysisState,
+  onAnalysisStateChange,
+  customText = '',
   onCustomTextChange,
   onValidateCustom,
   validationResult,
-  onApply,
   onApplyCustom,
-  sentenceProcessed = false,
-  colloquialismLevel = 5,
-  sentenceId,
+  onAnalysisToggle,
 }: SuggestionPanelProps) {
   const [expandedTrack, setExpandedTrack] = useState<'llm' | 'rule' | 'custom' | null>('llm');
-  const [writingHints, setWritingHints] = useState<WritingHint[]>([]);
-  const [loadingHints, setLoadingHints] = useState(false);
-  const [loadingAnalysis, setLoadingAnalysis] = useState(false);
-  const [showAnalysis, setShowAnalysis] = useState(false);
-  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Get cache methods from store
-  // 从 store 获取缓存方法
-  const {
-    setCustomTextForSentence,
-    getCustomTextForSentence,
-    setAnalysisForSentence,
-    getAnalysisForSentence,
-  } = useSessionStore();
-
-  // Get cached analysis result
-  // 获取缓存的分析结果
-  const analysisResult = sentenceId ? getAnalysisForSentence(sentenceId) : null;
-
-  // Load cached custom text when sentence changes
-  // 当句子变化时加载缓存的自定义文本
+  // Reset to Track A when sentence changes
+  // 切换句子时重置为轨道A
   useEffect(() => {
-    if (sentenceId) {
-      const cachedText = getCustomTextForSentence(sentenceId);
-      if (cachedText && cachedText !== customText) {
-        onCustomTextChange(cachedText);
-      }
-    }
+    setExpandedTrack('llm');
   }, [sentenceId]);
 
-  // Auto-save custom text to cache every 15 seconds
-  // 每15秒自动保存自定义文本到缓存
-  useEffect(() => {
-    if (sentenceId && customText) {
-      // Clear previous timer
-      // 清除之前的定时器
-      if (autoSaveTimerRef.current) {
-        clearTimeout(autoSaveTimerRef.current);
-      }
-      // Set new timer
-      // 设置新定时器
-      autoSaveTimerRef.current = setTimeout(() => {
-        setCustomTextForSentence(sentenceId, customText);
-      }, 15000);
-    }
-    return () => {
-      if (autoSaveTimerRef.current) {
-        clearTimeout(autoSaveTimerRef.current);
-      }
-    };
-  }, [customText, sentenceId, setCustomTextForSentence]);
+  // Subscribe to analysisCache directly from store for reactivity
+  // 直接从store订阅analysisCache以获得响应性
+  const analysisCache = useSessionStore(state => state.analysisCache);
 
-  // Save custom text immediately when changing sentences
-  // 切换句子时立即保存自定义文本
-  const handleCustomTextChange = useCallback((text: string) => {
-    onCustomTextChange(text);
-    // Also update cache immediately on change (debounced auto-save will handle periodic saves)
-    // 同时立即更新缓存（防抖自动保存会处理定期保存）
-    if (sentenceId && text) {
-      setCustomTextForSentence(sentenceId, text);
-    }
-  }, [onCustomTextChange, sentenceId, setCustomTextForSentence]);
+  // Get cached analysis result - now reactive to cache updates
+  // 获取缓存的分析结果 - 现在对缓存更新具有响应性
+  const analysisResult = sentenceId ? analysisCache.get(sentenceId) || null : null;
 
-  // Load writing hints when custom track is expanded
-  // 当自定义轨道展开时加载写作提示
-  useEffect(() => {
-    if (expandedTrack === 'custom' && suggestions?.original) {
-      loadWritingHints(suggestions.original);
-    }
-  }, [expandedTrack, suggestions?.original]);
+  // Use external state if provided, otherwise use defaults
+  // 如果提供外部状态则使用，否则使用默认值
+  const showAnalysis = externalAnalysisState?.showAnalysis ?? false;
+  const loadingAnalysis = externalAnalysisState?.loadingAnalysis ?? false;
 
-  const loadWritingHints = async (sentence: string) => {
-    setLoadingHints(true);
-    try {
-      const result = await suggestApi.getWritingHints(sentence);
-      setWritingHints(result.hints || []);
-    } catch (err) {
-      console.error('Failed to load writing hints:', err);
-      setWritingHints([]);
-    } finally {
-      setLoadingHints(false);
-    }
+  // Close analysis handler - notify parent to close
+  // 关闭分析处理器 - 通知父组件关闭
+  const handleCloseAnalysis = () => {
+    onAnalysisStateChange?.({
+      showAnalysis: false,
+      loadingAnalysis: false,
+      hasResult: !!analysisResult,
+      expandedTrack,
+    });
   };
 
-  // Load detailed sentence analysis (with caching)
-  // 加载详细句子分析（带缓存）
-  const loadAnalysis = async () => {
-    if (!suggestions?.original || !sentenceId) return;
-
-    // Check cache first
-    // 首先检查缓存
-    const cached = getAnalysisForSentence(sentenceId);
-    if (cached) {
-      setShowAnalysis(true);
-      return;
-    }
-
-    setLoadingAnalysis(true);
-    setShowAnalysis(true);
-    try {
-      const result = await suggestApi.analyzeSentence(
-        suggestions.original,
-        colloquialismLevel
-      );
-      // Save to cache
-      // 保存到缓存
-      setAnalysisForSentence(sentenceId, result);
-    } catch (err) {
-      console.error('Failed to load analysis:', err);
-    } finally {
-      setLoadingAnalysis(false);
-    }
-  };
-
-  // Reset analysis view when sentence changes (but keep cache)
-  // 当句子变化时重置分析视图（但保留缓存）
+  // Notify parent of expanded track changes
+  // 通知父组件展开轨道变化
   useEffect(() => {
-    setShowAnalysis(false);
-  }, [sentenceId]);
+    onAnalysisStateChange?.({
+      showAnalysis,
+      loadingAnalysis,
+      hasResult: !!analysisResult,
+      expandedTrack,
+    });
+  }, [expandedTrack, analysisResult, showAnalysis, loadingAnalysis, onAnalysisStateChange]);
 
   if (isLoading) {
     return (
@@ -184,14 +116,33 @@ export default function SuggestionPanel({
     );
   }
 
-  // Show processed message - user needs to select next sentence from sidebar
-  // 显示已处理消息 - 用户需要从侧边栏选择下一句
+  // Show processed message with type-specific display
+  // 根据处理类型显示相应消息
   if (sentenceProcessed && !suggestions && !isLoading) {
+    // Determine message based on processing type
+    // 根据处理类型确定消息内容
+    let icon = <CheckCircle2 className="w-12 h-12 text-green-500 mx-auto mb-3" />;
+    let title = '✓ 当前句子已处理';
+    let titleEn = 'This sentence has been processed';
+
+    if (sentenceProcessedType === 'skip') {
+      icon = <SkipForward className="w-12 h-12 text-gray-400 mx-auto mb-3" />;
+      title = '⏭ 当前句子已跳过';
+      titleEn = 'This sentence was skipped';
+    } else if (sentenceProcessedType === 'flag') {
+      icon = <Flag className="w-12 h-12 text-amber-500 mx-auto mb-3" />;
+      title = '🚩 当前句子已标记';
+      titleEn = 'This sentence was flagged for review';
+    }
+
     return (
       <div className="card p-6 text-center">
-        <CheckCircle2 className="w-12 h-12 text-green-500 mx-auto mb-3" />
+        {icon}
         <p className="text-lg font-medium text-gray-800 mb-2">
-          ✓ 当前句子已处理
+          {title}
+        </p>
+        <p className="text-xs text-gray-400 mb-4">
+          {titleEn}
         </p>
         <div className="flex items-center justify-center text-gray-500 mb-4">
           <MousePointerClick className="w-4 h-4 mr-2" />
@@ -216,10 +167,15 @@ export default function SuggestionPanel({
     );
   }
 
+  // When Track C is expanded and analysis is shown, only show analysis panel
+  // 当轨道C展开且分析显示时，只显示分析面板
+  const showOnlyAnalysis = expandedTrack === 'custom' && showAnalysis;
+
   return (
     <div className="space-y-3">
-      {/* Track A: LLM Suggestion */}
-      {suggestions.llmSuggestion && (
+      {/* Track A: LLM Suggestion - hide when only showing analysis */}
+      {/* 轨道A: LLM建议 - 仅显示分析时隐藏 */}
+      {!showOnlyAnalysis && suggestions.llmSuggestion && (
         <SuggestionTrack
           title="轨道A: LLM智能改写"
           titleEn="Track A: LLM Suggestion"
@@ -235,8 +191,9 @@ export default function SuggestionPanel({
         />
       )}
 
-      {/* Track B: Rule Suggestion */}
-      {suggestions.ruleSuggestion && (
+      {/* Track B: Rule Suggestion - hide when only showing analysis */}
+      {/* 轨道B: 规则建议 - 仅显示分析时隐藏 */}
+      {!showOnlyAnalysis && suggestions.ruleSuggestion && (
         <SuggestionTrack
           title="轨道B: 规则建议"
           titleEn="Track B: Rule-based"
@@ -252,186 +209,115 @@ export default function SuggestionPanel({
         />
       )}
 
-      {/* Track C: Custom Input */}
-      <div className={clsx(
-        'card border-2 overflow-hidden transition-all duration-200',
-        expandedTrack === 'custom' ? 'border-gray-300' : 'border-gray-200',
-        showAnalysis && expandedTrack === 'custom' && 'flex flex-col max-h-[70vh]'
-      )}>
-        <button
-          onClick={() => setExpandedTrack(expandedTrack === 'custom' ? null : 'custom')}
-          className="w-full px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors flex-shrink-0"
-        >
-          <div className="flex items-center">
-            <div className="p-1.5 rounded-lg bg-gray-100 text-gray-600 mr-3">
-              <Edit3 className="w-4 h-4" />
-            </div>
-            <div className="text-left">
-              <p className="font-medium text-gray-800">轨道C: 自定义修改</p>
-              <p className="text-xs text-gray-500">Track C: Custom Input</p>
-            </div>
-          </div>
-          {expandedTrack === 'custom' ? (
-            <ChevronUp className="w-5 h-5 text-gray-400" />
-          ) : (
-            <ChevronDown className="w-5 h-5 text-gray-400" />
-          )}
-        </button>
-
-        {expandedTrack === 'custom' && (
-          <div className={clsx(
-            'flex flex-col',
-            showAnalysis ? 'flex-1 min-h-0' : ''
-          )}>
-            {/* Sticky section: Original text + Input area + Buttons */}
-            {/* 固定部分：原文 + 输入区域 + 按钮 */}
-            <div className={clsx(
-              'px-4 pb-3 space-y-3 flex-shrink-0 bg-white',
-              showAnalysis && 'border-b border-gray-200 shadow-sm'
-            )}>
-              {/* Original text - show when analysis is visible */}
-              {/* 原文 - 分析可见时显示 */}
-              {showAnalysis && suggestions?.original && (
-                <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
-                  <p className="text-xs text-gray-500 mb-1">原文 / Original:</p>
-                  <p className="text-sm text-gray-700 leading-relaxed">
-                    {suggestions.original}
-                  </p>
-                </div>
-              )}
-
-              {/* Writing Hints - hide when analysis is shown to save space */}
-              {/* 写作提示 - 分析显示时隐藏以节省空间 */}
-              {!showAnalysis && (
-                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
-                  <div className="flex items-center text-amber-700 mb-2">
-                    <Lightbulb className="w-4 h-4 mr-2" />
-                    <span className="text-sm font-medium">改写建议 / Writing Hints</span>
-                  </div>
-                  {loadingHints ? (
-                    <div className="flex items-center text-amber-600 text-sm">
-                      <Loader2 className="w-3 h-3 mr-2 animate-spin" />
-                      加载中...
-                    </div>
-                  ) : (
-                    <div className="space-y-2">
-                      {writingHints.map((hint, idx) => (
-                        <div key={idx} className="text-sm">
-                          <p className="font-medium text-amber-800">
-                            {idx + 1}. {hint.titleZh}
-                          </p>
-                          <p className="text-amber-700 text-xs mt-0.5">
-                            {hint.descriptionZh}
-                          </p>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              <textarea
-                value={customText}
-                onChange={(e) => handleCustomTextChange(e.target.value)}
-                placeholder="输入您的修改版本..."
-                className={clsx(
-                  'textarea',
-                  showAnalysis ? 'h-20' : 'h-24'
-                )}
-              />
-
-              {/* Validation result */}
-              {validationResult && (
-                <div
-                  className={clsx(
-                    'p-3 rounded-lg flex items-start',
-                    validationResult.passed
-                      ? 'bg-green-50 text-green-700'
-                      : 'bg-red-50 text-red-700'
-                  )}
-                >
-                  {validationResult.passed ? (
-                    <Check className="w-4 h-4 mr-2 mt-0.5 flex-shrink-0" />
-                  ) : (
-                    <X className="w-4 h-4 mr-2 mt-0.5 flex-shrink-0" />
-                  )}
-                  <div className="text-sm">
-                    <p>{validationResult.message}</p>
-                    <p className="text-xs mt-1">
-                      语义相似度: {(validationResult.similarity * 100).toFixed(0)}%
-                    </p>
-                  </div>
-                </div>
-              )}
-
-              <div className="flex items-center space-x-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={loadAnalysis}
-                  disabled={loadingAnalysis}
-                >
-                  {loadingAnalysis ? (
-                    <>
-                      <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-                      分析中...
-                    </>
-                  ) : analysisResult ? (
-                    <>
-                      <Search className="w-3 h-3 mr-1" />
-                      {showAnalysis ? '隐藏分析' : '显示分析'}
-                    </>
-                  ) : (
-                    <>
-                      <Search className="w-3 h-3 mr-1" />
-                      分析
-                    </>
-                  )}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={onValidateCustom}
-                  disabled={!customText.trim()}
-                >
-                  检测风险
-                </Button>
-                <Button
-                  variant="primary"
-                  size="sm"
-                  onClick={onApplyCustom}
-                  disabled={!customText.trim() || !validationResult?.passed}
-                >
-                  确认提交
-                </Button>
+      {/* Track C: Custom Input - only show header when not in analysis mode */}
+      {/* 轨道C: 自定义修改 - 非分析模式时只显示标题 */}
+      {!showOnlyAnalysis && (
+        <div className={clsx(
+          'card border-2 overflow-hidden transition-all duration-200',
+          expandedTrack === 'custom' ? 'border-gray-300' : 'border-gray-200'
+        )}>
+          <button
+            onClick={() => setExpandedTrack(expandedTrack === 'custom' ? null : 'custom')}
+            className="w-full px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors"
+          >
+            <div className="flex items-center">
+              <div className="p-1.5 rounded-lg bg-gray-100 text-gray-600 mr-3">
+                <Edit3 className="w-4 h-4" />
+              </div>
+              <div className="text-left">
+                <p className="font-medium text-gray-800">轨道C: 自定义修改</p>
+                <p className="text-xs text-gray-500">Track C: Custom Input</p>
               </div>
             </div>
+            {expandedTrack === 'custom' ? (
+              <ChevronUp className="w-5 h-5 text-gray-400" />
+            ) : (
+              <ChevronDown className="w-5 h-5 text-gray-400" />
+            )}
+          </button>
 
-            {/* Scrollable section: Sentence Analysis Panel */}
-            {/* 可滚动部分：句子分析面板 */}
-            {showAnalysis && (
-              <div className="flex-1 overflow-y-auto px-4 py-3 min-h-0">
-                {loadingAnalysis ? (
-                  <div className="p-6 bg-gray-50 rounded-lg text-center">
-                    <Loader2 className="w-6 h-6 animate-spin text-gray-400 mx-auto mb-2" />
-                    <p className="text-sm text-gray-500">正在分析句子结构...</p>
-                    <p className="text-xs text-gray-400 mt-1">Analyzing sentence structure...</p>
-                  </div>
-                ) : analysisResult ? (
-                  <SentenceAnalysisPanel
-                    analysis={analysisResult}
-                    onClose={() => setShowAnalysis(false)}
-                  />
-                ) : (
-                  <div className="p-4 bg-red-50 rounded-lg text-center">
-                    <p className="text-sm text-red-600">分析失败，请重试</p>
-                  </div>
-                )}
+          {/* Custom input - shown when Track C is expanded but analysis not shown */}
+          {/* 自定义输入 - 轨道C展开但分析未显示时显示 */}
+          {expandedTrack === 'custom' && !showAnalysis && suggestions && onCustomTextChange && onValidateCustom && onApplyCustom && onAnalysisToggle && (
+            <div className="px-4 pb-4">
+              <CustomInputSection
+                originalText={suggestions.original}
+                customText={customText}
+                onCustomTextChange={onCustomTextChange}
+                onValidateCustom={onValidateCustom}
+                validationResult={validationResult}
+                onApplyCustom={onApplyCustom}
+                onAnalysisToggle={onAnalysisToggle}
+                showAnalysis={showAnalysis}
+                loadingAnalysis={loadingAnalysis}
+                hasAnalysisResult={!!analysisResult}
+                sentenceId={sentenceId}
+              />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Analysis Panel - shown when Track C is expanded and analysis is active */}
+      {/* 分析面板 - 当轨道C展开且分析激活时显示 */}
+      {showOnlyAnalysis && (
+        <div className="card border-2 border-gray-300 overflow-hidden">
+          {/* Header with close button */}
+          {/* 带关闭按钮的标题 */}
+          <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between bg-gray-50">
+            <div>
+              <p className="font-medium text-gray-800">句子分析 / Sentence Analysis</p>
+              <p className="text-xs text-gray-500">详细语法结构和改写建议</p>
+            </div>
+            <button
+              onClick={handleCloseAnalysis}
+              className="p-1 hover:bg-gray-200 rounded transition-colors"
+              title="关闭分析"
+            >
+              <X className="w-5 h-5 text-gray-500" />
+            </button>
+          </div>
+
+          {/* Analysis content */}
+          {/* 分析内容 */}
+          <div className="p-4 max-h-[60vh] overflow-y-auto">
+            {loadingAnalysis ? (
+              <div className="p-6 bg-gray-50 rounded-lg text-center">
+                <Loader2 className="w-6 h-6 animate-spin text-gray-400 mx-auto mb-2" />
+                <p className="text-sm text-gray-500">正在分析句子结构...</p>
+                <p className="text-xs text-gray-400 mt-1">Analyzing sentence structure...</p>
+                <p className="text-xs text-gray-400 mt-2">首次分析可能需要10-30秒</p>
+              </div>
+            ) : externalAnalysisState?.error ? (
+              <div className="p-4 bg-red-50 rounded-lg text-center">
+                <p className="text-sm text-red-600">{externalAnalysisState.error}</p>
+                <button
+                  onClick={() => onAnalysisToggle?.(true)}
+                  className="mt-2 text-xs text-red-500 underline hover:text-red-700"
+                >
+                  重试 / Retry
+                </button>
+              </div>
+            ) : analysisResult ? (
+              <SentenceAnalysisPanel
+                analysis={analysisResult}
+                onClose={handleCloseAnalysis}
+                hideCloseButton
+              />
+            ) : (
+              <div className="p-4 bg-red-50 rounded-lg text-center">
+                <p className="text-sm text-red-600">分析失败，请重试</p>
+                <button
+                  onClick={() => onAnalysisToggle?.(true)}
+                  className="mt-2 text-xs text-red-500 underline hover:text-red-700"
+                >
+                  重试 / Retry
+                </button>
               </div>
             )}
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -520,7 +406,6 @@ function SuggestionTrack({
             <InfoTooltip
               title="语义相似度"
               content="改写后与原文的语义相似程度。使用Sentence-BERT或备用算法计算。>85%表示语义保持良好，<70%可能存在语义偏移风险。建议选择高相似度的改写方案。"
-              position="left"
               iconSize="sm"
             />
           </div>

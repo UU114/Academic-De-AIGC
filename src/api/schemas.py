@@ -157,6 +157,8 @@ class SentenceAnalysis(BaseModel):
     gptzero_view: Optional[DetectorView] = None
     locked_terms: List[str] = []
     status: Optional[str] = None  # pending, current, processed, skip, flag
+    new_risk_score: Optional[int] = None  # Risk score after modification
+    new_risk_level: Optional[RiskLevel] = None  # Risk level after modification
 
 
 class ChangeDetail(BaseModel):

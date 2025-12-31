@@ -11,6 +11,7 @@ interface SentenceCardProps {
   showTranslation?: boolean;
   showDetectorViews?: boolean;
   isActive?: boolean;
+  displayIndex?: number;  // Override display index (1-based) / 覆盖显示序号（从1开始）
 }
 
 /**
@@ -23,7 +24,11 @@ export default function SentenceCard({
   showTranslation = true,
   showDetectorViews = true,
   isActive = false,
+  displayIndex,
 }: SentenceCardProps) {
+  // Use displayIndex if provided, otherwise use sentence.index + 1
+  // 如果提供了 displayIndex 则使用，否则使用 sentence.index + 1
+  const indexToShow = displayIndex ?? (sentence.index + 1);
   // Highlight fingerprint words in text
   // 高亮文本中的指纹词
   const highlightedText = useMemo(() => {
@@ -77,7 +82,7 @@ export default function SentenceCard({
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center space-x-2">
           <span className="text-sm text-gray-500">
-            #{sentence.index + 1}
+            #{indexToShow}
           </span>
           <RiskBadge
             level={sentence.riskLevel}
@@ -181,25 +186,50 @@ export default function SentenceCard({
         </div>
       )}
 
-      {/* PPL and density indicators */}
+      {/* PPL and fingerprint indicators */}
       <div className="flex items-center justify-between pt-3 border-t border-gray-100 text-sm">
         <div className="flex items-center text-gray-500">
           <span className="mr-1">PPL: {sentence.ppl.toFixed(1)}</span>
           <InfoTooltip
             title="PPL (困惑度)"
-            content="使用zlib压缩比计算。AI生成文本通常有更高的压缩率（更低的信息密度）。PPL越高，越可能是AI生成。阈值：>2.5可疑，>3.0高风险。"
-            position="top"
+            content="使用zlib压缩比计算。PPL越低表示文本越可预测，AI特征越明显。阈值：<25高风险，25-45中风险，>45低风险。"
           />
         </div>
-        <div className="flex items-center text-gray-500">
-          <span className="mr-1">密度: {(sentence.fingerprintDensity * 100).toFixed(1)}%</span>
-          <InfoTooltip
-            title="指纹词密度"
-            content="指纹词数量占总词数的比例。指纹词是AI常用但人类少用的词汇，如'delve'、'tapestry'、'multifaceted'等。密度越高，AI特征越明显。"
-            position="top"
-          />
-        </div>
+        <FingerprintIndicator count={sentence.fingerprints.length} />
       </div>
+    </div>
+  );
+}
+
+// Fingerprint indicator with emoji
+// 指纹词指示器（带emoji）
+function FingerprintIndicator({ count }: { count: number }) {
+  // 0: 😊 (happy), 1: 😐 (neutral), 2: 😰 (worried), 3+: 😡 (angry)
+  const getEmoji = () => {
+    if (count === 0) return '😊';
+    if (count === 1) return '😐';
+    if (count === 2) return '😰';
+    return '😡';
+  };
+
+  const getColorClass = () => {
+    if (count === 0) return 'text-green-600';
+    if (count === 1) return 'text-yellow-600';
+    if (count === 2) return 'text-orange-600';
+    return 'text-red-600';
+  };
+
+  const getTooltip = () => {
+    if (count === 0) return '未检测到AI指纹词，文本较为自然';
+    if (count === 1) return '检测到1个AI指纹词，建议替换';
+    if (count === 2) return '检测到2个AI指纹词，需要修改';
+    return `检测到${count}个AI指纹词，强烈建议改写`;
+  };
+
+  return (
+    <div className={`flex items-center ${getColorClass()}`} title={getTooltip()}>
+      <span className="mr-1">指纹词: {count}</span>
+      <span className="text-base">{getEmoji()}</span>
     </div>
   );
 }

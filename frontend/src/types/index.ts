@@ -70,6 +70,8 @@ export interface SentenceAnalysis {
   gptzeroView?: DetectorView;
   lockedTerms: string[];
   status?: SentenceStatus;  // Status in session context
+  newRiskScore?: number;  // Risk score after modification
+  newRiskLevel?: RiskLevel;  // Risk level after modification
 }
 
 // Change detail

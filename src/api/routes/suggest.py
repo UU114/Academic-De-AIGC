@@ -149,8 +149,28 @@ async def apply_suggestion(
     Apply a suggestion to a sentence (does NOT advance to next sentence)
     将建议应用到句子（不自动跳转到下一句）
     """
-    from src.db.models import Modification
+    from src.db.models import Modification, Sentence
     from sqlalchemy import select
+
+    # Get the original sentence to get the original text if modified_text not provided
+    # 获取原句以便在没有提供modified_text时使用原文
+    sentence_result = await db.execute(
+        select(Sentence).where(Sentence.id == sentence_id)
+    )
+    sentence = sentence_result.scalar_one_or_none()
+    if not sentence:
+        raise HTTPException(status_code=404, detail=f"Sentence not found: {sentence_id}")
+
+    # Determine the text to calculate risk for
+    # 确定用于计算风险的文本
+    text_for_risk = modified_text if modified_text else sentence.original_text
+
+    # Calculate new risk score using RiskScorer
+    # 使用RiskScorer计算新风险分数
+    new_risk_score = 0
+    if text_for_risk:
+        analysis = _scorer.analyze(text_for_risk)
+        new_risk_score = analysis.risk_score
 
     # Check if modification already exists for this sentence
     # 检查该句子是否已有修改
@@ -168,6 +188,7 @@ async def apply_suggestion(
         existing_mod.source = source.value
         existing_mod.modified_text = modified_text or ""
         existing_mod.accepted = True
+        existing_mod.new_risk_score = new_risk_score
     else:
         # Create new modification record
         # 创建新的修改记录
@@ -176,7 +197,8 @@ async def apply_suggestion(
             session_id=session_id,
             source=source.value,
             modified_text=modified_text or "",
-            accepted=True
+            accepted=True,
+            new_risk_score=new_risk_score
         )
         db.add(mod)
 
@@ -187,7 +209,7 @@ async def apply_suggestion(
     # 注意：这里不更新 session.current_index
     # 用户将点击侧边栏导航到下一句
 
-    return {"status": "applied", "sentence_id": sentence_id, "source": source.value}
+    return {"status": "applied", "sentence_id": sentence_id, "source": source.value, "new_risk_score": new_risk_score}
 
 
 @router.post("/custom", response_model=ValidationResult)
@@ -199,20 +221,32 @@ async def validate_custom(
     Validate user's custom modification
     验证用户的自定义修改
     """
+    from src.db.models import Sentence
+    from sqlalchemy import select
+
     # Get original sentence from database
     # 从数据库获取原句
-    # (Simplified for MVP)
+    sentence_result = await db.execute(
+        select(Sentence).where(Sentence.id == request.sentence_id)
+    )
+    sentence = sentence_result.scalar_one_or_none()
+
+    if not sentence:
+        raise HTTPException(status_code=404, detail=f"Sentence not found: {request.sentence_id}")
+
+    original_text = sentence.original_text
+    locked_terms = sentence.locked_terms_json or []
 
     # Initialize validators
     # 初始化验证器
     quality_gate = QualityGate()
 
-    # Validate custom input
-    # 验证自定义输入
+    # Validate custom input against original
+    # 验证自定义输入与原文对比
     result = await quality_gate.validate(
-        original="",  # Will be fetched from DB
+        original=original_text,
         modified=request.custom_text,
-        locked_terms=[],  # Will be fetched from DB
+        locked_terms=locked_terms,
         target_risk=40
     )
 
@@ -460,7 +494,22 @@ Important:
 Return ONLY the JSON object, no other text."""
 
     try:
-        if settings.llm_provider == "deepseek":
+        content = None
+        if settings.llm_provider == "gemini" and settings.gemini_api_key:
+            # Call Gemini API
+            # 调用Gemini API
+            from google import genai
+            client = genai.Client(api_key=settings.gemini_api_key)
+            response = await client.aio.models.generate_content(
+                model=settings.llm_model,
+                contents=analysis_prompt,
+                config={
+                    "max_output_tokens": 2000,
+                    "temperature": 0.3
+                }
+            )
+            content = response.text.strip()
+        elif settings.llm_provider == "deepseek" or settings.deepseek_api_key:
             async with httpx.AsyncClient(
                 base_url=settings.deepseek_base_url,
                 headers={
@@ -471,7 +520,7 @@ Return ONLY the JSON object, no other text."""
                 trust_env=False
             ) as client:
                 response = await client.post("/chat/completions", json={
-                    "model": settings.llm_model,
+                    "model": settings.llm_model if settings.llm_provider == "deepseek" else "deepseek-chat",
                     "messages": [{"role": "user", "content": analysis_prompt}],
                     "max_tokens": 2000,
                     "temperature": 0.3
@@ -479,89 +528,94 @@ Return ONLY the JSON object, no other text."""
                 response.raise_for_status()
                 data = response.json()
                 content = data["choices"][0]["message"]["content"].strip()
+        else:
+            # No LLM configured, use fallback
+            # 没有配置LLM，使用备用方案
+            return _get_fallback_analysis(request.sentence, request.colloquialism_level)
 
-                # Parse JSON from response
-                # 从响应中解析JSON
-                # Handle potential markdown code blocks
-                if content.startswith("```"):
-                    content = content.split("```")[1]
-                    if content.startswith("json"):
-                        content = content[4:]
-                content = content.strip()
+        if content:
+            # Parse JSON from response
+            # 从响应中解析JSON
+            # Handle potential markdown code blocks
+            if content.startswith("```"):
+                content = content.split("```")[1]
+                if content.startswith("json"):
+                    content = content[4:]
+            content = content.strip()
 
-                try:
-                    analysis = json.loads(content)
-                except json.JSONDecodeError as e:
-                    logger.error(f"JSON parse error: {e}, content: {content[:500]}")
-                    # Return fallback response
-                    return _get_fallback_analysis(request.sentence, request.colloquialism_level)
+            try:
+                analysis = json.loads(content)
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON parse error: {e}, content: {content[:500]}")
+                # Return fallback response
+                return _get_fallback_analysis(request.sentence, request.colloquialism_level)
 
-                # Build response object
-                # 构建响应对象
-                grammar = GrammarStructure(
-                    subject=analysis.get("grammar", {}).get("subject", ""),
-                    subject_zh=analysis.get("grammar", {}).get("subject_zh", ""),
-                    predicate=analysis.get("grammar", {}).get("predicate", ""),
-                    predicate_zh=analysis.get("grammar", {}).get("predicate_zh", ""),
-                    object=analysis.get("grammar", {}).get("object"),
-                    object_zh=analysis.get("grammar", {}).get("object_zh"),
-                    modifiers=[
-                        GrammarModifier(
-                            type=m.get("type", ""),
-                            type_zh=m.get("type_zh", ""),
-                            text=m.get("text", ""),
-                            modifies=m.get("modifies", "")
-                        ) for m in analysis.get("grammar", {}).get("modifiers", [])
-                    ]
-                )
-
-                clauses = [
-                    ClauseInfo(
-                        type=c.get("type", ""),
-                        type_zh=c.get("type_zh", ""),
-                        text=c.get("text", ""),
-                        function=c.get("function", ""),
-                        function_zh=c.get("function_zh", "")
-                    ) for c in analysis.get("clauses", [])
+            # Build response object
+            # 构建响应对象
+            grammar = GrammarStructure(
+                subject=analysis.get("grammar", {}).get("subject", ""),
+                subject_zh=analysis.get("grammar", {}).get("subject_zh", ""),
+                predicate=analysis.get("grammar", {}).get("predicate", ""),
+                predicate_zh=analysis.get("grammar", {}).get("predicate_zh", ""),
+                object=analysis.get("grammar", {}).get("object"),
+                object_zh=analysis.get("grammar", {}).get("object_zh"),
+                modifiers=[
+                    GrammarModifier(
+                        type=m.get("type", ""),
+                        type_zh=m.get("type_zh", ""),
+                        text=m.get("text", ""),
+                        modifies=m.get("modifies", "")
+                    ) for m in analysis.get("grammar", {}).get("modifiers", [])
                 ]
+            )
 
-                pronouns = [
-                    PronounReference(
-                        pronoun=p.get("pronoun", ""),
-                        reference=p.get("reference", ""),
-                        reference_zh=p.get("reference_zh", ""),
-                        context=p.get("context", "")
-                    ) for p in analysis.get("pronouns", [])
-                ]
+            clauses = [
+                ClauseInfo(
+                    type=c.get("type", ""),
+                    type_zh=c.get("type_zh", ""),
+                    text=c.get("text", ""),
+                    function=c.get("function", ""),
+                    function_zh=c.get("function_zh", "")
+                ) for c in analysis.get("clauses", [])
+            ]
 
-                ai_words = [
-                    AIWordSuggestion(
-                        word=w.get("word", ""),
-                        level=w.get("level", 2),
-                        level_desc=w.get("level_desc", ""),
-                        alternatives=w.get("alternatives", []),
-                        context_suggestion=w.get("context_suggestion", "")
-                    ) for w in analysis.get("ai_words", [])
-                ]
+            pronouns = [
+                PronounReference(
+                    pronoun=p.get("pronoun", ""),
+                    reference=p.get("reference", ""),
+                    reference_zh=p.get("reference_zh", ""),
+                    context=p.get("context", "")
+                ) for p in analysis.get("pronouns", [])
+            ]
 
-                rewrite_suggestions = [
-                    RewriteSuggestion(
-                        type=r.get("type", ""),
-                        type_zh=r.get("type_zh", ""),
-                        description=r.get("description", ""),
-                        description_zh=r.get("description_zh", ""),
-                        example=r.get("example")
-                    ) for r in analysis.get("rewrite_suggestions", [])
-                ]
+            ai_words = [
+                AIWordSuggestion(
+                    word=w.get("word", ""),
+                    level=w.get("level", 2),
+                    level_desc=w.get("level_desc", ""),
+                    alternatives=w.get("alternatives", []),
+                    context_suggestion=w.get("context_suggestion", "")
+                ) for w in analysis.get("ai_words", [])
+            ]
 
-                return SentenceAnalysisResponse(
-                    original=request.sentence,
-                    grammar=grammar,
-                    clauses=clauses,
-                    pronouns=pronouns,
-                    ai_words=ai_words,
-                    rewrite_suggestions=rewrite_suggestions
-                )
+            rewrite_suggestions = [
+                RewriteSuggestion(
+                    type=r.get("type", ""),
+                    type_zh=r.get("type_zh", ""),
+                    description=r.get("description", ""),
+                    description_zh=r.get("description_zh", ""),
+                    example=r.get("example")
+                ) for r in analysis.get("rewrite_suggestions", [])
+            ]
+
+            return SentenceAnalysisResponse(
+                original=request.sentence,
+                grammar=grammar,
+                clauses=clauses,
+                pronouns=pronouns,
+                ai_words=ai_words,
+                rewrite_suggestions=rewrite_suggestions
+            )
 
     except Exception as e:
         logger.error(f"Analysis error: {e}")
@@ -709,7 +763,21 @@ Sentence: {sentence}
 Translation:"""
 
     try:
-        if settings.llm_provider == "deepseek":
+        if settings.llm_provider == "gemini" and settings.gemini_api_key:
+            # Call Gemini API for translation
+            # 使用Gemini API翻译
+            from google import genai
+            client = genai.Client(api_key=settings.gemini_api_key)
+            response = await client.aio.models.generate_content(
+                model=settings.llm_model,
+                contents=prompt,
+                config={
+                    "max_output_tokens": 500,
+                    "temperature": 0.3
+                }
+            )
+            return response.text.strip()
+        elif settings.llm_provider == "deepseek" or settings.deepseek_api_key:
             async with httpx.AsyncClient(
                 base_url=settings.deepseek_base_url,
                 headers={
@@ -720,7 +788,7 @@ Translation:"""
                 trust_env=False
             ) as client:
                 response = await client.post("/chat/completions", json={
-                    "model": settings.llm_model,
+                    "model": settings.llm_model if settings.llm_provider == "deepseek" else "deepseek-chat",
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": 500,
                     "temperature": 0.3
@@ -730,8 +798,8 @@ Translation:"""
                 translation = data["choices"][0]["message"]["content"].strip()
                 return translation
         else:
-            # Fallback for other providers
-            # 其他提供商的后备方案
+            # No LLM configured
+            # 没有配置LLM
             return f"[Translation to {target_lang} not available]"
     except Exception as e:
         logger.error(f"Translation error: {e}")

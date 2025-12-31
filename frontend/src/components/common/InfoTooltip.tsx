@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { Info } from 'lucide-react';
 import { clsx } from 'clsx';
 
@@ -7,103 +8,108 @@ interface InfoTooltipProps {
   title?: string;
   className?: string;
   iconSize?: 'sm' | 'md';
-  position?: 'top' | 'bottom' | 'left' | 'right';
 }
 
 /**
  * Info icon with tooltip on click/hover
+ * Uses React Portal to render tooltip outside of overflow:hidden containers
  * 带点击/悬停提示的信息图标
+ * 使用React Portal渲染到body，避免被overflow:hidden容器裁剪
  */
 export default function InfoTooltip({
   content,
   title,
   className,
   iconSize = 'sm',
-  position = 'top',
 }: InfoTooltipProps) {
   const [isVisible, setIsVisible] = useState(false);
-  const tooltipRef = useRef<HTMLDivElement>(null);
-  const buttonRef = useRef<HTMLButtonElement>(null);
+  const [tooltipPos, setTooltipPos] = useState({ top: 0, left: 0 });
+  const triggerRef = useRef<HTMLSpanElement>(null);
+
+  // Calculate tooltip position when showing
+  // 显示时计算tooltip位置
+  const showTooltip = () => {
+    if (!triggerRef.current) return;
+
+    const rect = triggerRef.current.getBoundingClientRect();
+    const tooltipWidth = 256;
+
+    // Position above the button, centered horizontally
+    // 定位在按钮上方，水平居中
+    let left = rect.left + rect.width / 2 - tooltipWidth / 2;
+    let top = rect.top - 8; // 8px gap above button
+
+    // Keep within viewport horizontally
+    // 保持在视口水平范围内
+    if (left < 8) left = 8;
+    if (left + tooltipWidth > window.innerWidth - 8) {
+      left = window.innerWidth - tooltipWidth - 8;
+    }
+
+    setTooltipPos({ top, left });
+    setIsVisible(true);
+  };
 
   // Close tooltip when clicking outside
   // 点击外部时关闭提示
   useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (
-        tooltipRef.current &&
-        !tooltipRef.current.contains(event.target as Node) &&
-        buttonRef.current &&
-        !buttonRef.current.contains(event.target as Node)
-      ) {
+    if (!isVisible) return;
+
+    const handleClickOutside = (e: MouseEvent) => {
+      if (triggerRef.current && !triggerRef.current.contains(e.target as Node)) {
         setIsVisible(false);
       }
     };
 
-    if (isVisible) {
-      document.addEventListener('mousedown', handleClickOutside);
-    }
-
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [isVisible]);
 
   const iconSizeClass = iconSize === 'sm' ? 'w-3.5 h-3.5' : 'w-4 h-4';
 
-  // Position styles for tooltip
-  // 提示框位置样式
-  const positionStyles = {
-    top: 'bottom-full left-1/2 -translate-x-1/2 mb-2',
-    bottom: 'top-full left-1/2 -translate-x-1/2 mt-2',
-    left: 'right-full top-1/2 -translate-y-1/2 mr-2',
-    right: 'left-full top-1/2 -translate-y-1/2 ml-2',
-  };
-
-  // Arrow styles for tooltip
-  // 提示框箭头样式
-  const arrowStyles = {
-    top: 'top-full left-1/2 -translate-x-1/2 border-l-transparent border-r-transparent border-b-transparent border-t-gray-800',
-    bottom: 'bottom-full left-1/2 -translate-x-1/2 border-l-transparent border-r-transparent border-t-transparent border-b-gray-800',
-    left: 'left-full top-1/2 -translate-y-1/2 border-t-transparent border-b-transparent border-r-transparent border-l-gray-800',
-    right: 'right-full top-1/2 -translate-y-1/2 border-t-transparent border-b-transparent border-l-transparent border-r-gray-800',
-  };
-
   return (
     <div className={clsx('relative inline-flex items-center', className)}>
-      <button
-        ref={buttonRef}
-        type="button"
-        onClick={() => setIsVisible(!isVisible)}
-        onMouseEnter={() => setIsVisible(true)}
+      {/* Use span instead of button to avoid nesting buttons */}
+      {/* 使用span代替button以避免按钮嵌套问题 */}
+      <span
+        ref={triggerRef}
+        role="button"
+        tabIndex={0}
+        onClick={(e) => {
+          e.stopPropagation(); // Prevent parent button click
+          isVisible ? setIsVisible(false) : showTooltip();
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            e.stopPropagation();
+            isVisible ? setIsVisible(false) : showTooltip();
+          }
+        }}
+        onMouseEnter={showTooltip}
         onMouseLeave={() => setIsVisible(false)}
-        className="text-gray-400 hover:text-gray-600 transition-colors focus:outline-none"
+        className="text-gray-400 hover:text-gray-600 transition-colors focus:outline-none cursor-pointer"
         aria-label="More information"
       >
         <Info className={iconSizeClass} />
-      </button>
+      </span>
 
-      {isVisible && (
+      {isVisible && createPortal(
         <div
-          ref={tooltipRef}
-          className={clsx(
-            'absolute z-50 w-64 p-3 bg-gray-800 text-white text-sm rounded-lg shadow-lg',
-            positionStyles[position]
-          )}
+          style={{
+            position: 'fixed',
+            top: tooltipPos.top,
+            left: tooltipPos.left,
+            transform: 'translateY(-100%)',
+          }}
+          className="z-[9999] w-64 p-3 bg-gray-800 text-white text-sm rounded-lg shadow-lg"
         >
-          {/* Arrow */}
-          <div
-            className={clsx(
-              'absolute w-0 h-0 border-4',
-              arrowStyles[position]
-            )}
-          />
-
-          {/* Content */}
           {title && (
             <p className="font-medium text-gray-100 mb-1">{title}</p>
           )}
           <p className="text-gray-300 text-xs leading-relaxed">{content}</p>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

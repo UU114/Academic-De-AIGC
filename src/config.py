@@ -40,8 +40,9 @@ class Settings(BaseSettings):
     anthropic_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
     deepseek_api_key: Optional[str] = Field(default=None, alias="DEEPSEEK-API-KEY")
-    llm_provider: str = "deepseek"  # anthropic | openai | deepseek
-    llm_model: str = "deepseek-chat"  # deepseek-chat | deepseek-coder
+    gemini_api_key: Optional[str] = Field(default=None, alias="GEMINI_API_KEY")
+    llm_provider: str = "deepseek"  # deepseek | gemini | anthropic | openai
+    llm_model: str = "deepseek-chat"  # deepseek-chat | gemini-2.5-flash | etc.
     llm_max_tokens: int = 1024
     llm_temperature: float = 0.7
 

@@ -398,11 +398,25 @@ async def get_all_sentences(
         sent = sentences.get(sid)
         if sent:
             analysis = _build_sentence_analysis(sent)
-            # Add modification status
-            # 添加修改状态
+            # Add modification status and new risk score
+            # 添加修改状态和新风险分数
             mod = modifications.get(sid)
             if mod:
                 analysis.status = mod.source if mod.source in ["skip", "flag"] else ("processed" if mod.accepted else "pending")
+                # Add new risk score/level if processed
+                # 如果已处理，添加新风险分数/等级
+                if mod.accepted and mod.new_risk_score is not None:
+                    analysis.new_risk_score = mod.new_risk_score
+                    # Calculate risk level from score
+                    # 根据分数计算风险等级
+                    if mod.new_risk_score < 10:
+                        analysis.new_risk_level = RiskLevel.SAFE
+                    elif mod.new_risk_score < 25:
+                        analysis.new_risk_level = RiskLevel.LOW
+                    elif mod.new_risk_score < 50:
+                        analysis.new_risk_level = RiskLevel.MEDIUM
+                    else:
+                        analysis.new_risk_level = RiskLevel.HIGH
             else:
                 analysis.status = "current" if idx == session.current_index else "pending"
             result_list.append(analysis)

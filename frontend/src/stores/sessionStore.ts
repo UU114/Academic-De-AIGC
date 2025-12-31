@@ -26,6 +26,10 @@ type AnalysisCache = Map<string, DetailedSentenceAnalysis>;
 // 用于存储每个句子自定义文本草稿的缓存
 type CustomTextCache = Map<string, string>;
 
+// Counter for tracking suggestion request IDs to handle race conditions
+// 用于追踪建议请求ID的计数器，处理竞态条件
+let suggestionRequestCounter = 0;
+
 interface SessionStore {
   // State
   // 状态
@@ -43,6 +47,7 @@ interface SessionStore {
   suggestionsCache: SuggestionsCache;  // Cache for suggestions by sentence ID
   analysisCache: AnalysisCache;  // Cache for analysis results by sentence ID
   customTextCache: CustomTextCache;  // Cache for custom text drafts by sentence ID
+  currentSuggestionRequestId: number;  // Track current request to handle race conditions / 追踪当前请求ID以处理竞态条件
 
   // Actions
   // 动作
@@ -88,6 +93,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   suggestionsCache: new Map(),  // Cache: sentenceId -> SuggestResponse
   analysisCache: new Map(),  // Cache: sentenceId -> DetailedSentenceAnalysis
   customTextCache: new Map(),  // Cache: sentenceId -> custom text draft
+  currentSuggestionRequestId: 0,  // Track current request ID / 追踪当前请求ID
 
   // Start a new session
   // 开始新会话
@@ -121,8 +127,8 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     }
   },
 
-  // Load suggestions for current sentence (with caching)
-  // 为当前句子加载建议（带缓存）
+  // Load suggestions for current sentence (with caching and race condition handling)
+  // 为当前句子加载建议（带缓存和竞态条件处理）
   loadSuggestions: async (sentence, colloquialismLevel, forceRefresh = false) => {
     const { suggestionsCache } = get();
     const cacheKey = sentence.id;
@@ -135,7 +141,11 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       return;
     }
 
-    set({ isLoadingSuggestions: true, suggestions: null });
+    // Generate unique request ID and store it to handle race conditions
+    // 生成唯一请求ID并存储，用于处理竞态条件
+    const requestId = ++suggestionRequestCounter;
+    set({ isLoadingSuggestions: true, suggestions: null, currentSuggestionRequestId: requestId });
+
     try {
       const suggestions = await suggestApi.getSuggestions(sentence.text, {
         issues: sentence.issues.map((i) => ({
@@ -146,9 +156,18 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
         colloquialismLevel,
       });
 
+      // Check if this request is still the current one (race condition guard)
+      // 检查此请求是否仍然是当前请求（竞态条件保护）
+      if (get().currentSuggestionRequestId !== requestId) {
+        // This request is stale, discard the result
+        // 此请求已过期，丢弃结果
+        console.log('[loadSuggestions] Discarding stale response for:', cacheKey);
+        return;
+      }
+
       // Store in cache
       // 存入缓存
-      const newCache = new Map(suggestionsCache);
+      const newCache = new Map(get().suggestionsCache);
       newCache.set(cacheKey, suggestions);
 
       set({
@@ -158,10 +177,14 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
         suggestionsCache: newCache,
       });
     } catch (error) {
-      set({
-        error: (error as Error).message,
-        isLoadingSuggestions: false
-      });
+      // Only update error state if this is still the current request
+      // 仅当这仍然是当前请求时才更新错误状态
+      if (get().currentSuggestionRequestId === requestId) {
+        set({
+          error: (error as Error).message,
+          isLoadingSuggestions: false
+        });
+      }
     }
   },
 
@@ -399,5 +422,6 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       suggestionsCache: new Map(),
       analysisCache: new Map(),
       customTextCache: new Map(),
+      currentSuggestionRequestId: 0,
     }),
 }));

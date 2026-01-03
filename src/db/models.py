@@ -30,6 +30,11 @@ class Document(Base):
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
+    # Analysis cache fields (避免重复LLM调用)
+    # Analysis cache fields (avoid repeated LLM calls)
+    structure_analysis_cache = Column(JSON, nullable=True)  # Step 1: Structure analysis cache
+    transition_analysis_cache = Column(JSON, nullable=True)  # Step 2: Transition analysis cache
+
     # Relationships
     sentences = relationship("Sentence", back_populates="document", cascade="all, delete-orphan")
     sessions = relationship("Session", back_populates="document", cascade="all, delete-orphan")

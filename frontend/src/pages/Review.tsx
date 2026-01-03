@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import Button from '../components/common/Button';
-import RiskBadge from '../components/common/RiskBadge';
+import LoadingMessage from '../components/common/LoadingMessage';
 import { exportApi, sessionApi } from '../services/api';
 
 interface ReviewStats {
@@ -128,8 +128,7 @@ export default function Review() {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center min-h-[50vh]">
-        <Loader2 className="w-8 h-8 animate-spin text-primary-600" />
-        <span className="ml-3 text-gray-600">加载结果中...</span>
+        <LoadingMessage category="general" size="lg" showEnglish={true} />
       </div>
     );
   }

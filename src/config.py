@@ -39,16 +39,24 @@ class Settings(BaseSettings):
     # LLM API配置
     anthropic_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
-    deepseek_api_key: Optional[str] = Field(default=None, alias="DEEPSEEK-API-KEY")
+    # deepseek_api_key: Optional[str] = Field(default=None, alias="DEEPSEEK-API-KEY")  # DeepSeek official (commented out)
     gemini_api_key: Optional[str] = Field(default=None, alias="GEMINI_API_KEY")
-    llm_provider: str = "deepseek"  # deepseek | gemini | anthropic | openai
-    llm_model: str = "deepseek-chat"  # deepseek-chat | gemini-2.5-flash | etc.
+
+    # Volcengine (火山引擎) DeepSeek API - faster than official
+    # 火山引擎 DeepSeek API - 比官方更快
+    volcengine_api_key: Optional[str] = Field(default=None, alias="VOLCENGINE_API_KEY")
+    volcengine_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
+    volcengine_model: str = "deepseek-v3-2-251201"  # Volcengine model endpoint ID
+
+    llm_provider: str = "volcengine"  # volcengine | deepseek | gemini | anthropic | openai
+    llm_model: str = "deepseek-v3-2-251201"  # volcengine model or deepseek-chat | gemini-2.5-flash | etc.
     llm_max_tokens: int = 1024
     llm_temperature: float = 0.7
 
-    # DeepSeek API base URL
-    # DeepSeek API 基础URL
+    # DeepSeek API base URL (official - commented out, using Volcengine instead)
+    # DeepSeek API 基础URL（官方 - 已注释，改用火山引擎）
     deepseek_base_url: str = "https://api.deepseek.com"
+    deepseek_api_key: Optional[str] = Field(default=None, alias="DEEPSEEK-API-KEY")  # Keep for fallback
 
     # Analysis Settings
     # 分析配置

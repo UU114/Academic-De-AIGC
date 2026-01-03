@@ -5,7 +5,6 @@ import {
   ArrowRight,
   SkipForward,
   Flag,
-  Loader2,
   AlertCircle,
   CheckCircle,
   Settings,
@@ -21,6 +20,7 @@ import CustomInputSection from '../components/editor/CustomInputSection';
 import ColloquialismSlider from '../components/settings/ColloquialismSlider';
 import ProgressBar from '../components/common/ProgressBar';
 import RiskBadge from '../components/common/RiskBadge';
+import LoadingMessage from '../components/common/LoadingMessage';
 import { useSessionStore } from '../stores/sessionStore';
 import { useConfigStore } from '../stores/configStore';
 import { sessionApi, suggestApi } from '../services/api';
@@ -463,8 +463,7 @@ export default function Intervention() {
   if (isLoading && !session) {
     return (
       <div className="flex items-center justify-center min-h-[50vh]">
-        <Loader2 className="w-8 h-8 animate-spin text-primary-600" />
-        <span className="ml-3 text-gray-600">加载会话中...</span>
+        <LoadingMessage category="general" size="lg" showEnglish={true} />
       </div>
     );
   }
@@ -539,8 +538,8 @@ export default function Intervention() {
         {!sidebarCollapsed && (
           <div ref={sidebarScrollRef} className="flex-1 overflow-y-auto">
             {loadingSentences ? (
-              <div className="flex items-center justify-center py-8">
-                <Loader2 className="w-5 h-5 animate-spin text-gray-400" />
+              <div className="flex items-center justify-center py-8 px-2">
+                <LoadingMessage category="general" size="sm" showEnglish={false} />
               </div>
             ) : (
               <div className="divide-y divide-gray-100">

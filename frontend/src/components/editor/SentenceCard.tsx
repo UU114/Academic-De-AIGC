@@ -186,8 +186,8 @@ export default function SentenceCard({
         </div>
       )}
 
-      {/* PPL and fingerprint indicators */}
-      <div className="flex items-center justify-between pt-3 border-t border-gray-100 text-sm">
+      {/* PPL, fingerprint, and connector indicators */}
+      <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-gray-100 text-sm">
         <div className="flex items-center text-gray-500">
           <span className="mr-1">PPL: {sentence.ppl.toFixed(1)}</span>
           <InfoTooltip
@@ -196,6 +196,9 @@ export default function SentenceCard({
           />
         </div>
         <FingerprintIndicator count={sentence.fingerprints.length} />
+        {sentence.connectorWord && (
+          <ConnectorIndicator word={sentence.connectorWord} />
+        )}
       </div>
     </div>
   );
@@ -230,6 +233,17 @@ function FingerprintIndicator({ count }: { count: number }) {
     <div className={`flex items-center ${getColorClass()}`} title={getTooltip()}>
       <span className="mr-1">指纹词: {count}</span>
       <span className="text-base">{getEmoji()}</span>
+    </div>
+  );
+}
+
+// Connector indicator (Phase 2)
+// 连接词指示器（第二阶段）
+function ConnectorIndicator({ word }: { word: string }) {
+  return (
+    <div className="flex items-center text-amber-600" title={`检测到显性连接词 "${word}"，建议移除或替换`}>
+      <span className="mr-1">连接词: {word}</span>
+      <span className="text-base">⚠️</span>
     </div>
   );
 }

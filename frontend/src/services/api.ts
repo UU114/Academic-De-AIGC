@@ -14,6 +14,13 @@ import type {
   RiskLevel,
   SuggestionSource,
   DetailedSentenceAnalysis,
+  TransitionAnalysisResponse,
+  DocumentTransitionSummary,
+  TransitionStrategy,
+  StructureAnalysisResponse,
+  StructureStrategy,
+  StructureOption,
+  LogicDiagnosisResponse,
 } from '../types';
 
 // Helper function to convert snake_case to camelCase
@@ -43,7 +50,7 @@ const transformKeys = <T>(obj: unknown): T => {
 // 创建 axios 实例
 const api: AxiosInstance = axios.create({
   baseURL: '/api/v1',
-  timeout: 120000,  // Increased to 120s for LLM requests
+  timeout: 300000,  // Increased to 300s (5min) for LLM structure analysis
   headers: {
     'Content-Type': 'application/json',
   },
@@ -434,6 +441,94 @@ export const sessionApi = {
   },
 };
 
+// Transition APIs (Phase 3: Level 2 De-AIGC)
+// 衔接 API（第三阶段：Level 2 De-AIGC）
+export const transitionApi = {
+  /**
+   * Analyze transition between two paragraphs
+   * 分析两个段落之间的衔接
+   */
+  analyze: async (
+    paraA: string,
+    paraB: string,
+    contextHint?: string
+  ): Promise<TransitionAnalysisResponse> => {
+    const response = await api.post('/transition/', {
+      para_a: paraA,
+      para_b: paraB,
+      context_hint: contextHint,
+    });
+    return transformKeys<TransitionAnalysisResponse>(response.data);
+  },
+
+  /**
+   * Analyze transition and get repair suggestions
+   * 分析衔接并获取修复建议
+   */
+  analyzeWithSuggestions: async (
+    paraA: string,
+    paraB: string,
+    contextHint?: string
+  ): Promise<TransitionAnalysisResponse> => {
+    const response = await api.post('/transition/with-suggestions', {
+      para_a: paraA,
+      para_b: paraB,
+      context_hint: contextHint,
+    });
+    return transformKeys<TransitionAnalysisResponse>(response.data);
+  },
+
+  /**
+   * Get suggestion for a specific strategy
+   * 获取特定策略的建议
+   */
+  getSuggestion: async (
+    strategy: TransitionStrategy,
+    paraA: string,
+    paraB: string,
+    contextHint?: string
+  ): Promise<TransitionAnalysisResponse['options'][0]> => {
+    const response = await api.post(`/transition/suggest/${strategy}`, {
+      para_a: paraA,
+      para_b: paraB,
+      context_hint: contextHint,
+    });
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Get available transition strategies
+   * 获取可用的衔接策略
+   */
+  getStrategies: async (): Promise<{
+    strategies: Array<{
+      id: string;
+      name: string;
+      nameZh: string;
+      description: string;
+      descriptionZh: string;
+    }>;
+  }> => {
+    const response = await api.get('/transition/strategies');
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Analyze all transitions in a document
+   * 分析文档中所有衔接
+   */
+  analyzeDocument: async (
+    documentId: string,
+    contextHint?: string
+  ): Promise<DocumentTransitionSummary> => {
+    const response = await api.post('/transition/document', {
+      document_id: documentId,
+      context_hint: contextHint,
+    });
+    return transformKeys<DocumentTransitionSummary>(response.data);
+  },
+};
+
 // Export APIs
 // 导出 API
 export const exportApi = {
@@ -471,6 +566,714 @@ export const exportApi = {
    */
   download: (filename: string): string => {
     return `/api/v1/export/download/${filename}`;
+  },
+};
+
+// Structure APIs (Phase 4: Level 1 De-AIGC)
+// 结构 API（第4阶段：Level 1 De-AIGC）
+export const structureApi = {
+  /**
+   * Analyze document structure
+   * 分析文档结构
+   */
+  analyze: async (
+    text: string,
+    extractThesis: boolean = true
+  ): Promise<StructureAnalysisResponse> => {
+    const response = await api.post('/structure/', {
+      text,
+      extract_thesis: extractThesis,
+    });
+    return transformKeys<StructureAnalysisResponse>(response.data);
+  },
+
+  /**
+   * Analyze structure with suggestions
+   * 分析结构并获取建议
+   */
+  analyzeWithSuggestions: async (
+    text: string,
+    extractThesis: boolean = true
+  ): Promise<StructureAnalysisResponse> => {
+    const response = await api.post('/structure/with-suggestions', {
+      text,
+      extract_thesis: extractThesis,
+    });
+    return transformKeys<StructureAnalysisResponse>(response.data);
+  },
+
+  /**
+   * Get suggestion for a specific strategy
+   * 获取特定策略的建议
+   */
+  getSuggestion: async (
+    strategy: StructureStrategy,
+    text: string,
+    extractThesis: boolean = true
+  ): Promise<StructureOption> => {
+    const response = await api.post(`/structure/suggest/${strategy}`, {
+      text,
+      extract_thesis: extractThesis,
+    });
+    return transformKeys<StructureOption>(response.data);
+  },
+
+  /**
+   * Get logic diagnosis card
+   * 获取逻辑诊断卡
+   */
+  getDiagnosis: async (
+    text: string,
+    extractThesis: boolean = true
+  ): Promise<LogicDiagnosisResponse> => {
+    const response = await api.post('/structure/diagnosis', {
+      text,
+      extract_thesis: extractThesis,
+    });
+    return transformKeys<LogicDiagnosisResponse>(response.data);
+  },
+
+  /**
+   * Analyze document structure by ID (legacy combined analysis)
+   * 按ID分析文档结构（遗留的组合分析）
+   */
+  analyzeDocument: async (
+    documentId: string,
+    extractThesis: boolean = true
+  ): Promise<StructureAnalysisResponse> => {
+    const response = await api.post('/structure/document', {
+      document_id: documentId,
+      extract_thesis: extractThesis,
+    });
+    return transformKeys<StructureAnalysisResponse>(response.data);
+  },
+
+  /**
+   * Step 1-1: Analyze document STRUCTURE only (global patterns)
+   * 步骤 1-1：仅分析文档结构（全局模式）
+   *
+   * Returns: sections, paragraphs, structure_score, structure_issues
+   */
+  analyzeStep1_1: async (
+    documentId: string
+  ): Promise<{
+    sections: Array<{
+      number: string;
+      title: string;
+      paragraphs: Array<{
+        position: string;
+        summary: string;
+        summaryZh: string;
+        firstSentence: string;
+        lastSentence: string;
+        wordCount: number;
+      }>;
+    }>;
+    totalParagraphs: number;
+    totalSections: number;
+    structureScore: number;
+    riskLevel: string;
+    structureIssues: Array<{
+      type: string;
+      description: string;
+      descriptionZh: string;
+      severity: string;
+      affectedPositions: string[];
+    }>;
+    scoreBreakdown: Record<string, number>;
+    recommendationZh: string;
+  }> => {
+    const response = await api.post('/structure/document/step1-1', {
+      document_id: documentId,
+    });
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Step 1-2: Analyze paragraph RELATIONSHIPS (connections, transitions)
+   * 步骤 1-2：分析段落关系（连接、过渡）
+   *
+   * Requires Step 1-1 to be completed first.
+   * Returns: explicit_connectors, logic_breaks, paragraph_risks, relationship_score
+   */
+  analyzeStep1_2: async (
+    documentId: string
+  ): Promise<{
+    explicitConnectors: Array<{
+      word: string;
+      position: string;
+      location: string;
+      severity: string;
+    }>;
+    logicBreaks: Array<{
+      fromPosition: string;
+      toPosition: string;
+      transitionType: string;
+      issue: string;
+      issueZh: string;
+      suggestion: string;
+      suggestionZh: string;
+    }>;
+    paragraphRisks: Array<{
+      position: string;
+      aiRisk: string;
+      aiRiskReason: string;
+      openingConnector: string | null;
+      rewriteSuggestionZh: string;
+    }>;
+    relationshipScore: number;
+    relationshipIssues: Array<{
+      type: string;
+      description: string;
+      descriptionZh: string;
+      severity: string;
+      affectedPositions: string[];
+    }>;
+    scoreBreakdown: Record<string, number>;
+  }> => {
+    const response = await api.post('/structure/document/step1-2', {
+      document_id: documentId,
+    });
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Clear analysis cache for a document
+   * 清除文档的分析缓存
+   */
+  clearCache: async (documentId: string): Promise<{ message: string }> => {
+    const response = await api.delete(`/structure/document/${documentId}/cache`);
+    return response.data;
+  },
+
+  /**
+   * Get available structure strategies
+   * 获取可用的结构策略
+   */
+  getStrategies: async (): Promise<{
+    strategies: Array<{
+      id: string;
+      name: string;
+      nameZh: string;
+      description: string;
+      descriptionZh: string;
+    }>;
+  }> => {
+    const response = await api.get('/structure/strategies');
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Get rewrite suggestion for a single paragraph
+   * 获取单个段落的改写建议
+   */
+  getParagraphSuggestion: async (
+    paragraphText: string,
+    paragraphPosition: string,
+    options?: {
+      aiRisk?: string;
+      aiRiskReason?: string;
+      contextHint?: string;
+    }
+  ): Promise<{
+    paragraphPosition: string;
+    rewriteSuggestionZh: string;
+    rewriteExample?: string;  // English example
+    aiRisk: string;
+    aiRiskReason: string;  // Chinese reason
+  }> => {
+    const response = await api.post('/structure/paragraph-suggestion', {
+      paragraph_text: paragraphText,
+      paragraph_position: paragraphPosition,
+      ai_risk: options?.aiRisk,
+      ai_risk_reason: options?.aiRiskReason,
+      context_hint: options?.contextHint,
+    });
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Get 7-indicator structural risk card
+   * 获取7指征结构风险卡片
+   *
+   * Returns a visual risk card showing:
+   * - 7 AI structural indicators with emoji and color
+   * - Whether each indicator is triggered
+   * - Overall risk level and summary
+   */
+  getRiskCard: async (text: string): Promise<{
+    indicators: Array<{
+      id: string;
+      name: string;
+      nameZh: string;
+      triggered: boolean;
+      riskLevel: number;
+      emoji: string;
+      color: string;
+      description: string;
+      descriptionZh: string;
+      details: string;
+      detailsZh: string;
+    }>;
+    triggeredCount: number;
+    overallRisk: string;
+    overallRiskZh: string;
+    summary: string;
+    summaryZh: string;
+    totalScore: number;
+  }> => {
+    const response = await api.post('/structure/risk-card', { text });
+    return transformKeys(response.data);
+  },
+};
+
+// Flow APIs (Phase 5: Full Flow Integration)
+// 流程 API（第5阶段：全流程整合）
+export const flowApi = {
+  /**
+   * Start a new processing flow
+   * 开始新的处理流程
+   */
+  start: async (
+    documentId: string,
+    options?: {
+      mode?: 'quick' | 'deep';
+      colloquialismLevel?: number;
+      whitelist?: string[];
+    }
+  ): Promise<{
+    flowId: string;
+    sessionId: string;
+    mode: string;
+    currentLevel: string;
+    levels: Array<{ level: string; nameEn: string; nameZh: string; status: string }>;
+  }> => {
+    const response = await api.post('/flow/start', {
+      document_id: documentId,
+      mode: options?.mode || 'deep',
+      colloquialism_level: options?.colloquialismLevel ?? 4,
+      whitelist: options?.whitelist || [],
+    });
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Get flow progress
+   * 获取流程进度
+   */
+  getProgress: async (flowId: string): Promise<{
+    flowId: string;
+    mode: string;
+    currentLevel: string;
+    overallStatus: string;
+    levels: Array<{
+      level: string;
+      nameEn: string;
+      nameZh: string;
+      status: string;
+      scoreBefore?: number;
+      scoreAfter?: number;
+      issuesFound?: number;
+      issuesFixed?: number;
+    }>;
+    summary: {
+      totalIssuesFound: number;
+      totalIssuesFixed: number;
+      totalScoreReduction: number;
+      completedLevels: number;
+      skippedLevels: number;
+    };
+  }> => {
+    const response = await api.get(`/flow/${flowId}/progress`);
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Complete a level
+   * 完成层级
+   */
+  completeLevel: async (
+    flowId: string,
+    level: string,
+    result: {
+      scoreBefore: number;
+      scoreAfter: number;
+      issuesFound: number;
+      issuesFixed: number;
+      changes?: Array<{ type: string; description: string }>;
+      updatedText?: string;
+    }
+  ): Promise<{
+    flowId: string;
+    completedLevel: string;
+    nextLevel: string | null;
+    progress: Record<string, unknown>;
+  }> => {
+    const response = await api.post(`/flow/${flowId}/complete-level`, {
+      flow_id: flowId,
+      level,
+      score_before: result.scoreBefore,
+      score_after: result.scoreAfter,
+      issues_found: result.issuesFound,
+      issues_fixed: result.issuesFixed,
+      changes: result.changes || [],
+      updated_text: result.updatedText,
+    });
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Skip a level
+   * 跳过层级
+   */
+  skipLevel: async (
+    flowId: string,
+    level: string
+  ): Promise<{
+    flowId: string;
+    skippedLevel: string;
+    nextLevel: string | null;
+    progress: Record<string, unknown>;
+  }> => {
+    const response = await api.post(`/flow/${flowId}/skip-level`, null, {
+      params: { level },
+    });
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Get context for a level
+   * 获取层级上下文
+   */
+  getLevelContext: async (
+    flowId: string,
+    level: string
+  ): Promise<{
+    flowId: string;
+    level: string;
+    context: Record<string, unknown>;
+  }> => {
+    const response = await api.get(`/flow/${flowId}/context/${level}`);
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Update flow context
+   * 更新流程上下文
+   */
+  updateContext: async (
+    flowId: string,
+    updates: Record<string, unknown>
+  ): Promise<{
+    flowId: string;
+    status: string;
+    updatedFields: string[];
+  }> => {
+    const response = await api.post(`/flow/${flowId}/update-context`, updates);
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Get current text
+   * 获取当前文本
+   */
+  getCurrentText: async (flowId: string): Promise<{
+    flowId: string;
+    currentLevel: string;
+    text: string;
+    paragraphCount: number;
+  }> => {
+    const response = await api.get(`/flow/${flowId}/current-text`);
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Cancel flow
+   * 取消流程
+   */
+  cancel: async (flowId: string): Promise<{ status: string; flowId: string }> => {
+    const response = await api.delete(`/flow/${flowId}`);
+    return transformKeys(response.data);
+  },
+};
+
+// Paragraph Logic APIs (Level 3 Enhancement: Intra-paragraph Logic)
+// 段落逻辑 API（Level 3 增强：段落内逻辑）
+export const paragraphApi = {
+  /**
+   * Get available strategies
+   * 获取可用策略
+   */
+  getStrategies: async (): Promise<{
+    strategies: Array<{
+      key: string;
+      name: string;
+      nameZh: string;
+      description: string;
+      descriptionZh: string;
+    }>;
+  }> => {
+    const response = await api.get('/paragraph/strategies');
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Analyze paragraph logic
+   * 分析段落逻辑
+   */
+  analyze: async (
+    paragraph: string,
+    toneLevel: number = 4
+  ): Promise<{
+    issues: Array<{
+      type: string;
+      description: string;
+      descriptionZh: string;
+      severity: string;
+      position: number[];
+      suggestion: string;
+      suggestionZh: string;
+      details?: Record<string, unknown>;
+    }>;
+    hasSubjectRepetition: boolean;
+    hasUniformLength: boolean;
+    hasLinearStructure: boolean;
+    hasFirstPersonOveruse: boolean;
+    subjectDiversityScore: number;
+    lengthVariationCv: number;
+    logicStructure: string;
+    firstPersonRatio: number;
+    connectorDensity: number;
+    paragraphRiskAdjustment: number;
+    sentenceCount: number;
+    sentences: string[];
+  }> => {
+    const response = await api.post('/paragraph/analyze', {
+      paragraph,
+      tone_level: toneLevel,
+    });
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Restructure paragraph
+   * 重组段落
+   */
+  restructure: async (
+    paragraph: string,
+    strategy: 'ani' | 'subject_diversity' | 'implicit_connector' | 'rhythm' | 'all',
+    toneLevel: number = 4,
+    options?: {
+      detectedIssues?: Array<{
+        type: string;
+        description: string;
+        severity: string;
+      }>;
+      repeatedSubject?: string;
+      subjectCount?: number;
+      connectorsFound?: Array<{
+        index: number;
+        connector: string;
+        category: string;
+      }>;
+      lengths?: number[];
+      cv?: number;
+    }
+  ): Promise<{
+    original: string;
+    restructured: string;
+    strategy: string;
+    strategyName: string;
+    strategyNameZh: string;
+    changes: Array<{
+      type: string;
+      description: string;
+      original?: string;
+      result?: string;
+    }>;
+    explanation: string;
+    explanationZh: string;
+    originalRiskAdjustment: number;
+    newRiskAdjustment: number;
+    improvement: number;
+  }> => {
+    const response = await api.post('/paragraph/restructure', {
+      paragraph,
+      strategy,
+      tone_level: toneLevel,
+      detected_issues: options?.detectedIssues,
+      repeated_subject: options?.repeatedSubject,
+      subject_count: options?.subjectCount,
+      connectors_found: options?.connectorsFound,
+      lengths: options?.lengths,
+      cv: options?.cv,
+    });
+    return transformKeys(response.data);
+  },
+};
+
+// Structure Guidance APIs (Level 1 Guided Interaction)
+// 结构指引 API（Level 1 指引式交互）
+export const structureGuidanceApi = {
+  /**
+   * Get categorized structure issues for a document
+   * 获取文档的分类结构问题
+   */
+  getIssues: async (
+    documentId: string,
+    includeLowSeverity: boolean = false
+  ): Promise<{
+    structureIssues: Array<{
+      id: string;
+      type: string;
+      category: string;
+      severity: string;
+      titleZh: string;
+      titleEn: string;
+      briefZh: string;
+      briefEn?: string;
+      affectedPositions: string[];
+      affectedTextPreview: string;
+      canGenerateReference: boolean;
+      status: string;
+      connectorWord?: string;
+      wordCount?: number;
+      neighborAvg?: number;
+    }>;
+    transitionIssues: Array<{
+      id: string;
+      type: string;
+      category: string;
+      severity: string;
+      titleZh: string;
+      titleEn: string;
+      briefZh: string;
+      briefEn?: string;
+      affectedPositions: string[];
+      affectedTextPreview: string;
+      canGenerateReference: boolean;
+      status: string;
+      connectorWord?: string;
+      wordCount?: number;
+      neighborAvg?: number;
+    }>;
+    totalIssues: number;
+    highSeverityCount: number;
+    mediumSeverityCount: number;
+    lowSeverityCount: number;
+    documentId: string;
+    structureScore: number;
+    riskLevel: string;
+  }> => {
+    const response = await api.post('/structure-guidance/issues', {
+      document_id: documentId,
+      include_low_severity: includeLowSeverity,
+    });
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Get detailed guidance for a specific issue (calls LLM)
+   * 获取特定问题的详细指引（调用 LLM）
+   */
+  getGuidance: async (
+    documentId: string,
+    issueId: string,
+    issueType: string,
+    options?: {
+      affectedPositions?: string[];
+      affectedText?: string;
+      prevParagraph?: string;
+      nextParagraph?: string;
+      connectorWord?: string;
+    }
+  ): Promise<{
+    issueId: string;
+    issueType: string;
+    guidanceZh: string;
+    guidanceEn: string;
+    referenceVersion: string | null;
+    referenceExplanationZh: string | null;
+    whyNoReference: string | null;
+    affectedText: string;
+    keyConcepts: {
+      fromPrev: string[];
+      fromNext: string[];
+    };
+    confidence: number;
+    canGenerateReference: boolean;
+  }> => {
+    const response = await api.post('/structure-guidance/guidance', {
+      document_id: documentId,
+      issue_id: issueId,
+      issue_type: issueType,
+      affected_positions: options?.affectedPositions,
+      affected_text: options?.affectedText,
+      prev_paragraph: options?.prevParagraph,
+      next_paragraph: options?.nextParagraph,
+      connector_word: options?.connectorWord,
+    });
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Apply a structure fix
+   * 应用结构修复
+   */
+  applyFix: async (
+    documentId: string,
+    issueId: string,
+    fixType: 'use_reference' | 'custom' | 'skip' | 'mark_done',
+    options?: {
+      customText?: string;
+      affectedPositions?: string[];
+    }
+  ): Promise<{
+    success: boolean;
+    issueId: string;
+    newStatus: string;
+    message: string;
+    messageZh: string;
+    updatedText?: string;
+  }> => {
+    const response = await api.post('/structure-guidance/apply-fix', {
+      document_id: documentId,
+      issue_id: issueId,
+      fix_type: fixType,
+      custom_text: options?.customText,
+      affected_positions: options?.affectedPositions,
+    });
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Get paragraph reorder suggestion
+   * 获取段落重排建议
+   */
+  getReorderSuggestion: async (
+    documentId: string
+  ): Promise<{
+    currentOrder: number[];
+    suggestedOrder: number[];
+    changes: Array<{
+      action: string;
+      paragraphIndex: number;
+      fromPosition: number;
+      toPosition: number;
+      paragraphSummary: string;
+      reasonZh: string;
+      reasonEn: string;
+    }>;
+    overallGuidanceZh: string;
+    warningsZh: string[];
+    previewFlowZh: string;
+    estimatedImprovement: number;
+    confidence: number;
+  }> => {
+    const response = await api.post('/structure-guidance/reorder-suggestion', {
+      document_id: documentId,
+    });
+    return transformKeys(response.data);
   },
 };
 

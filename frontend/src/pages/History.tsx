@@ -5,6 +5,7 @@ import { clsx } from 'clsx';
 import Button from '../components/common/Button';
 import RiskBadge from '../components/common/RiskBadge';
 import ProgressBar from '../components/common/ProgressBar';
+import LoadingMessage from '../components/common/LoadingMessage';
 import { sessionApi, documentApi } from '../services/api';
 import type { SessionInfo, DocumentInfo } from '../types';
 
@@ -96,7 +97,7 @@ export default function History() {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500"></div>
+        <LoadingMessage category="general" size="md" showEnglish={true} />
       </div>
     );
   }

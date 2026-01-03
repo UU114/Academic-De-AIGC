@@ -1,9 +1,10 @@
 # AcademicGuard 开发计划
 # AcademicGuard Development Plan
 
-> 版本 Version: v1.0
-> 状态 Status: 规划中 / Planning
-> 更新日期 Last Updated: 2024-12-29
+> 版本 Version: v2.0
+> 状态 Status: 实施中 / In Progress
+> 更新日期 Last Updated: 2025-12-31
+> 目标语言 Target Language: **English Academic Papers Only**
 
 ---
 
@@ -34,9 +35,81 @@ Input   → Sentence-by-sentence Analysis → Dual-track Suggestions → User Ch
 
 ---
 
-## 二、产品设计 | Product Design
+## 二、三层级 De-AIGC 架构 | Three-Level De-AIGC Architecture
 
-### 2.1 双模式设计 | Dual Mode Design
+> 基于 `improve.md` 分析报告，采用三层级递进式架构
+
+### 2.0 架构概览 | Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    三层级 De-AIGC 处理流程                            │
+│                Three-Level De-AIGC Processing Flow                   │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  Level 1: 骨架重组 (Macro Structure)                                 │
+│  ├── 全文逻辑诊断                                                    │
+│  ├── 识别线性结构问题                                                │
+│  └── 提供两种重构方案                                                │
+│                          ↓                                           │
+│  Level 2: 关节润滑 (Paragraph Transition)                            │
+│  ├── 滑动窗口检测段落接缝                                            │
+│  ├── 消灭显性连接词                                                  │
+│  └── 建立语义回声连接                                                │
+│                          ↓                                           │
+│  Level 3: 皮肤精修 (Sentence Polish) ✅ 已实现                       │
+│  ├── 指纹词替换                                                      │
+│  ├── 句式重构                                                        │
+│  └── 主观噪声注入                                                    │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### 2.0.1 各层级实现状态 | Implementation Status
+
+| 层级 Level | 名称 Name | 目标 Goal | 状态 Status |
+|------------|-----------|-----------|-------------|
+| **Level 1** | 骨架重组 Macro Structure | 打破线性结构，重构叙事逻辑 | ✅ 已实现 |
+| **Level 2** | 关节润滑 Paragraph Transition | 消灭显性连接词，建立语义流 | ✅ 已实现 |
+| **Level 3** | 皮肤精修 Sentence Polish | 指纹词替换、句式重构 | ✅ CAASS v2.0 已实现 |
+
+### 2.0.2 处理顺序原则 | Processing Order Principle
+
+> **重要**：必须按 Level 1 → 2 → 3 顺序处理
+> **Important**: Must process in Level 1 → 2 → 3 order
+
+**原因 Reason:**
+- 如果先改句子(L3)再调结构(L1)，结构调整可能导致句子级修改失效
+- If sentences (L3) are modified before structure (L1), structure changes may invalidate sentence edits
+
+**产品策略 Product Strategy:**
+- 用户上传文档后，系统先运行 Level 1 诊断
+- After upload, system runs Level 1 diagnosis first
+- 允许用户跳过 Level 1/2，但显示警告
+- Allow users to skip Level 1/2, but show warnings
+
+---
+
+## 三、产品设计 | Product Design
+
+### 3.1 双模式设计 | Dual Mode Design
+
+> **重要**: 两种模式都从 Level 1 开始，遵循完整的三层级处理流程
+> **Important**: Both modes start from Level 1, following the complete three-level processing flow
+
+```
+处理流程 Processing Flow:
+┌────────────────────────────────────────────────────────────┐
+│  Upload → Level 1 (结构) → Level 2 (衔接) → Level 3 (句子)  │
+│           Structure     Transition     Sentence           │
+│                                                            │
+│  干预模式: 每一步手动选择方案                               │
+│  Intervention: Manual selection at each step               │
+│                                                            │
+│  YOLO模式: 全自动处理，最后统一审核                         │
+│  YOLO: Fully automatic, review at end                      │
+└────────────────────────────────────────────────────────────┘
+```
 
 #### YOLO模式 (自动处理模式) | YOLO Mode (Auto-processing)
 
@@ -44,23 +117,25 @@ Input   → Sentence-by-sentence Analysis → Dual-track Suggestions → User Ch
 |------|------|
 | **适用场景** | 时间紧迫、长文档快速处理 |
 | **Use Case** | Time-sensitive, quick processing of long documents |
-| **处理流程** | 全文分析 → 自动应用最优建议 → 生成对比报告 → 用户审核 |
-| **Process** | Full analysis → Auto-apply optimal suggestions → Generate diff report → User review |
-| **用户控制** | 设置策略偏好、处理范围、阈值，最后统一审核 |
-| **User Control** | Set preferences, scope, thresholds; review at end |
+| **处理流程** | L1结构分析 → L2衔接优化 → L3句子精修 → 自动应用最优建议 → 用户审核 |
+| **Process** | L1 Structure → L2 Transition → L3 Sentence → Auto-apply best suggestions → User review |
+| **用户控制** | 设置策略偏好，最后统一审核 |
+| **User Control** | Set preferences; review at end |
+| **警告提示** | 开始前弹窗提示：AI自动处理不保证结构/逻辑/语义完全可靠 |
+| **Warning** | Pre-start dialog: AI auto-processing cannot guarantee complete reliability |
 
-#### 干预模式 (逐句控制模式) | Intervention Mode (Sentence-by-sentence)
+#### 干预模式 (逐步控制模式) | Intervention Mode (Step-by-step)
 
 | 项目 | 说明 |
 |------|------|
 | **适用场景** | 重要论文、想学习AIGC特征、高质量要求 |
 | **Use Case** | Important papers, learning AIGC patterns, high quality requirements |
-| **处理流程** | 逐句分析 → 展示双轨建议 → 用户选择或自定义 → 实时验证 → 下一句 |
-| **Process** | Analyze each sentence → Show dual suggestions → User selects/customizes → Validate → Next |
-| **用户控制** | 每句完全控制，可跳过、标记、自定义修改 |
-| **User Control** | Full control per sentence; skip, flag, or customize |
+| **处理流程** | L1手动选择 → L2手动选择 → L3逐句编辑 |
+| **Process** | L1 manual selection → L2 manual selection → L3 sentence-by-sentence editing |
+| **用户控制** | 每一步完全控制，可跳过、标记、自定义修改 |
+| **User Control** | Full control at each step; skip, flag, or customize |
 
-### 2.2 双轨建议系统 | Dual-track Suggestion System
+### 3.2 双轨建议系统 | Dual-track Suggestion System
 
 这是核心功能，为每个风险句子提供两种来源的修改建议：
 This is the core feature, providing two sources of suggestions for each risky sentence:
@@ -102,7 +177,7 @@ This is the core feature, providing two sources of suggestions for each risky se
 └─────────────────────────────────────────┘
 ```
 
-### 2.3 口语化程度参数 | Colloquialism Level Parameter
+### 3.3 口语化程度参数 | Colloquialism Level Parameter
 
 用户可设置 0-10 的口语化程度，影响LLM改写风格和规则引擎的词汇选择：
 Users can set a 0-10 colloquialism level affecting LLM style and rule engine word choices:
@@ -132,10 +207,13 @@ Most Academic                          Most Casual
 | numerous | numerous | many | many | a lot of |
 | commence | commence | begin | start | start |
 
-### 2.4 多语言支持 | Multi-language Support
+### 3.4 ESL 辅助解释 | ESL Assistance
 
-为ESL用户提供母语解释，帮助理解为什么要修改：
-Provide native language explanations for ESL users to understand why changes are needed:
+> **注意**: 本项目仅针对英文学术论文，不处理其他语言的论文
+> **Note**: This project targets English academic papers only
+
+为中文母语的ESL用户提供中文解释，帮助理解为什么要修改：
+Provide Chinese explanations for ESL users to understand why changes are needed:
 
 ```
 ┌──────────────────────────────────────────────────────┐
@@ -151,17 +229,15 @@ Provide native language explanations for ESL users to understand why changes are
 └──────────────────────────────────────────────────────┘
 ```
 
-**支持语言 Supported Languages:**
-- 中文 Chinese (优先 Priority)
-- 日语 Japanese
-- 韩语 Korean
-- 西班牙语 Spanish
+**目标用户 Target Users:**
+- 中文母语的 ESL 研究者
+- Chinese-speaking ESL researchers
 
 ---
 
-## 三、检测分析设计 | Detection Analysis Design
+## 四、检测分析设计 | Detection Analysis Design
 
-### 3.1 双检测器视角 | Dual Detector Perspectives
+### 4.1 双检测器视角 | Dual Detector Perspectives
 
 针对主流检测器的不同侧重点，提供差异化分析：
 Provide differentiated analysis targeting different detector focuses:
@@ -171,7 +247,7 @@ Provide differentiated analysis targeting different detector focuses:
 | **Turnitin** | 基于训练数据的分类器 | 整体文风、段落结构、引用模式 |
 | **GPTZero** | 困惑度 + 突发性 | 句子级PPL、长度变化、词汇选择 |
 
-### 3.2 检测维度 | Detection Dimensions
+### 4.2 检测维度 | Detection Dimensions
 
 #### 维度1: 用词分析 | Dimension 1: Vocabulary Analysis
 
@@ -204,7 +280,7 @@ Provide differentiated analysis targeting different detector focuses:
 | **过渡平滑度** | 检测过度平滑的段落过渡 |
 | **Transition Smoothness** | Detect overly smooth paragraph transitions |
 
-### 3.3 风险评分 | Risk Scoring
+### 4.3 风险评分 | Risk Scoring
 
 ```
 综合风险分数 = Σ(维度分数 × 权重)
@@ -218,9 +294,9 @@ Overall Risk Score = Σ(Dimension Score × Weight)
 
 ---
 
-## 四、技术架构 | Technical Architecture
+## 五、技术架构 | Technical Architecture
 
-### 4.1 系统架构图 | System Architecture
+### 5.1 系统架构图 | System Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -251,7 +327,7 @@ Overall Risk Score = Σ(Dimension Score × Weight)
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### 4.2 技术栈 | Tech Stack
+### 5.2 技术栈 | Tech Stack
 
 | 层级 Layer | 技术 Technology | 说明 Notes |
 |------------|-----------------|------------|
@@ -263,7 +339,7 @@ Overall Risk Score = Σ(Dimension Score × Weight)
 | **语义相似度 Similarity** | Sentence-BERT | all-MiniLM-L6-v2 |
 | **数据库 Database** | SQLite / PostgreSQL | MVP用SQLite |
 
-### 4.3 核心模块 | Core Modules
+### 5.3 核心模块 | Core Modules
 
 ```
 src/
@@ -298,9 +374,9 @@ src/
 
 ---
 
-## 五、Prompt工程设计 | Prompt Engineering Design
+## 六、Prompt工程设计 | Prompt Engineering Design
 
-### 5.1 主Prompt模板 | Main Prompt Template
+### 6.1 主Prompt模板 | Main Prompt Template
 
 ```python
 HUMANIZE_PROMPT = """
@@ -340,7 +416,7 @@ You are an academic writing advisor helping to make text sound more naturally hu
 """
 ```
 
-### 5.2 口语化等级Prompt | Colloquialism Level Prompts
+### 6.2 口语化等级Prompt | Colloquialism Level Prompts
 
 ```python
 STYLE_GUIDES = {
@@ -394,9 +470,9 @@ STYLE_GUIDES = {
 
 ---
 
-## 六、规则引擎设计 | Rule Engine Design
+## 七、规则引擎设计 | Rule Engine Design
 
-### 6.1 同义词替换模块 | Synonym Replacement Module
+### 7.1 同义词替换模块 | Synonym Replacement Module
 
 ```python
 # AI指纹词 → 人类常用词 映射表
@@ -419,7 +495,7 @@ FINGERPRINT_REPLACEMENTS = {
 }
 ```
 
-### 6.2 句法重组模块 | Syntactic Restructuring Module
+### 7.2 句法重组模块 | Syntactic Restructuring Module
 
 | 重组类型 Type | 说明 Description | 示例 Example |
 |--------------|------------------|--------------|
@@ -429,7 +505,7 @@ FINGERPRINT_REPLACEMENTS = {
 | **从句移位** Clause Move | 调整从句位置 | 后置从句移到句首 |
 | **插入语添加** Parenthetical | 增加节奏变化 | 添加"in fact", "arguably" |
 
-### 6.3 BERT MLM上下文感知替换 | BERT MLM Context-aware Replacement
+### 7.3 BERT MLM上下文感知替换 | BERT MLM Context-aware Replacement
 
 ```python
 def context_aware_synonym(sentence: str, target_word: str) -> list:
@@ -452,9 +528,9 @@ def context_aware_synonym(sentence: str, target_word: str) -> list:
 
 ---
 
-## 七、质量控制 | Quality Control
+## 八、质量控制 | Quality Control
 
-### 7.1 多层验证 | Multi-layer Validation
+### 8.1 多层验证 | Multi-layer Validation
 
 | 层级 Layer | 检查内容 Check | 阈值 Threshold |
 |------------|---------------|----------------|
@@ -463,7 +539,7 @@ def context_aware_synonym(sentence: str, target_word: str) -> list:
 | **术语层** Term | 锁定术语完整性 | 100% |
 | **风险层** Risk | 改写后风险评分 | 目标值以下 |
 
-### 7.2 回滚机制 | Rollback Mechanism
+### 8.2 回滚机制 | Rollback Mechanism
 
 ```
 如果验证失败 If validation fails:
@@ -474,67 +550,141 @@ def context_aware_synonym(sentence: str, target_word: str) -> list:
 
 ---
 
-## 八、开发阶段 | Development Phases
+## 九、开发阶段 | Development Phases
 
-### Phase 1: MVP核心闭环 | MVP Core Loop
+> 基于三层级架构分析报告更新 Updated based on three-level architecture analysis
+
+### Phase 1: Level 3 核心闭环 ✅ 已完成 | Level 3 Core Loop (Completed)
 
 **目标 Goal:** 跑通"输入→检测→建议→验证→输出"基础流程
 **Run through basic "input→detect→suggest→validate→output" flow**
 
-| 任务 Task | 优先级 Priority |
-|-----------|-----------------|
-| 文本分句模块 Text segmentation | P0 |
-| 基础PPL计算 Basic PPL calculation | P0 |
-| AI指纹词检测 Fingerprint detection | P0 |
-| 风险评分系统 Risk scoring system | P0 |
-| LLM建议生成(轨道A) LLM suggestions (Track A) | P0 |
-| 基础同义词替换(轨道B) Basic synonym replacement (Track B) | P0 |
-| 语义相似度验证 Semantic similarity validation | P0 |
-| 干预模式基础UI Intervention mode basic UI | P0 |
+| 任务 Task | 状态 Status |
+|-----------|-------------|
+| 文本分句模块 Text segmentation | ✅ 已完成 |
+| AI指纹词检测 Fingerprint detection | ✅ 已完成 |
+| CAASS v2.0 风险评分 Risk scoring | ✅ 已完成 |
+| LLM建议生成(轨道A) LLM suggestions (Track A) | ✅ 已完成 |
+| 规则替换(轨道B) Rule-based replacement (Track B) | ✅ 已完成 |
+| 语义相似度验证 Semantic similarity validation | ✅ 已完成 |
+| 干预模式UI Intervention mode UI | ✅ 已完成 |
+| 白名单提取 Whitelist extraction | ✅ 已完成 |
 
-### Phase 2: 双轨完善 | Dual-track Enhancement
+### Phase 2: Level 3 增强 | Level 3 Enhancement ✅
 
-**目标 Goal:** 完善双轨建议系统，增加口语化参数
-**Enhance dual-track system, add colloquialism parameter**
+**目标 Goal:** 增强 Level 3，为 Level 2 做准备
+**Enhance Level 3, prepare for Level 2**
 
-| 任务 Task | 优先级 Priority |
-|-----------|-----------------|
-| 句法重组模块 Syntactic restructuring | P1 |
-| BERT MLM上下文替换 BERT MLM context replacement | P1 |
-| 口语化等级参数(0-10) Colloquialism level (0-10) | P1 |
-| 口语化Prompt模板库 Colloquialism prompt templates | P1 |
-| 术语锁定功能 Term locking feature | P1 |
-| YOLO模式实现 YOLO mode implementation | P1 |
-| 双检测器视角(Turnitin/GPTZero) Dual detector views | P1 |
+| 任务 Task | 优先级 Priority | 状态 Status |
+|-----------|-----------------|-------------|
+| Burstiness 检测 Burstiness detection | P1 | ✅ 已完成 |
+| 显性连接词检测 Explicit connector detection | P1 | ✅ 已完成 |
+| 结构问题预警 Structure issue warning | P1 | ✅ 已完成 |
+| Session 配置扩展（核心论点字段） | P1 | ⏳ 待开发 |
+| YOLO模式优化 YOLO mode enhancement | P2 | ⏳ 待开发 |
 
-### Phase 3: 多语言与体验优化 | Multilingual & UX
+### Phase 3: Level 2 实现 | Level 2 Implementation ✅
 
-**目标 Goal:** 多语言支持，优化用户体验
-**Multilingual support, optimize user experience**
+**目标 Goal:** 实现段落衔接分析与优化
+**Implement paragraph transition analysis and optimization**
 
-| 任务 Task | 优先级 Priority |
-|-----------|-----------------|
-| 中文解释生成 Chinese explanation generation | P2 |
-| 日/韩/西语支持 Japanese/Korean/Spanish support | P2 |
-| 批量处理相似问题句子 Batch process similar sentences | P2 |
-| 进度可视化优化 Progress visualization | P2 |
-| 修改历史与对比报告 Edit history & diff report | P2 |
+| 任务 Task | 优先级 Priority | 状态 Status |
+|-----------|-----------------|-------------|
+| 滑动窗口段落分析 API | P1 | ✅ 已完成 |
+| 过渡策略 Prompt (语义回声/逻辑设问/节奏打断) | P1 | ✅ 已完成 |
+| "接缝修补" UI 组件 Transition repair UI | P1 | ✅ 已完成 |
+| 批量处理支持 Batch processing | P2 | ✅ 已完成 |
 
-### Phase 4: 测试与部署 | Testing & Deployment
+**API 设计 | API Design:**
+```python
+# POST /api/v1/analyze/transition
+class TransitionAnalysisRequest(BaseModel):
+    para_a: str  # Previous paragraph
+    para_b: str  # Next paragraph
+    context_hint: Optional[str]  # Core thesis from Level 1
+
+class TransitionOption(BaseModel):
+    strategy: Literal["semantic_echo", "logical_hook", "rhythm_break"]
+    para_a_ending: str   # Modified ending of paragraph A
+    para_b_opening: str  # Modified opening of paragraph B
+```
+
+### Phase 4: Level 1 实现 | Level 1 Implementation ✅ 已完成 Completed
+
+**目标 Goal:** 实现全文逻辑诊断与重构
+**Implement full-text logic diagnosis and restructuring**
+
+| 任务 Task | 优先级 Priority | 状态 Status |
+|-----------|-----------------|-------------|
+| 全文逻辑诊断 API | P1 | ✅ 完成 |
+| 两种重构策略 Prompt (优化连接/深度重组) | P1 | ✅ 完成 |
+| "逻辑诊断卡" UI 组件 | P1 | ✅ 完成 |
+| 新大纲生成与应用 | P2 | ✅ 完成 |
+
+**已实现文件 Implemented Files:**
+- `src/core/analyzer/structure.py` - 结构分析器
+- `src/prompts/structure.py` - 重组策略 Prompts
+- `src/api/routes/structure.py` - API 端点
+- `src/api/schemas.py:504-711` - API Schemas
+- `frontend/src/types/index.ts:343-493` - 前端类型
+- `frontend/src/services/api.ts:572-667` - 前端 API
+- `frontend/src/components/editor/StructurePanel.tsx` - UI 组件
+
+**API 设计 | API Design:**
+```python
+# POST /api/v1/structure/
+class StructureAnalysisResponse(BaseModel):
+    structure_score: int  # 0-100, higher = more AI-like
+    risk_level: str  # low, medium, high
+    issues: List[StructureIssue]
+    break_points: List[BreakPoint]  # Logic break points
+    options: List[StructureOption]  # Two restructuring options
+```
+
+### Phase 5: 全流程整合 | Full Flow Integration ✅ 已完成 Completed
+
+**目标 Goal:** 整合三层级处理流程
+**Integrate three-level processing flow**
+
+| 任务 Task | 优先级 Priority | 状态 Status |
+|-----------|-----------------|-------------|
+| 强制流程引导 (L1 → L2 → L3) | P1 | ✅ 完成 |
+| 上下文传递机制 Context passing | P1 | ✅ 完成 |
+| 处理结果持久化 Result persistence | P2 | ✅ 完成 |
+| 快速/深度模式切换 Quick/Deep mode | P2 | ✅ 完成 |
+
+**已实现文件 Implemented Files:**
+- `src/core/coordinator/__init__.py` - 模块初始化
+- `src/core/coordinator/flow_coordinator.py` - 流程协调器
+- `src/api/routes/flow.py` - API 端点
+- `frontend/src/types/index.ts:495-573` - 前端类型
+- `frontend/src/services/api.ts:669-837` - 前端 API
+
+### Phase 6: 测试与部署 | Testing & Deployment ✅ 已完成 Completed
 
 **目标 Goal:** 系统测试，部署上线
 **System testing, deployment**
 
-| 任务 Task | 优先级 Priority |
-|-----------|-----------------|
-| 单元测试覆盖 Unit test coverage | P3 |
-| 100篇AI论文对抗测试 Test with 100 AI papers | P3 |
-| 性能优化 Performance optimization | P3 |
-| 部署配置 Deployment configuration | P3 |
+| 任务 Task | 优先级 Priority | 状态 Status |
+|-----------|-----------------|-------------|
+| 三层级集成测试 Three-level integration test | P3 | ✅ 完成 |
+| 前端构建测试 Frontend build test | P3 | ✅ 完成 |
+| API模块导入测试 API module import test | P3 | ✅ 完成 |
+| 流程协调器测试 Flow coordinator test | P3 | ✅ 完成 |
+
+### 开发周期预估 | Development Timeline Estimate
+
+| 阶段 Phase | 工作量 Effort | 累计 Cumulative |
+|------------|---------------|-----------------|
+| Phase 2: L3增强 | 3-5天 | 3-5天 |
+| Phase 3: L2实现 | 7-11天 | 10-16天 |
+| Phase 4: L1实现 | 7-11天 | 17-27天 |
+| Phase 5: 整合 | 4-6天 | 21-33天 |
+| Phase 6: 测试部署 | 5-7天 | 26-40天 |
 
 ---
 
-## 九、风险与应对 | Risks & Mitigation
+## 十、风险与应对 | Risks & Mitigation
 
 | 风险 Risk | 等级 Level | 应对策略 Mitigation |
 |-----------|-----------|---------------------|
@@ -546,7 +696,7 @@ def context_aware_synonym(sentence: str, target_word: str) -> list:
 
 ---
 
-## 十、成功指标 | Success Metrics
+## 十一、成功指标 | Success Metrics
 
 | 指标 Metric | 目标 Target |
 |-------------|-------------|

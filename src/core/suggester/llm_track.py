@@ -155,6 +155,15 @@ Style: Casual Informal (Discussion Level)
         """
         Build the prompt for LLM
         构建LLM的提示词
+
+        Enhanced with 10 de-AIGC techniques including:
+        - Fingerprint word elimination
+        - Template breaking
+        - Implicit connector strategies
+        - Subject diversity
+        - ANI structure (Assertion-Nuance-Implication)
+        - Sentence rhythm variation
+        - Academic hedging/conviction balance
         """
         # Format issues
         # 格式化问题
@@ -211,6 +220,61 @@ USE INSTEAD: semantic flow (This X..., Such Y..., The result...)
 Remove: "complex dynamics", "intricate interplay", "evolving landscape", "holistic approach"
 Replace with SPECIFIC descriptions of what actually happens
 
+### 6. USE IMPLICIT LOGICAL CONNECTORS (隐性连接)
+Instead of explicit connectors, use semantic echo or embedded structure:
+- Instead of "Furthermore, X..." → "This pattern extends to X..." (echo previous concept)
+- Instead of "However, Y..." → "Y, though, complicates this picture." (embed contrast)
+- Instead of "Therefore, Z..." → "Such evidence points to Z." (implication as connector)
+
+### 7. VARY SUBJECT ACROSS CONTEXT (主语多样性)
+Avoid repeating the same subject. Transform:
+- "The model... The model..." → "The model... This capability... Such precision..."
+- "We found... We observed..." → "We found... The data reveals... Evidence suggests..."
+- First-person overuse → Passive alternative: "I believe X" → "It appears that X" or "Evidence suggests X"
+
+### 8. APPLY ANI STRUCTURE IF REWRITING MULTIPLE SENTENCES (断言-细微-深意)
+For complex rewrites, consider Assertion-Nuance-Implication:
+- ASSERTION: Direct claim without hedging ("X fundamentally determines Y.")
+- NUANCE: Acknowledge conditions/limits ("Yet this holds only under condition Z.")
+- IMPLICATION: Deeper meaning ("The broader implication: ...")
+
+### 9. VARY SENTENCE LENGTH FOR RHYTHM (节奏感)
+Create rhythm through length variation:
+- LONG (20-30 words): Build context, explain mechanism
+- SHORT (8-12 words): Deliver punch, state key finding
+- MEDIUM (15-20 words): Develop nuance, transition
+Example rhythm: Long→Short→Medium creates human-like flow
+
+### 10. BALANCE HEDGING AND CONVICTION (语气词策略)
+Mix uncertainty and certainty markers for human-like balance:
+- HEDGING (where uncertain): "may contribute", "appears to", "suggests that", "could potentially"
+- CONVICTION (where data supports): "clearly demonstrates", "consistently shows", "definitively establishes"
+- AVOID AI clichés: "It is important to note", "It should be noted that"
+- Use hedging strategically: "Results clearly show X (p<0.01). Whether this extends to Y remains less certain."
+
+### 11. INTENTIONAL IMPERFECTION (有意的不完美)
+Human writers are NOT perfect. Add these human-like markers:
+- Start 10-15% of sentences with conjunctions (And, But, So) for rhythm
+- Use em-dashes (—) to insert abrupt thoughts: "X works—surprisingly well, actually—under Y."
+- Allow slight grammatical looseness: "Which is why this matters." as standalone sentence
+- Add conversational academic phrases: "frankly", "to put it simply", "interestingly enough"
+- Avoid textbook perfection - mix structures irregularly
+- Use sentence fragments for emphasis: "A significant finding. One that changes everything."
+
+### 12. CITATION ENTANGLEMENT (引用句法纠缠) - IF CITATIONS PRESENT
+Transform parenthetical citations into narrative form to break AI pattern:
+
+AI PATTERN (robotic): "This phenomenon has been observed (Smith, 2023)."
+HUMAN PATTERN (varied):
+- "Smith (2023) observed this phenomenon..."
+- "As Smith (2023) noted, this phenomenon..."
+- "Following Smith's (2023) framework, we see..."
+
+RULES:
+- Transform ~30% of parenthetical citations to narrative form
+- Keep some parenthetical citations for natural mix
+- Use varied narrative forms: "According to X...", "X argues that...", "As X demonstrated..."
+
 ## Response (JSON ONLY, no markdown):
 {{
   "rewritten": "the rewritten sentence applying above techniques",
@@ -249,7 +313,11 @@ Replace with SPECIFIC descriptions of what actually happens
         try:
             # Try to use configured LLM provider
             # 尝试使用配置的LLM提供商
-            if settings.llm_provider == "gemini" and settings.gemini_api_key:
+            if settings.llm_provider == "volcengine" and settings.volcengine_api_key:
+                # Volcengine (火山引擎) - faster DeepSeek access
+                # 火山引擎 - 更快的 DeepSeek 访问
+                response = await self._call_volcengine(prompt)
+            elif settings.llm_provider == "gemini" and settings.gemini_api_key:
                 response = await self._call_gemini(prompt)
             elif settings.llm_provider == "deepseek" and settings.deepseek_api_key:
                 response = await self._call_deepseek(prompt)
@@ -257,9 +325,13 @@ Replace with SPECIFIC descriptions of what actually happens
                 response = await self._call_anthropic(prompt)
             elif settings.llm_provider == "openai" and settings.openai_api_key:
                 response = await self._call_openai(prompt)
+            elif settings.volcengine_api_key:
+                # Fallback to Volcengine if available (preferred)
+                # 如果可用则回退到火山引擎（首选）
+                response = await self._call_volcengine(prompt)
             elif settings.gemini_api_key:
-                # Fallback to Gemini if available (default)
-                # 如果可用则回退到Gemini（默认）
+                # Fallback to Gemini if available
+                # 如果可用则回退到Gemini
                 response = await self._call_gemini(prompt)
             elif settings.deepseek_api_key:
                 # Fallback to DeepSeek if available
@@ -326,10 +398,45 @@ Replace with SPECIFIC descriptions of what actually happens
             logger.error(f"OpenAI API error: {e}")
             raise
 
+    async def _call_volcengine(self, prompt: str) -> str:
+        """
+        Call Volcengine (火山引擎) DeepSeek API - OpenAI compatible format
+        调用火山引擎 DeepSeek API - OpenAI 兼容格式
+        """
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(
+                base_url=settings.volcengine_base_url,
+                headers={
+                    "Authorization": f"Bearer {settings.volcengine_api_key}",
+                    "Content-Type": "application/json"
+                },
+                timeout=120.0,  # 2 minutes timeout
+                trust_env=False  # Ignore system proxy settings
+            ) as client:
+                response = await client.post("/chat/completions", json={
+                    "model": settings.volcengine_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": settings.llm_max_tokens,
+                    "temperature": settings.llm_temperature
+                })
+
+                response.raise_for_status()
+                data = response.json()
+                return data["choices"][0]["message"]["content"]
+
+        except ImportError:
+            logger.error("httpx package not installed (required for Volcengine)")
+            raise
+        except Exception as e:
+            logger.error(f"Volcengine API error: {e}")
+            raise
+
     async def _call_deepseek(self, prompt: str) -> str:
         """
-        Call DeepSeek API (OpenAI-compatible)
-        调用DeepSeek API（OpenAI兼容）
+        Call DeepSeek API (OpenAI-compatible) - official, slower than Volcengine
+        调用DeepSeek API（OpenAI兼容）- 官方，比火山引擎慢
         """
         try:
             import httpx
@@ -342,7 +449,7 @@ Replace with SPECIFIC descriptions of what actually happens
                     "Authorization": f"Bearer {settings.deepseek_api_key}",
                     "Content-Type": "application/json"
                 },
-                timeout=90.0,
+                timeout=120.0,  # 2 minutes timeout
                 trust_env=False  # Ignore system proxy settings
             ) as client:
                 response = await client.post("/chat/completions", json={

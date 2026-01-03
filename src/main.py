@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 
 from src.config import get_settings
 from src.db.database import init_db
-from src.api.routes import documents, analyze, suggest, session, export
+from src.api.routes import documents, analyze, suggest, session, export, transition, structure, flow, paragraph, structure_guidance
 
 
 settings = get_settings()
@@ -58,6 +58,11 @@ app.include_router(analyze.router, prefix="/api/v1/analyze", tags=["Analysis"])
 app.include_router(suggest.router, prefix="/api/v1/suggest", tags=["Suggestions"])
 app.include_router(session.router, prefix="/api/v1/session", tags=["Session"])
 app.include_router(export.router, prefix="/api/v1/export", tags=["Export"])
+app.include_router(transition.router, prefix="/api/v1/transition", tags=["Transition"])
+app.include_router(structure.router, prefix="/api/v1/structure", tags=["Structure"])
+app.include_router(flow.router, prefix="/api/v1/flow", tags=["Flow"])
+app.include_router(paragraph.router, prefix="/api/v1/paragraph", tags=["Paragraph Logic"])
+app.include_router(structure_guidance.router, prefix="/api/v1/structure-guidance", tags=["Structure Guidance"])
 
 
 @app.get("/")

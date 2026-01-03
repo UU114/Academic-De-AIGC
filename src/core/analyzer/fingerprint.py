@@ -114,6 +114,18 @@ class FingerprintDetector:
         "has the potential to": {"weight": 0.5, "replacements": ["can", "may", "could"]},
         "is of paramount importance": {"weight": 0.9, "replacements": ["is very important", "matters greatly"]},
         "the advent of": {"weight": 0.6, "replacements": ["the arrival of", "the introduction of"]},
+        # Additional AI-characteristic phrases from improvement report
+        # 来自改进报告的额外AI特征短语 (2026-01-02)
+        "is characterized by": {"weight": 0.6, "replacements": ["features", "involves", "includes"]},
+        "can be described as": {"weight": 0.6, "replacements": ["is effectively", "amounts to", "is essentially"]},
+        "with regard to": {"weight": 0.5, "replacements": ["concerning", "regarding", "about"]},
+        "in light of": {"weight": 0.5, "replacements": ["given", "considering", "because of"]},
+        "it is worth mentioning": {"weight": 0.8, "replacements": ["notably", "note that", "importantly"]},
+        "of great importance": {"weight": 0.7, "replacements": ["important", "significant", "matters"]},
+        "a key aspect": {"weight": 0.6, "replacements": ["an important part", "a main point"]},
+        "the primary focus": {"weight": 0.5, "replacements": ["the main focus", "the focus"]},
+        "this paper aims to": {"weight": 0.7, "replacements": ["we explore", "this study examines", "we investigate"]},
+        "the findings suggest": {"weight": 0.5, "replacements": ["results show", "data indicates", "results indicate"]},
     }
 
     # Overused connectors

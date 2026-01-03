@@ -4,7 +4,8 @@ import { Upload as UploadIcon, FileText, Type, AlertCircle, Loader2 } from 'luci
 import { clsx } from 'clsx';
 import Button from '../components/common/Button';
 import ColloquialismSlider from '../components/settings/ColloquialismSlider';
-import { documentApi, sessionApi } from '../services/api';
+import { useRotatingLoadingMessage } from '../utils/loadingMessages';
+import { documentApi } from '../services/api';
 import { useConfigStore } from '../stores/configStore';
 import type { RiskLevel } from '../types';
 
@@ -14,7 +15,11 @@ import type { RiskLevel } from '../types';
  */
 export default function Upload() {
   const navigate = useNavigate();
-  const { colloquialismLevel, targetLang, processLevels, setProcessLevels } = useConfigStore();
+  const { processLevels, setProcessLevels } = useConfigStore();
+
+  // Fun loading message for upload state
+  // 趣味上传加载提示
+  const uploadLoadingMessage = useRotatingLoadingMessage('upload', 3000);
 
   // Upload state
   // 上传状态
@@ -26,7 +31,9 @@ export default function Upload() {
   const [error, setError] = useState<string | null>(null);
 
   // Session mode
-  // 会话模式
+  // 会话模式: 'intervention' (干预模式), 'yolo' (自动处理)
+  // Both modes start from Level 1 (structure analysis)
+  // 两种模式都从 Level 1（结构分析）开始
   const [sessionMode, setSessionMode] = useState<'intervention' | 'yolo'>('intervention');
 
   // Handle file drop
@@ -116,22 +123,11 @@ export default function Upload() {
         documentId = result.id;
       }
 
-      // Start session
-      // 开始会话
-      const session = await sessionApi.start(documentId, {
-        mode: sessionMode,
-        colloquialismLevel,
-        targetLang,
-        processLevels,
-      });
-
-      // Navigate to appropriate page
-      // 导航到相应页面
-      if (sessionMode === 'intervention') {
-        navigate(`/intervention/${session.sessionId}`);
-      } else {
-        navigate(`/yolo/${session.sessionId}`);
-      }
+      // Navigate to Step 1-1 (document structure analysis) with mode parameter
+      // Both intervention and yolo modes start from Step 1-1
+      // 导航到 Step 1-1（文档结构分析），带上模式参数
+      // 干预模式和YOLO模式都从 Step 1-1 开始
+      navigate(`/flow/step1-1/${documentId}?mode=${sessionMode}`);
     } catch (err) {
       setError((err as Error).message || '上传失败，请重试');
       setIsUploading(false);
@@ -253,13 +249,13 @@ export default function Upload() {
         {/* Session Mode */}
         <div className="mb-6">
           <label className="text-sm font-medium text-gray-700 mb-2 block">
-            处理模式
+            处理模式 / Processing Mode
           </label>
-          <div className="flex space-x-3">
+          <div className="grid grid-cols-2 gap-4">
             <button
               onClick={() => setSessionMode('intervention')}
               className={clsx(
-                'flex-1 p-4 rounded-lg border-2 text-left transition-colors',
+                'p-4 rounded-lg border-2 text-left transition-colors',
                 sessionMode === 'intervention'
                   ? 'border-primary-500 bg-primary-50'
                   : 'border-gray-200 hover:border-gray-300'
@@ -267,23 +263,29 @@ export default function Upload() {
             >
               <p className="font-medium text-gray-800">干预模式</p>
               <p className="text-sm text-gray-500">Intervention Mode</p>
-              <p className="text-xs text-gray-400 mt-1">
-                逐句分析，手动选择修改方案
+              <p className="text-xs text-gray-400 mt-2">
+                三级流程：结构 → 衔接 → 句子
+              </p>
+              <p className="text-xs text-gray-400">
+                每一步手动选择方案，完全掌控
               </p>
             </button>
             <button
               onClick={() => setSessionMode('yolo')}
               className={clsx(
-                'flex-1 p-4 rounded-lg border-2 text-left transition-colors',
+                'p-4 rounded-lg border-2 text-left transition-colors',
                 sessionMode === 'yolo'
-                  ? 'border-primary-500 bg-primary-50'
+                  ? 'border-amber-500 bg-amber-50'
                   : 'border-gray-200 hover:border-gray-300'
               )}
             >
               <p className="font-medium text-gray-800">YOLO模式</p>
               <p className="text-sm text-gray-500">Auto Mode</p>
-              <p className="text-xs text-gray-400 mt-1">
-                自动处理所有句子，最后审核
+              <p className="text-xs text-gray-400 mt-2">
+                三级流程：结构 → 衔接 → 句子
+              </p>
+              <p className="text-xs text-gray-400">
+                全自动处理，最后统一审核
               </p>
             </button>
           </div>
@@ -350,7 +352,7 @@ export default function Upload() {
         {isUploading ? (
           <>
             <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-            处理中...
+            <span className="text-sm">{uploadLoadingMessage.zh}</span>
           </>
         ) : (
           <>

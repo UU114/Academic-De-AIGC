@@ -18,6 +18,9 @@ import re
 
 from src.config import get_settings, get_risk_weights
 from src.core.analyzer.fingerprint import FingerprintMatch, FingerprintDetector
+from src.core.analyzer.burstiness import BurstinessAnalyzer, BurstinessResult
+from src.core.analyzer.connector_detector import ConnectorDetector, ConnectorAnalysisResult, ConnectorMatch
+from src.core.analyzer.ppl_calculator import calculate_onnx_ppl, is_onnx_available
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -298,6 +301,14 @@ class SentenceAnalysisResult:
     burstiness_score: int
     structure_score: int
 
+    # Phase 2: Enhanced metrics
+    # 第二阶段：增强指标
+    burstiness_value: float = 0.0  # Actual burstiness ratio (0-1)
+    burstiness_risk: str = "unknown"  # low, medium, high
+    connector_count: int = 0  # Number of explicit connectors detected
+    connector_score: int = 0  # Contribution to total score
+    connector_match: Optional[ConnectorMatch] = None  # Detected connector in this sentence
+
     # Issues
     # 问题
     issues: List[Issue] = field(default_factory=list)
@@ -323,11 +334,14 @@ class RiskScorer:
     - Fingerprint word density
     - Burstiness (sentence length variation)
     - Structure patterns
+    - Explicit connector detection (Phase 2)
     """
 
     def __init__(self):
         """Initialize risk scorer"""
         self.fingerprint_detector = FingerprintDetector()
+        self.burstiness_analyzer = BurstinessAnalyzer()
+        self.connector_detector = ConnectorDetector()
         self.weights = {
             "perplexity": risk_weights.perplexity,
             "fingerprint": risk_weights.fingerprint,
@@ -418,9 +432,28 @@ class RiskScorer:
                     word=fp.word
                 ))
 
-        # Calculate burstiness score
-        # 计算突发性分数
+        # Calculate burstiness score (Phase 2: Enhanced with BurstinessAnalyzer)
+        # 计算突发性分数（第二阶段：使用BurstinessAnalyzer增强）
         burstiness_score = self._score_burstiness(text, context_sentences)
+        burstiness_result = self._analyze_burstiness_enhanced(context_sentences)
+        burstiness_value = burstiness_result.burstiness_score if burstiness_result else 0.0
+        burstiness_risk = burstiness_result.risk_level if burstiness_result else "unknown"
+
+        # Phase 2: Detect explicit connectors
+        # 第二阶段：检测显性连接词
+        connector_match = self.connector_detector.analyze_single_sentence(text)
+        connector_score = 0
+        if connector_match:
+            # Add connector issue
+            # 添加连接词问题
+            connector_score = 8 if connector_match.severity == "high" else 4
+            issues.append(Issue(
+                type="connector",
+                description=f"Explicit connector: '{connector_match.connector}' - {connector_match.suggestion}",
+                description_zh=f"显性连接词: '{connector_match.connector}' - {connector_match.suggestion_zh}",
+                severity=connector_match.severity,
+                word=connector_match.connector
+            ))
 
         # CAASS v2.0: Calculate structure score with tone adaptation
         # CAASS v2.0: 使用语气适配计算结构分数
@@ -490,6 +523,12 @@ class RiskScorer:
             fingerprint_score=fingerprint_score,
             burstiness_score=burstiness_score,
             structure_score=structure_score,
+            # Phase 2: Enhanced metrics
+            burstiness_value=burstiness_value,
+            burstiness_risk=burstiness_risk,
+            connector_count=1 if connector_match else 0,
+            connector_score=connector_score,
+            connector_match=connector_match,
             issues=issues,
             turnitin_score=turnitin_score,
             turnitin_issues=turnitin_issues,
@@ -501,15 +540,50 @@ class RiskScorer:
 
     def _calculate_ppl(self, text: str) -> float:
         """
-        Calculate perplexity proxy using zlib compression ratio
-        使用zlib压缩比计算困惑度代理
+        Calculate perplexity using ONNX model with zlib fallback
+        使用ONNX模型计算困惑度，zlib作为后备
+
+        Priority: ONNX model (true PPL) > zlib compression ratio (proxy)
+        优先级: ONNX模型(真实PPL) > zlib压缩比(代理)
+
+        ONNX model provides true token-level perplexity, which can detect
+        "semantically mundane but lexically rich" AI text that zlib misses.
+        ONNX模型提供真实的token级困惑度，可以检测到zlib遗漏的
+        "语义平庸但词汇丰富"的AI文本。
+        """
+        if not text or len(text) < 10:
+            return 100.0
+
+        # Try ONNX model first for true perplexity
+        # 首先尝试ONNX模型获取真实困惑度
+        onnx_ppl, used_onnx = calculate_onnx_ppl(text)
+        if used_onnx and onnx_ppl is not None:
+            # ONNX PPL: typical range 5-500
+            # Lower PPL = more predictable = more AI-like
+            # Higher PPL = more surprising = more human-like
+            # ONNX PPL: 典型范围 5-500
+            # 较低PPL = 更可预测 = 更像AI
+            # 较高PPL = 更出人意料 = 更像人类
+            logger.debug(f"Using ONNX PPL: {onnx_ppl:.2f}")
+            return max(5.0, min(100.0, onnx_ppl))
+
+        # Fallback to zlib compression ratio proxy
+        # 回退到zlib压缩比代理
+        return self._calculate_ppl_zlib(text)
+
+    def _calculate_ppl_zlib(self, text: str) -> float:
+        """
+        Fallback PPL calculation using zlib compression ratio
+        使用zlib压缩比的后备PPL计算
 
         Principle: AI-generated text has lower information density and more
         repetitive patterns, resulting in higher compression ratio.
         原理：AI生成的文本信息密度低，重复模式多，压缩比高。
 
-        Note: This is a proxy for PPL. Production version should use GPT-2/LLaMA.
-        注意：这是PPL的代理。生产版本应使用GPT-2/LLaMA模型。
+        Note: This is a proxy for PPL. It cannot detect "semantically mundane
+        but lexically rich" AI text. Use ONNX model for production.
+        注意：这是PPL的代理。无法检测"语义平庸但词汇丰富"的AI文本。
+        生产环境请使用ONNX模型。
         """
         if not text or len(text) < 10:
             return 100.0
@@ -555,10 +629,11 @@ class RiskScorer:
                 # 根据词汇多样性调整PPL
                 ppl = ppl * (0.8 + unique_ratio * 0.4)
 
+            logger.debug(f"Using zlib PPL fallback: {ppl:.2f}")
             return max(5.0, min(100.0, ppl))
 
         except Exception as e:
-            logger.warning(f"zlib compression failed, using fallback: {e}")
+            logger.warning(f"zlib compression failed, using simple fallback: {e}")
             # Fallback to simple method
             # 回退到简单方法
             words = text.split()
@@ -693,6 +768,29 @@ class RiskScorer:
                 return 50
             else:
                 return 20  # Good variation = low risk
+
+    def _analyze_burstiness_enhanced(
+        self,
+        context_sentences: Optional[List[str]] = None
+    ) -> Optional[BurstinessResult]:
+        """
+        Analyze burstiness using the enhanced BurstinessAnalyzer (Phase 2)
+        使用增强的BurstinessAnalyzer分析突发性（第二阶段）
+
+        Args:
+            context_sentences: List of sentences for burstiness calculation
+
+        Returns:
+            BurstinessResult or None if insufficient sentences
+        """
+        if not context_sentences or len(context_sentences) < 3:
+            return None
+
+        try:
+            return self.burstiness_analyzer.analyze(context_sentences)
+        except Exception as e:
+            logger.warning(f"Burstiness analysis failed: {e}")
+            return None
 
     def _score_structure(self, text: str) -> int:
         """
@@ -1107,3 +1205,110 @@ class RiskScorer:
             "medium_risk_count": medium_count,
             "low_risk_count": len(sentence_results) - high_count - medium_count
         }
+
+    def analyze_paragraph_logic(
+        self,
+        sentences: List[str],
+        tone_level: int = 4
+    ) -> Dict[str, Any]:
+        """
+        Analyze paragraph-level logic patterns (Phase 3 enhancement)
+        分析段落级逻辑模式（第三阶段增强）
+
+        Detects AI-like patterns within paragraphs:
+        - Subject repetition
+        - Uniform sentence lengths
+        - Linear/additive structure
+        - First-person overuse
+        - Explicit connector stacking
+
+        Args:
+            sentences: List of sentences in the paragraph
+            tone_level: User's target tone (0-5)
+
+        Returns:
+            Dict with logic analysis results including issues and metrics
+        """
+        from src.core.analyzer.paragraph_logic import ParagraphLogicAnalyzer
+
+        if not sentences or len(sentences) < 2:
+            return {
+                "issues": [],
+                "has_subject_repetition": False,
+                "has_uniform_length": False,
+                "has_linear_structure": False,
+                "has_first_person_overuse": False,
+                "subject_diversity_score": 1.0,
+                "length_variation_cv": 0.5,
+                "logic_structure": "insufficient",
+                "first_person_ratio": 0.0,
+                "connector_density": 0.0,
+                "paragraph_risk_adjustment": 0
+            }
+
+        try:
+            analyzer = ParagraphLogicAnalyzer()
+            result = analyzer.analyze_paragraph(sentences)
+
+            # Convert issues to serializable format
+            # 将问题转换为可序列化格式
+            issues_list = [
+                {
+                    "type": issue.type,
+                    "description": issue.description,
+                    "description_zh": issue.description_zh,
+                    "severity": issue.severity,
+                    "position": list(issue.position),
+                    "suggestion": issue.suggestion,
+                    "suggestion_zh": issue.suggestion_zh,
+                    "details": issue.details
+                }
+                for issue in result.issues
+            ]
+
+            # Determine boolean flags for quick access
+            # 确定布尔标志以便快速访问
+            has_subject_repetition = any(
+                i.type == "subject_repetition" for i in result.issues
+            )
+            has_uniform_length = any(
+                i.type == "uniform_length" for i in result.issues
+            )
+            has_linear_structure = any(
+                i.type in ["linear_structure", "connector_overuse"]
+                for i in result.issues
+            )
+            has_first_person_overuse = any(
+                i.type == "first_person_overuse" for i in result.issues
+            )
+
+            return {
+                "issues": issues_list,
+                "has_subject_repetition": has_subject_repetition,
+                "has_uniform_length": has_uniform_length,
+                "has_linear_structure": has_linear_structure,
+                "has_first_person_overuse": has_first_person_overuse,
+                "subject_diversity_score": result.subject_diversity_score,
+                "length_variation_cv": result.length_variation_cv,
+                "logic_structure": result.logic_structure,
+                "first_person_ratio": result.first_person_ratio,
+                "connector_density": result.connector_density,
+                "paragraph_risk_adjustment": result.overall_risk
+            }
+
+        except Exception as e:
+            logger.error(f"Paragraph logic analysis failed: {e}")
+            return {
+                "issues": [],
+                "has_subject_repetition": False,
+                "has_uniform_length": False,
+                "has_linear_structure": False,
+                "has_first_person_overuse": False,
+                "subject_diversity_score": 1.0,
+                "length_variation_cv": 0.5,
+                "logic_structure": "error",
+                "first_person_ratio": 0.0,
+                "connector_density": 0.0,
+                "paragraph_risk_adjustment": 0,
+                "error": str(e)
+            }

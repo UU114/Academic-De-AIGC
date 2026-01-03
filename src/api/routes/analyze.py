@@ -225,9 +225,28 @@ async def _analyze_document_task(
     include_gptzero: bool
 ):
     """
-    Background task for document analysis
-    文档分析的后台任务
+    Background task for document analysis (DEPRECATED)
+    文档分析的后台任务（已弃用）
+
+    NOTE: This endpoint is not actively used. The main analysis flow uses:
+    - ThreeLevelFlow -> structureApi.analyzeStep1_1/Step1_2
+    - flowApi.start -> Intervention page
+
+    This endpoint was designed for async background analysis with Turnitin/GPTZero
+    integration, but was never implemented. Consider removing if not needed.
+
+    注意：此端点未被积极使用。主要分析流程使用：
+    - ThreeLevelFlow -> structureApi.analyzeStep1_1/Step1_2
+    - flowApi.start -> Intervention 页面
+
+    此端点原设计用于异步后台分析和 Turnitin/GPTZero 集成，
+    但从未实现。如不需要请考虑移除。
     """
-    # This will be implemented with actual analysis logic
-    # 这将使用实际的分析逻辑来实现
-    pass
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.warning(
+        f"_analyze_document_task called but not implemented. "
+        f"document_id={document_id}, turnitin={include_turnitin}, gptzero={include_gptzero}"
+    )
+    # TODO: Implement or remove this deprecated endpoint
+    # TODO: 实现或移除此已弃用的端点

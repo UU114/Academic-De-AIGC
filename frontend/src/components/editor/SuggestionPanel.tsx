@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
-import { Sparkles, Wrench, Edit3, Loader2, ChevronDown, ChevronUp, CheckCircle2, MousePointerClick, X, SkipForward, Flag } from 'lucide-react';
+import { Sparkles, Wrench, Edit3, ChevronDown, ChevronUp, CheckCircle2, MousePointerClick, X, SkipForward, Flag } from 'lucide-react';
 import { clsx } from 'clsx';
 import type { SuggestResponse, Suggestion, SuggestionSource } from '../../types';
 import Button from '../common/Button';
 import RiskBadge from '../common/RiskBadge';
 import InfoTooltip from '../common/InfoTooltip';
+import LoadingMessage from '../common/LoadingMessage';
 import SentenceAnalysisPanel from './SentenceAnalysisPanel';
 import CustomInputSection from './CustomInputSection';
 import { useSessionStore } from '../../stores/sessionStore';
@@ -116,9 +117,8 @@ export default function SuggestionPanel({
   if (isLoading) {
     return (
       <div className="card p-6">
-        <div className="flex items-center justify-center text-gray-500">
-          <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-          <span>正在生成建议...</span>
+        <div className="flex items-center justify-center">
+          <LoadingMessage category="suggestion" size="md" showEnglish={true} />
         </div>
       </div>
     );
@@ -299,10 +299,8 @@ export default function SuggestionPanel({
               />
             ) : loadingAnalysis ? (
               <div className="p-6 bg-gray-50 rounded-lg text-center">
-                <Loader2 className="w-6 h-6 animate-spin text-gray-400 mx-auto mb-2" />
-                <p className="text-sm text-gray-500">正在分析句子结构...</p>
-                <p className="text-xs text-gray-400 mt-1">Analyzing sentence structure...</p>
-                <p className="text-xs text-gray-400 mt-2">首次分析可能需要10-30秒</p>
+                <LoadingMessage category="analysis" size="md" showEnglish={true} centered />
+                <p className="text-xs text-gray-400 mt-3">首次分析可能需要10-30秒 / First analysis may take 10-30s</p>
               </div>
             ) : externalAnalysisState?.error ? (
               <div className="p-4 bg-red-50 rounded-lg text-center">

@@ -40,3 +40,17 @@ pytest>=7.4.0
 pytest-asyncio>=0.21.0
 black>=23.11.0
 ruff>=0.1.0
+
+# ONNX Runtime for true PPL calculation (optional but recommended)
+# Install for enhanced AI detection (replaces zlib compression ratio proxy)
+# 用于真实PPL计算的ONNX运行时（可选但推荐）
+# 安装以增强AI检测（替代zlib压缩比代理）
+# Note: Python 3.8 requires onnxruntime<1.17.0; Python 3.10+ can use latest
+# 注意：Python 3.8 需要 onnxruntime<1.17.0；Python 3.10+ 可使用最新版
+onnxruntime>=1.16.0,<1.17.0  # For Python 3.8/3.9 compatibility
+# tokenizers is optional - falls back to transformers tokenizer if not installed
+# tokenizers 是可选的 - 如未安装则回退到 transformers 分词器
+
+# For model conversion only (development, not needed at runtime)
+# 仅用于模型转换（开发用，运行时不需要）
+# onnx>=1.15.0  # Uncomment if converting models

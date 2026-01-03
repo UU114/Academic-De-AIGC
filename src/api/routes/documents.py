@@ -162,7 +162,12 @@ async def upload_document(
                     "turnitin_score": analysis.turnitin_score,
                     "gptzero_score": analysis.gptzero_score,
                     "paragraph_index": sent.paragraph_index,
-                    "context_baseline": para_ctx.baseline if para_ctx else 0
+                    "context_baseline": para_ctx.baseline if para_ctx else 0,
+                    # Phase 2: Enhanced metrics
+                    "burstiness_value": getattr(analysis, 'burstiness_value', 0.0),
+                    "burstiness_risk": getattr(analysis, 'burstiness_risk', 'unknown'),
+                    "connector_count": getattr(analysis, 'connector_count', 0),
+                    "connector_word": getattr(analysis, 'connector_match', None).connector if getattr(analysis, 'connector_match', None) else None
                 }
             )
 
@@ -378,7 +383,12 @@ async def upload_text(
                     "ppl_risk": analysis.ppl_risk,
                     "fingerprint_density": analysis.fingerprint_density,
                     "paragraph_index": sent.paragraph_index,
-                    "context_baseline": para_ctx.baseline if para_ctx else 0
+                    "context_baseline": para_ctx.baseline if para_ctx else 0,
+                    # Phase 2: Enhanced metrics
+                    "burstiness_value": getattr(analysis, 'burstiness_value', 0.0),
+                    "burstiness_risk": getattr(analysis, 'burstiness_risk', 'unknown'),
+                    "connector_count": getattr(analysis, 'connector_count', 0),
+                    "connector_word": getattr(analysis, 'connector_match', None).connector if getattr(analysis, 'connector_match', None) else None
                 }
             )
 

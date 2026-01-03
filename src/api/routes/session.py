@@ -165,7 +165,8 @@ async def start_session(
         current_index=0,
         current_sentence=_build_sentence_analysis(first_sentence) if first_sentence else None,
         suggestions=None,
-        progress_percent=0.0
+        progress_percent=0.0,
+        status=session.status
     )
 
 
@@ -226,7 +227,8 @@ async def get_current_state(
         current_index=session.current_index,
         current_sentence=_build_sentence_analysis(current_sentence) if current_sentence else None,
         suggestions=None,
-        progress_percent=progress
+        progress_percent=progress,
+        status=session.status
     )
 
 
@@ -622,5 +624,12 @@ def _build_sentence_analysis(sentence: Sentence) -> SentenceAnalysis:
         fingerprints=[],
         fingerprint_density=analysis.get("fingerprint_density", 0),
         issues=[],
-        locked_terms=sentence.locked_terms_json or []
+        locked_terms=sentence.locked_terms_json or [],
+        # Phase 2: Enhanced metrics
+        burstiness_value=analysis.get("burstiness_value", 0.0),
+        burstiness_risk=analysis.get("burstiness_risk", "unknown"),
+        connector_count=analysis.get("connector_count", 0),
+        connector_word=analysis.get("connector_word"),
+        context_baseline=analysis.get("context_baseline", 0),
+        paragraph_index=analysis.get("paragraph_index", 0)
     )

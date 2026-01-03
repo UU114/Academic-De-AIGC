@@ -533,7 +533,28 @@ Return ONLY the JSON object, no other text."""
 
     try:
         content = None
-        if settings.llm_provider == "gemini" and settings.gemini_api_key:
+        if settings.llm_provider == "volcengine" and settings.volcengine_api_key:
+            # Call Volcengine (火山引擎) DeepSeek API - faster
+            # 调用火山引擎 DeepSeek API - 更快
+            async with httpx.AsyncClient(
+                base_url=settings.volcengine_base_url,
+                headers={
+                    "Authorization": f"Bearer {settings.volcengine_api_key}",
+                    "Content-Type": "application/json"
+                },
+                timeout=90.0,
+                trust_env=False
+            ) as client:
+                response = await client.post("/chat/completions", json={
+                    "model": settings.volcengine_model,
+                    "messages": [{"role": "user", "content": analysis_prompt}],
+                    "max_tokens": 2000,
+                    "temperature": 0.3
+                })
+                response.raise_for_status()
+                data = response.json()
+                content = data["choices"][0]["message"]["content"].strip()
+        elif settings.llm_provider == "gemini" and settings.gemini_api_key:
             # Call Gemini API
             # 调用Gemini API
             from google import genai
@@ -548,13 +569,15 @@ Return ONLY the JSON object, no other text."""
             )
             content = response.text.strip()
         elif settings.llm_provider == "deepseek" or settings.deepseek_api_key:
+            # Call DeepSeek API (official - slower)
+            # 调用DeepSeek API（官方 - 较慢）
             async with httpx.AsyncClient(
                 base_url=settings.deepseek_base_url,
                 headers={
                     "Authorization": f"Bearer {settings.deepseek_api_key}",
                     "Content-Type": "application/json"
                 },
-                timeout=60.0,
+                timeout=90.0,
                 trust_env=False
             ) as client:
                 response = await client.post("/chat/completions", json={
@@ -801,7 +824,29 @@ Sentence: {sentence}
 Translation:"""
 
     try:
-        if settings.llm_provider == "gemini" and settings.gemini_api_key:
+        if settings.llm_provider == "volcengine" and settings.volcengine_api_key:
+            # Call Volcengine (火山引擎) DeepSeek API for translation - faster
+            # 使用火山引擎 DeepSeek API 翻译 - 更快
+            async with httpx.AsyncClient(
+                base_url=settings.volcengine_base_url,
+                headers={
+                    "Authorization": f"Bearer {settings.volcengine_api_key}",
+                    "Content-Type": "application/json"
+                },
+                timeout=60.0,
+                trust_env=False
+            ) as client:
+                response = await client.post("/chat/completions", json={
+                    "model": settings.volcengine_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 500,
+                    "temperature": 0.3
+                })
+                response.raise_for_status()
+                data = response.json()
+                translation = data["choices"][0]["message"]["content"].strip()
+                return translation
+        elif settings.llm_provider == "gemini" and settings.gemini_api_key:
             # Call Gemini API for translation
             # 使用Gemini API翻译
             from google import genai
@@ -816,13 +861,15 @@ Translation:"""
             )
             return response.text.strip()
         elif settings.llm_provider == "deepseek" or settings.deepseek_api_key:
+            # Call DeepSeek API (official - slower)
+            # 调用DeepSeek API（官方 - 较慢）
             async with httpx.AsyncClient(
                 base_url=settings.deepseek_base_url,
                 headers={
                     "Authorization": f"Bearer {settings.deepseek_api_key}",
                     "Content-Type": "application/json"
                 },
-                timeout=30.0,
+                timeout=60.0,
                 trust_env=False
             ) as client:
                 response = await client.post("/chat/completions", json={

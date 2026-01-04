@@ -71,6 +71,7 @@ async def list_sessions(
             document_name=doc_name,
             mode=ProcessMode(sess.mode),
             status=sess.status,
+            current_step=sess.current_step or "step1-1",
             total_sentences=total,
             processed=processed,
             progress_percent=progress,
@@ -110,8 +111,12 @@ async def start_session(
 
     # CAASS v2.0 Phase 2: Extract whitelist from document
     # CAASS v2.0 第二阶段：从文档提取白名单
-    whitelist_result = whitelist_extractor.extract_from_document(doc.original_text)
-    whitelist_terms = list(whitelist_result.terms)  # Convert set to list for JSON storage
+    try:
+        whitelist_result = whitelist_extractor.extract_from_document(doc.original_text or "")
+        whitelist_terms = list(whitelist_result.terms)  # Convert set to list for JSON storage
+    except Exception as e:
+        print(f"Error extracting whitelist: {e}")
+        whitelist_terms = []
 
     # Get sentences for processing (only those marked as should_process=True)
     # 获取要处理的句子（仅标记为should_process=True的）
@@ -601,10 +606,44 @@ async def complete_session(
         raise HTTPException(status_code=404, detail="Session not found")
 
     session.status = "completed"
+    session.current_step = "review"
     session.completed_at = datetime.utcnow()
     await db.commit()
 
     return {"status": "completed", "session_id": session_id}
+
+
+@router.post("/{session_id}/step/{step}")
+async def update_session_step(
+    session_id: str,
+    step: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Update current step for a session
+    更新会话的当前步骤
+
+    Valid steps: step1-1, step1-2, level2, level3, review
+    """
+    valid_steps = ["step1-1", "step1-2", "level2", "level3", "review"]
+    if step not in valid_steps:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid step. Valid steps: {', '.join(valid_steps)}"
+        )
+
+    result = await db.execute(
+        select(Session).where(Session.id == session_id)
+    )
+    session = result.scalar_one_or_none()
+
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session.current_step = step
+    await db.commit()
+
+    return {"session_id": session_id, "current_step": step}
 
 
 def _build_sentence_analysis(sentence: Sentence) -> SentenceAnalysis:
@@ -612,7 +651,25 @@ def _build_sentence_analysis(sentence: Sentence) -> SentenceAnalysis:
     Build SentenceAnalysis from Sentence model
     从Sentence模型构建SentenceAnalysis
     """
+    from src.core.analyzer.fingerprint import FingerprintDetector
+    from src.api.schemas import FingerprintMatch
+
     analysis = sentence.analysis_json or {}
+
+    # Detect fingerprints in the sentence text
+    # 检测句子文本中的指纹词
+    detector = FingerprintDetector()
+    detected_fps = detector.detect(sentence.original_text)
+    fingerprints = [
+        FingerprintMatch(
+            word=fp.word,
+            position=fp.position,
+            risk_weight=fp.risk_weight,
+            category=fp.category,
+            replacements=fp.replacements
+        ) for fp in detected_fps
+    ]
+
     return SentenceAnalysis(
         id=sentence.id,  # Include database ID for API calls
         index=sentence.index,
@@ -621,7 +678,7 @@ def _build_sentence_analysis(sentence: Sentence) -> SentenceAnalysis:
         risk_level=RiskLevel(sentence.risk_level or "low"),
         ppl=analysis.get("ppl", 0),
         ppl_risk=RiskLevel(analysis.get("ppl_risk", "low")),
-        fingerprints=[],
+        fingerprints=fingerprints,
         fingerprint_density=analysis.get("fingerprint_density", 0),
         issues=[],
         locked_terms=sentence.locked_terms_json or [],

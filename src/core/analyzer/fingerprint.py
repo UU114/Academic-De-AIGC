@@ -212,6 +212,9 @@ class FingerprintDetector:
         Returns:
             List of FingerprintMatch objects sorted by position
         """
+        if not text:
+            return []
+
         matches = []
 
         # Detect phrases first (longer patterns take precedence)

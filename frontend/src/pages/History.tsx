@@ -1,25 +1,44 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { FileText, Clock, Play, CheckCircle, Pause, Trash2, AlertCircle } from 'lucide-react';
+import { FileText, Clock, Play, CheckCircle, Pause, Trash2, AlertCircle, RefreshCw } from 'lucide-react';
 import { clsx } from 'clsx';
 import Button from '../components/common/Button';
 import RiskBadge from '../components/common/RiskBadge';
 import ProgressBar from '../components/common/ProgressBar';
 import LoadingMessage from '../components/common/LoadingMessage';
 import { sessionApi, documentApi } from '../services/api';
-import type { SessionInfo, DocumentInfo } from '../types';
+import type { SessionInfo, DocumentInfo, SessionStep } from '../types';
 
 /**
- * History page - View and resume past sessions
- * 历史页面 - 查看和恢复过去的会话
+ * Task item combining session and document info
+ * 任务项：合并会话和文档信息
+ */
+interface TaskItem {
+  sessionId: string;
+  documentId: string;
+  documentName: string;
+  mode: 'intervention' | 'yolo';
+  status: 'active' | 'paused' | 'completed' | 'pending';
+  currentStep: SessionStep;
+  totalSentences: number;
+  processed: number;
+  progressPercent: number;
+  highRiskCount: number;
+  mediumRiskCount: number;
+  lowRiskCount: number;
+  createdAt: string;
+  completedAt?: string;
+}
+
+/**
+ * History page - Unified task list view
+ * 历史页面 - 统一任务列表视图
  */
 export default function History() {
   const navigate = useNavigate();
-  const [sessions, setSessions] = useState<SessionInfo[]>([]);
-  const [documents, setDocuments] = useState<DocumentInfo[]>([]);
+  const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'sessions' | 'documents'>('sessions');
 
   // Load data on mount
   // 组件挂载时加载数据
@@ -27,6 +46,8 @@ export default function History() {
     loadData();
   }, []);
 
+  // Merge sessions and documents into unified task list
+  // 合并会话和文档为统一任务列表
   const loadData = async () => {
     setIsLoading(true);
     setError(null);
@@ -35,8 +56,41 @@ export default function History() {
         sessionApi.list(),
         documentApi.list(),
       ]);
-      setSessions(sessionsData);
-      setDocuments(documentsData);
+
+      // Create a map of document info by id
+      // 创建文档信息映射
+      const docMap = new Map<string, DocumentInfo>();
+      documentsData.forEach((doc: DocumentInfo) => {
+        docMap.set(doc.id, doc);
+      });
+
+      // Merge session with document risk info
+      // 合并会话与文档风险信息
+      const taskList: TaskItem[] = sessionsData.map((session: SessionInfo) => {
+        const doc = docMap.get(session.documentId);
+        return {
+          sessionId: session.sessionId,
+          documentId: session.documentId,
+          documentName: session.documentName,
+          mode: session.mode,
+          status: session.status as TaskItem['status'],
+          currentStep: session.currentStep || 'step1-1',
+          totalSentences: session.totalSentences,
+          processed: session.processed,
+          progressPercent: session.progressPercent,
+          highRiskCount: doc?.highRiskCount || 0,
+          mediumRiskCount: doc?.mediumRiskCount || 0,
+          lowRiskCount: doc?.lowRiskCount || 0,
+          createdAt: session.createdAt,
+          completedAt: session.completedAt,
+        };
+      });
+
+      // Sort by creation date (newest first)
+      // 按创建时间排序（最新在前）
+      taskList.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+      setTasks(taskList);
     } catch (err) {
       setError((err as Error).message || '加载失败');
     } finally {
@@ -44,42 +98,71 @@ export default function History() {
     }
   };
 
-  // Resume a session
-  // 恢复会话
-  const handleResumeSession = (session: SessionInfo) => {
-    if (session.mode === 'intervention') {
-      navigate(`/intervention/${session.sessionId}`);
-    } else {
-      navigate(`/yolo/${session.sessionId}`);
-    }
+  // Resume a task - navigate to the correct step
+  // 恢复任务 - 导航到正确的步骤
+  const handleResumeTask = (task: TaskItem) => {
+    // Navigate based on current step
+    // 根据当前步骤导航
+    const stepRoutes: Record<string, string> = {
+      'step1-1': `/flow/step1-1/${task.documentId}?mode=${task.mode}&session=${task.sessionId}`,
+      'step1-2': `/flow/step1-2/${task.documentId}?mode=${task.mode}&session=${task.sessionId}`,
+      'step2': `/flow/step2/${task.documentId}?mode=${task.mode}&session=${task.sessionId}`,
+      'level2': `/flow/step2/${task.documentId}?mode=${task.mode}&session=${task.sessionId}`,  // Legacy support
+      'step3': task.mode === 'intervention'
+        ? `/intervention/${task.sessionId}`
+        : `/yolo/${task.sessionId}`,
+      'level3': task.mode === 'intervention'  // Legacy support
+        ? `/intervention/${task.sessionId}`
+        : `/yolo/${task.sessionId}`,
+      'review': `/review/${task.sessionId}`,
+    };
+
+    const route = stepRoutes[task.currentStep] || stepRoutes['step1-1'];
+    navigate(route);
   };
 
-  // Delete a document
-  // 删除文档
-  const handleDeleteDocument = async (docId: string) => {
-    if (!confirm('确定要删除此文档及其所有会话吗？')) return;
+  // Delete a task (document and all sessions)
+  // 删除任务（文档及所有会话）
+  const handleDeleteTask = async (task: TaskItem, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!confirm('确定要删除此任务及其所有数据吗？\nAre you sure to delete this task and all its data?')) return;
 
     try {
-      await documentApi.delete(docId);
+      await documentApi.delete(task.documentId);
       loadData();
     } catch (err) {
       setError((err as Error).message || '删除失败');
     }
   };
 
-  // Get status icon
-  // 获取状态图标
-  const getStatusIcon = (status: string) => {
+  // Get status icon and label
+  // 获取状态图标和标签
+  const getStatusInfo = (status: string) => {
     switch (status) {
       case 'completed':
-        return <CheckCircle className="w-4 h-4 text-green-500" />;
+        return { icon: <CheckCircle className="w-4 h-4 text-green-500" />, label: '已完成', color: 'text-green-600' };
       case 'active':
-        return <Play className="w-4 h-4 text-blue-500" />;
+        return { icon: <Play className="w-4 h-4 text-blue-500" />, label: '进行中', color: 'text-blue-600' };
       case 'paused':
-        return <Pause className="w-4 h-4 text-amber-500" />;
+        return { icon: <Pause className="w-4 h-4 text-amber-500" />, label: '已暂停', color: 'text-amber-600' };
       default:
-        return <Clock className="w-4 h-4 text-gray-400" />;
+        return { icon: <Clock className="w-4 h-4 text-gray-400" />, label: '待处理', color: 'text-gray-500' };
     }
+  };
+
+  // Get step label
+  // 获取步骤标签
+  const getStepLabel = (step: string) => {
+    const stepLabels: Record<string, string> = {
+      'step1-1': 'Step1-1 结构分析',
+      'step1-2': 'Step1-2 段落分析',
+      'step2': 'Step2 衔接优化',
+      'level2': 'Step2 衔接优化',  // Legacy support
+      'step3': 'Step3 句子处理',
+      'level3': 'Step3 句子处理',  // Legacy support
+      'review': '审核完成',
+    };
+    return stepLabels[step] || step;
   };
 
   // Format date
@@ -104,14 +187,20 @@ export default function History() {
 
   return (
     <div className="max-w-4xl mx-auto py-8">
+      {/* Header */}
       <div className="flex justify-between items-center mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-gray-800">历史任务</h1>
-          <p className="text-gray-600">History - View and resume past sessions</p>
+          <h1 className="text-2xl font-bold text-gray-800">任务列表</h1>
+          <p className="text-gray-600">Task List - View and manage all your tasks</p>
         </div>
-        <Button variant="primary" onClick={() => navigate('/upload')}>
-          新建任务
-        </Button>
+        <div className="flex space-x-3">
+          <Button variant="secondary" onClick={loadData} title="刷新列表">
+            <RefreshCw className="w-4 h-4" />
+          </Button>
+          <Button variant="primary" onClick={() => navigate('/upload')}>
+            新建任务
+          </Button>
+        </div>
       </div>
 
       {/* Error message */}
@@ -122,148 +211,116 @@ export default function History() {
         </div>
       )}
 
-      {/* Tabs */}
-      <div className="flex space-x-2 mb-6">
-        <button
-          onClick={() => setActiveTab('sessions')}
-          className={clsx(
-            'px-4 py-2 rounded-lg font-medium transition-colors',
-            activeTab === 'sessions'
-              ? 'bg-primary-100 text-primary-700'
-              : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-          )}
-        >
-          会话列表 ({sessions.length})
-        </button>
-        <button
-          onClick={() => setActiveTab('documents')}
-          className={clsx(
-            'px-4 py-2 rounded-lg font-medium transition-colors',
-            activeTab === 'documents'
-              ? 'bg-primary-100 text-primary-700'
-              : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-          )}
-        >
-          文档列表 ({documents.length})
-        </button>
+      {/* Task count */}
+      <div className="mb-4 text-sm text-gray-500">
+        共 {tasks.length} 个任务 | Total {tasks.length} task{tasks.length !== 1 ? 's' : ''}
       </div>
 
-      {/* Sessions Tab */}
-      {activeTab === 'sessions' && (
-        <div className="space-y-4">
-          {sessions.length === 0 ? (
-            <div className="text-center py-12 text-gray-500">
-              <Clock className="w-12 h-12 mx-auto mb-4 text-gray-300" />
-              <p>暂无历史会话</p>
-              <p className="text-sm">上传文档开始第一个任务</p>
-            </div>
-          ) : (
-            sessions.map((session) => (
+      {/* Task List */}
+      <div className="space-y-4">
+        {tasks.length === 0 ? (
+          <div className="text-center py-16 text-gray-500">
+            <FileText className="w-16 h-16 mx-auto mb-4 text-gray-300" />
+            <p className="text-lg mb-2">暂无任务</p>
+            <p className="text-sm mb-6">No tasks yet</p>
+            <Button variant="primary" onClick={() => navigate('/upload')}>
+              上传文档开始第一个任务
+            </Button>
+          </div>
+        ) : (
+          tasks.map((task) => {
+            const statusInfo = getStatusInfo(task.status);
+            return (
               <div
-                key={session.sessionId}
-                className="card p-4 hover:shadow-md transition-shadow cursor-pointer"
-                onClick={() => handleResumeSession(session)}
+                key={task.sessionId}
+                className={clsx(
+                  'card p-5 hover:shadow-md transition-all cursor-pointer border-l-4',
+                  task.status === 'completed' ? 'border-l-green-500' :
+                  task.status === 'active' ? 'border-l-blue-500' :
+                  task.status === 'paused' ? 'border-l-amber-500' : 'border-l-gray-300'
+                )}
+                onClick={() => handleResumeTask(task)}
               >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-4">
-                    <FileText className="w-8 h-8 text-gray-400" />
+                {/* Top row: document name, status, mode */}
+                <div className="flex items-start justify-between mb-3">
+                  <div className="flex items-center space-x-3">
+                    <FileText className="w-6 h-6 text-gray-400 flex-shrink-0" />
                     <div>
-                      <h3 className="font-medium text-gray-800">
-                        {session.documentName}
+                      <h3 className="font-semibold text-gray-800 text-lg">
+                        {task.documentName}
                       </h3>
-                      <div className="flex items-center space-x-3 text-sm text-gray-500">
-                        <span className="flex items-center">
-                          {getStatusIcon(session.status)}
-                          <span className="ml-1">
-                            {session.status === 'completed' ? '已完成' :
-                             session.status === 'active' ? '进行中' : '已暂停'}
-                          </span>
+                      <div className="flex items-center flex-wrap gap-x-3 gap-y-1 text-sm text-gray-500 mt-1">
+                        <span className={clsx('flex items-center', statusInfo.color)}>
+                          {statusInfo.icon}
+                          <span className="ml-1 font-medium">{statusInfo.label}</span>
                         </span>
                         <span>•</span>
-                        <span>{session.mode === 'intervention' ? '干预模式' : 'YOLO模式'}</span>
+                        <span className="px-2 py-0.5 bg-gray-100 rounded text-xs font-medium">
+                          {getStepLabel(task.currentStep)}
+                        </span>
                         <span>•</span>
-                        <span>{formatDate(session.createdAt)}</span>
+                        <span className={task.mode === 'yolo' ? 'text-amber-600' : 'text-primary-600'}>
+                          {task.mode === 'intervention' ? '干预模式' : 'YOLO模式'}
+                        </span>
+                        <span>•</span>
+                        <span>{formatDate(task.createdAt)}</span>
                       </div>
                     </div>
                   </div>
-                  <div className="flex items-center space-x-4">
-                    <div className="text-right">
-                      <div className="text-sm text-gray-500">
-                        {session.processed} / {session.totalSentences} 句
-                      </div>
-                      <ProgressBar
-                        value={session.progressPercent}
-                        size="sm"
-                        className="w-24"
-                      />
-                    </div>
-                    <Button
-                      variant={session.status === 'completed' ? 'secondary' : 'primary'}
-                      size="sm"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleResumeSession(session);
-                      }}
-                    >
-                      {session.status === 'completed' ? '查看' : '继续'}
-                    </Button>
-                  </div>
+                  <button
+                    onClick={(e) => handleDeleteTask(task, e)}
+                    className="p-2 text-gray-400 hover:text-red-500 transition-colors rounded-lg hover:bg-red-50"
+                    title="删除任务"
+                  >
+                    <Trash2 className="w-5 h-5" />
+                  </button>
                 </div>
-              </div>
-            ))
-          )}
-        </div>
-      )}
 
-      {/* Documents Tab */}
-      {activeTab === 'documents' && (
-        <div className="space-y-4">
-          {documents.length === 0 ? (
-            <div className="text-center py-12 text-gray-500">
-              <FileText className="w-12 h-12 mx-auto mb-4 text-gray-300" />
-              <p>暂无上传的文档</p>
-            </div>
-          ) : (
-            documents.map((doc) => (
-              <div key={doc.id} className="card p-4">
+                {/* Middle row: risk badges */}
+                <div className="flex items-center space-x-2 mb-3">
+                  {task.highRiskCount > 0 && (
+                    <RiskBadge level="high" score={task.highRiskCount} size="sm" />
+                  )}
+                  {task.mediumRiskCount > 0 && (
+                    <RiskBadge level="medium" score={task.mediumRiskCount} size="sm" />
+                  )}
+                  {task.lowRiskCount > 0 && (
+                    <RiskBadge level="low" score={task.lowRiskCount} size="sm" />
+                  )}
+                  {task.highRiskCount === 0 && task.mediumRiskCount === 0 && task.lowRiskCount === 0 && (
+                    <span className="text-sm text-gray-400">风险信息待分析</span>
+                  )}
+                </div>
+
+                {/* Bottom row: progress */}
                 <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-4">
-                    <FileText className="w-8 h-8 text-gray-400" />
-                    <div>
-                      <h3 className="font-medium text-gray-800">{doc.filename}</h3>
-                      <div className="flex items-center space-x-3 text-sm text-gray-500">
-                        <span>{doc.totalSentences} 句</span>
-                        <span>•</span>
-                        <span>{formatDate(doc.createdAt)}</span>
-                      </div>
+                  <div className="flex-1 mr-4">
+                    <div className="flex items-center justify-between text-sm text-gray-500 mb-1">
+                      <span>处理进度</span>
+                      <span>{task.processed} / {task.totalSentences} 句 ({task.progressPercent}%)</span>
                     </div>
+                    <ProgressBar
+                      value={task.progressPercent}
+                      size="md"
+                      className="w-full"
+                    />
                   </div>
-                  <div className="flex items-center space-x-4">
-                    <div className="flex items-center space-x-2">
-                      {doc.highRiskCount > 0 && (
-                        <RiskBadge level="high" score={doc.highRiskCount} size="sm" />
-                      )}
-                      {doc.mediumRiskCount > 0 && (
-                        <RiskBadge level="medium" score={doc.mediumRiskCount} size="sm" />
-                      )}
-                      {doc.lowRiskCount > 0 && (
-                        <RiskBadge level="low" score={doc.lowRiskCount} size="sm" />
-                      )}
-                    </div>
-                    <button
-                      onClick={() => handleDeleteDocument(doc.id)}
-                      className="p-2 text-gray-400 hover:text-red-500 transition-colors"
-                      title="删除文档"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
+                  <Button
+                    variant={task.status === 'completed' ? 'secondary' : 'primary'}
+                    size="sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleResumeTask(task);
+                    }}
+                  >
+                    {task.status === 'completed' ? '查看结果' : '继续处理'}
+                  </Button>
                 </div>
               </div>
-            ))
-          )}
-        </div>
-      )}
+            );
+          })
+        )}
+      </div>
     </div>
   );
 }

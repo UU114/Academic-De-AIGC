@@ -5,7 +5,7 @@ import { clsx } from 'clsx';
 import Button from '../components/common/Button';
 import ColloquialismSlider from '../components/settings/ColloquialismSlider';
 import { useRotatingLoadingMessage } from '../utils/loadingMessages';
-import { documentApi } from '../services/api';
+import { documentApi, sessionApi } from '../services/api';
 import { useConfigStore } from '../stores/configStore';
 import type { RiskLevel } from '../types';
 
@@ -15,7 +15,7 @@ import type { RiskLevel } from '../types';
  */
 export default function Upload() {
   const navigate = useNavigate();
-  const { processLevels, setProcessLevels } = useConfigStore();
+  const { processLevels, setProcessLevels, colloquialismLevel } = useConfigStore();
 
   // Fun loading message for upload state
   // 趣味上传加载提示
@@ -123,11 +123,19 @@ export default function Upload() {
         documentId = result.id;
       }
 
-      // Navigate to Step 1-1 (document structure analysis) with mode parameter
+      // Create session for this document
+      // 为此文档创建会话
+      const sessionResult = await sessionApi.start(documentId, {
+        mode: sessionMode,
+        colloquialismLevel,
+        processLevels,
+      });
+
+      // Navigate to Step 1-1 (document structure analysis) with mode and session
       // Both intervention and yolo modes start from Step 1-1
-      // 导航到 Step 1-1（文档结构分析），带上模式参数
+      // 导航到 Step 1-1（文档结构分析），带上模式和会话ID
       // 干预模式和YOLO模式都从 Step 1-1 开始
-      navigate(`/flow/step1-1/${documentId}?mode=${sessionMode}`);
+      navigate(`/flow/step1-1/${documentId}?mode=${sessionMode}&session=${sessionResult.sessionId}`);
     } catch (err) {
       setError((err as Error).message || '上传失败，请重试');
       setIsUploading(false);
@@ -289,6 +297,9 @@ export default function Upload() {
               </p>
             </button>
           </div>
+          <p className="text-xs text-amber-600 mt-2">
+            💡 YOLO模式仅适用于灌水文章，想认真改的请用干预模式
+          </p>
         </div>
 
         {/* Colloquialism Level */}

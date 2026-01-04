@@ -177,6 +177,13 @@ class WhitelistExtractor:
             WhitelistResult with extracted terms
         """
         terms = set()
+        
+        if not full_text:
+            return WhitelistResult(
+                terms=terms,
+                source="document",
+                confidence=0.0
+            )
 
         # Try to find Abstract section if not provided
         # 如果未提供，尝试查找摘要部分
@@ -214,6 +221,9 @@ class WhitelistExtractor:
         Extract Abstract section from document text
         从文档文本中提取摘要部分
         """
+        if not text:
+            return None
+
         text_lower = text.lower()
 
         # Find "abstract" keyword

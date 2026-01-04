@@ -16,6 +16,11 @@ import {
   Lightbulb,
   Link2,
   Unlink,
+  Wand2,
+  Copy,
+  Check,
+  X,
+  Info,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import type {
@@ -73,6 +78,184 @@ export default function StructurePanel({
     rewriteSuggestionZh: string;
     rewriteExample?: string;  // English example
   }>>({});
+
+  // State for prompt generation modal
+  // 提示词生成弹窗状态
+  const [showPromptModal, setShowPromptModal] = useState(false);
+  const [generatedPrompt, setGeneratedPrompt] = useState('');
+  const [promptType, setPromptType] = useState<'full' | 'section'>('full');
+  const [copiedPrompt, setCopiedPrompt] = useState(false);
+
+  // Generate prompt based on analysis results
+  // 根据分析结果生成提示词
+  const generatePrompt = useCallback((type: 'full' | 'section' = 'full') => {
+    setPromptType(type);
+
+    let prompt = '';
+
+    if (type === 'full') {
+      // Generate full document revision prompt
+      // 生成全文修改提示词
+      prompt = `# 学术论文De-AIGC修改任务
+
+## 任务目标
+根据以下分析结果，对论文进行修改以降低AI生成内容的检测风险，同时保持学术严谨性和内容完整性。
+
+## 文档分析结果
+
+### 整体评估
+- 结构风险分数: ${analysis.structureScore}/100 (${analysis.riskLevel === 'high' ? '高风险' : analysis.riskLevel === 'medium' ? '中风险' : '低风险'})
+- 总段落数: ${analysis.totalParagraphs}
+- 总章节数: ${analysis.totalSections || '-'}
+
+### 检测到的问题
+`;
+
+      // Add pattern issues
+      // 添加模式问题
+      if (analysis.hasLinearFlow) {
+        prompt += `- ⚠️ 线性流程模式：文档采用过于规则的"首先-其次-然后"推进方式\n`;
+      }
+      if (analysis.hasRepetitivePattern) {
+        prompt += `- ⚠️ 重复模式：段落结构高度相似，缺乏变化\n`;
+      }
+      if (analysis.hasUniformLength) {
+        prompt += `- ⚠️ 均匀长度：段落字数过于均匀，方差极低\n`;
+      }
+      if (analysis.hasPredictableOrder) {
+        prompt += `- ⚠️ 可预测结构：遵循过于公式化的学术结构\n`;
+      }
+
+      // Add explicit connectors if any
+      // 添加显性连接词
+      if (analysis.explicit_connectors && analysis.explicit_connectors.length > 0) {
+        prompt += `\n### 需要移除的显性连接词（AI指纹）\n`;
+        analysis.explicit_connectors.forEach(c => {
+          prompt += `- "${c.word}" 在位置 ${c.position}\n`;
+        });
+      }
+
+      // Add detailed suggestions if available
+      // 添加详细建议
+      if (analysis.detailedSuggestions) {
+        const ds = analysis.detailedSuggestions;
+
+        if (ds.logicSuggestions && ds.logicSuggestions.length > 0) {
+          prompt += `\n### 结构调整建议\n`;
+          ds.logicSuggestions.forEach(s => {
+            prompt += `- ${s}\n`;
+          });
+        }
+
+        if (ds.abstractSuggestions && ds.abstractSuggestions.length > 0) {
+          prompt += `\n### 摘要改进建议\n`;
+          ds.abstractSuggestions.forEach(s => {
+            prompt += `- ${s}\n`;
+          });
+        }
+
+        if (ds.sectionSuggestions && ds.sectionSuggestions.length > 0) {
+          prompt += `\n### 分章节修改建议\n`;
+          ds.sectionSuggestions.forEach(sec => {
+            prompt += `\n**第${sec.sectionNumber}章 ${sec.sectionTitle}** [${sec.severity === 'high' ? '高优先' : sec.severity === 'medium' ? '中优先' : '低优先'}]\n`;
+            prompt += `建议类型: ${sec.suggestionType === 'merge' ? '合并' : sec.suggestionType === 'split' ? '拆分' : sec.suggestionType === 'add_content' ? '补充内容' : sec.suggestionType === 'reorder' ? '调整顺序' : sec.suggestionType === 'remove_connector' ? '移除连接词' : sec.suggestionType === 'add_citation' ? '补充引用' : '重组'}\n`;
+            prompt += `说明: ${sec.suggestionZh}\n`;
+            if (sec.details && sec.details.length > 0) {
+              prompt += `具体操作:\n`;
+              sec.details.forEach((d, i) => {
+                prompt += `  ${i + 1}. ${d}\n`;
+              });
+            }
+          });
+        }
+      }
+
+      prompt += `
+## 修改原则
+
+1. **保持学术严谨性**：修改时必须保持论点的逻辑性和数据的准确性
+2. **打破模式化结构**：避免"首先、其次、然后"等线性推进，使用更自然的过渡
+3. **增加变化性**：段落长度、句式结构应有自然的变化
+4. **语义回声替代连接词**：用重复上段关键概念的方式承接，而非使用显性连接词
+5. **保留核心数据**：所有实验数据、统计结果必须准确保留
+
+## 输出要求
+
+请输出修改后的完整论文，并在每处重大修改后用【修改说明】标注修改原因。
+
+---
+
+**请在下方粘贴您的论文原文：**
+
+[在此粘贴论文全文]
+
+---
+
+**⚠️ 重要提示：**
+- 如有参考文献，请一并提供完整的参考文献列表
+- 如有实验数据表格，请确保数据完整准确
+- 如有图表描述，请提供图表的详细信息`;
+
+    } else {
+      // Generate section-specific prompt
+      // 生成章节修改提示词
+      prompt = `# 学术论文章节修改任务
+
+## 任务目标
+根据分析结果，对指定章节进行针对性修改。
+
+## 当前分析结果
+- 结构风险分数: ${analysis.structureScore}/100
+`;
+
+      if (analysis.detailedSuggestions?.sectionSuggestions) {
+        prompt += `\n## 各章节修改建议\n`;
+        analysis.detailedSuggestions.sectionSuggestions.forEach(sec => {
+          prompt += `\n### 第${sec.sectionNumber}章 ${sec.sectionTitle}\n`;
+          prompt += `- 优先级: ${sec.severity === 'high' ? '高' : sec.severity === 'medium' ? '中' : '低'}\n`;
+          prompt += `- 建议: ${sec.suggestionZh}\n`;
+          if (sec.details && sec.details.length > 0) {
+            sec.details.forEach((d, i) => {
+              prompt += `  ${i + 1}. ${d}\n`;
+            });
+          }
+        });
+      }
+
+      prompt += `
+## 修改原则
+1. 保持段落间的语义连贯，使用关键词回声而非显性连接词
+2. 打破过于规整的段落结构，增加自然的变化
+3. 保持学术严谨性，确保数据和论点准确
+
+---
+
+**请粘贴需要修改的章节内容：**
+
+[在此粘贴章节内容]
+
+---
+
+**⚠️ 重要提示：**
+- 请提供该章节涉及的所有参考文献
+- 如有数据引用，请确保提供完整数据来源`;
+    }
+
+    setGeneratedPrompt(prompt);
+    setShowPromptModal(true);
+  }, [analysis]);
+
+  // Copy prompt to clipboard
+  // 复制提示词到剪贴板
+  const copyPromptToClipboard = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(generatedPrompt);
+      setCopiedPrompt(true);
+      setTimeout(() => setCopiedPrompt(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+    }
+  }, [generatedPrompt]);
 
   // Fetch suggestion for a specific paragraph
   // 为特定段落获取建议
@@ -667,15 +850,319 @@ export default function StructurePanel({
         </div>
       )}
 
-      {/* Recommendation from smart analysis */}
-      {/* 智能分析的建议 */}
-      {analysis.recommendationZh && (
+      {/* Detailed Improvement Suggestions */}
+      {/* 详细改进建议 */}
+      {analysis.detailedSuggestions && (
+        <div className="space-y-3">
+          {/* Disclaimer Banner */}
+          {/* 免责声明横幅 */}
+          <div className="p-2 bg-amber-50 border border-amber-300 rounded-lg">
+            <p className="text-xs text-amber-700 flex items-center">
+              <AlertTriangle className="w-3 h-3 mr-1 flex-shrink-0" />
+              <span>
+                <strong>基于AI的DEAIGC分析，不保证逻辑和语义，请自行斟酌</strong>
+                <span className="text-amber-600 ml-1">/ AI-based analysis, use with discretion</span>
+              </span>
+            </p>
+          </div>
+
+          {/* Overall Assessment */}
+          {/* 总体评估 */}
+          {analysis.detailedSuggestions.overallAssessmentZh && (
+            <div className="p-3 bg-indigo-50 border border-indigo-200 rounded-lg">
+              <div className="flex items-center text-sm mb-2">
+                <Lightbulb className="w-4 h-4 text-indigo-600 mr-2" />
+                <span className="text-indigo-700 font-medium">总体评估 / Overall Assessment</span>
+              </div>
+              <p className="text-xs text-indigo-600">{analysis.detailedSuggestions.overallAssessmentZh}</p>
+            </div>
+          )}
+
+          {/* Abstract Suggestions */}
+          {/* 摘要建议 */}
+          {analysis.detailedSuggestions.abstractSuggestions && analysis.detailedSuggestions.abstractSuggestions.length > 0 && (
+            <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
+              <div className="flex items-center text-sm mb-2">
+                <FileText className="w-4 h-4 text-blue-600 mr-2" />
+                <span className="text-blue-700 font-medium">摘要改进 / Abstract Improvements</span>
+              </div>
+              <ul className="text-xs text-blue-600 space-y-1">
+                {analysis.detailedSuggestions.abstractSuggestions.map((s, i) => (
+                  <li key={i} className="flex items-start">
+                    <span className="mr-1">•</span>
+                    <span>{s}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Logic/Order Suggestions */}
+          {/* 逻辑顺序建议 */}
+          {analysis.detailedSuggestions.logicSuggestions && analysis.detailedSuggestions.logicSuggestions.length > 0 && (
+            <div className="p-3 bg-purple-50 border border-purple-200 rounded-lg">
+              <div className="flex items-center text-sm mb-2">
+                <GitBranch className="w-4 h-4 text-purple-600 mr-2" />
+                <span className="text-purple-700 font-medium">结构调整 / Structure Adjustments</span>
+              </div>
+              <ul className="text-xs text-purple-600 space-y-1">
+                {analysis.detailedSuggestions.logicSuggestions.map((s, i) => (
+                  <li key={i} className="flex items-start">
+                    <span className="mr-1">•</span>
+                    <span>{s}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Section-by-Section Suggestions */}
+          {/* 分章节建议 */}
+          {analysis.detailedSuggestions.sectionSuggestions && analysis.detailedSuggestions.sectionSuggestions.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-sm font-medium text-gray-700">分章节建议 / Section Suggestions</p>
+              {analysis.detailedSuggestions.sectionSuggestions.map((section, idx) => (
+                <div
+                  key={idx}
+                  className={clsx(
+                    'p-3 rounded-lg border',
+                    section.severity === 'high' && 'bg-red-50 border-red-200',
+                    section.severity === 'medium' && 'bg-amber-50 border-amber-200',
+                    section.severity === 'low' && 'bg-green-50 border-green-200'
+                  )}
+                >
+                  {/* Section Header */}
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center space-x-2">
+                      <span className="px-2 py-0.5 bg-gray-200 text-gray-700 text-xs font-mono rounded">
+                        第{section.sectionNumber}章
+                      </span>
+                      <span className="text-sm font-medium text-gray-700">{section.sectionTitle}</span>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <span className={clsx(
+                        'px-1.5 py-0.5 text-xs rounded',
+                        section.suggestionType === 'merge' && 'bg-purple-100 text-purple-600',
+                        section.suggestionType === 'split' && 'bg-blue-100 text-blue-600',
+                        section.suggestionType === 'add_content' && 'bg-green-100 text-green-600',
+                        section.suggestionType === 'reorder' && 'bg-orange-100 text-orange-600',
+                        section.suggestionType === 'restructure' && 'bg-indigo-100 text-indigo-600',
+                        section.suggestionType === 'remove_connector' && 'bg-red-100 text-red-600',
+                        section.suggestionType === 'add_citation' && 'bg-teal-100 text-teal-600'
+                      )}>
+                        {section.suggestionType === 'merge' && '合并'}
+                        {section.suggestionType === 'split' && '拆分'}
+                        {section.suggestionType === 'add_content' && '补充内容'}
+                        {section.suggestionType === 'reorder' && '调整顺序'}
+                        {section.suggestionType === 'restructure' && '重组'}
+                        {section.suggestionType === 'remove_connector' && '移除连接词'}
+                        {section.suggestionType === 'add_citation' && '补充引用'}
+                      </span>
+                      <span className={clsx(
+                        'px-1.5 py-0.5 text-xs rounded',
+                        section.severity === 'high' && 'bg-red-100 text-red-600',
+                        section.severity === 'medium' && 'bg-amber-100 text-amber-600',
+                        section.severity === 'low' && 'bg-green-100 text-green-600'
+                      )}>
+                        {section.severity === 'high' ? '高优先' : section.severity === 'medium' ? '中优先' : '低优先'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Suggestion Content */}
+                  <p className="text-xs text-gray-700 mb-2">{section.suggestionZh}</p>
+
+                  {/* Details List */}
+                  {section.details && section.details.length > 0 && (
+                    <div className="mt-2 pl-3 border-l-2 border-gray-300">
+                      <p className="text-xs text-gray-500 mb-1">具体操作：</p>
+                      <ul className="text-xs text-gray-600 space-y-1">
+                        {section.details.map((detail, i) => (
+                          <li key={i} className="flex items-start">
+                            <span className="mr-1 text-gray-400">{i + 1}.</span>
+                            <span>{detail}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {/* Affected Paragraphs */}
+                  {section.affectedParagraphs && section.affectedParagraphs.length > 0 && (
+                    <div className="mt-2 flex items-center flex-wrap gap-1">
+                      <span className="text-xs text-gray-500">涉及段落：</span>
+                      {section.affectedParagraphs.map((p, i) => (
+                        <span key={i} className="px-1 py-0.5 bg-gray-100 text-gray-600 text-xs font-mono rounded">
+                          {p}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Generate Prompt Buttons */}
+      {/* 生成提示词按钮 */}
+      {(analysis.detailedSuggestions || analysis.recommendationZh || analysis.issues?.length) && (
+        <div className="p-3 bg-gradient-to-r from-violet-50 to-purple-50 border border-violet-200 rounded-lg">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center text-sm">
+              <Wand2 className="w-4 h-4 text-violet-600 mr-2" />
+              <span className="text-violet-700 font-medium">AI辅助修改 / AI-Assisted Revision</span>
+            </div>
+          </div>
+          <p className="text-xs text-violet-600 mb-3">
+            生成修改提示词，配合其他AI工具进行论文修改
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => generatePrompt('full')}
+              className="px-3 py-1.5 bg-violet-600 text-white text-xs rounded-lg hover:bg-violet-700 transition-colors flex items-center"
+            >
+              <Wand2 className="w-3 h-3 mr-1" />
+              生成全文修改提示词
+            </button>
+            <button
+              onClick={() => generatePrompt('section')}
+              className="px-3 py-1.5 bg-white text-violet-600 border border-violet-300 text-xs rounded-lg hover:bg-violet-50 transition-colors flex items-center"
+            >
+              <FileText className="w-3 h-3 mr-1" />
+              生成章节修改提示词
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Prompt Generation Modal */}
+      {/* 提示词生成弹窗 */}
+      {showPromptModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-3xl w-full max-h-[90vh] flex flex-col">
+            {/* Modal Header */}
+            <div className="p-4 border-b border-gray-200 flex items-center justify-between flex-shrink-0">
+              <div>
+                <h3 className="text-lg font-semibold text-gray-800 flex items-center">
+                  <Wand2 className="w-5 h-5 text-violet-600 mr-2" />
+                  {promptType === 'full' ? '全文修改提示词' : '章节修改提示词'}
+                </h3>
+                <p className="text-xs text-gray-500 mt-1">
+                  复制此提示词到ChatGPT、Claude等AI工具中使用
+                </p>
+              </div>
+              <button
+                onClick={() => setShowPromptModal(false)}
+                className="p-1 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                <X className="w-5 h-5 text-gray-500" />
+              </button>
+            </div>
+
+            {/* Disclaimer Banner */}
+            <div className="mx-4 mt-4 p-3 bg-amber-50 border border-amber-300 rounded-lg flex-shrink-0">
+              <div className="flex items-start">
+                <AlertTriangle className="w-5 h-5 text-amber-600 mr-2 flex-shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-sm font-medium text-amber-800">
+                    基于AI的DEAIGC分析，不保证逻辑和语义，请自行斟酌
+                  </p>
+                  <p className="text-xs text-amber-600 mt-1">
+                    AI-based analysis results. Please review and verify all suggestions carefully.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Usage Instructions */}
+            <div className="mx-4 mt-3 p-3 bg-blue-50 border border-blue-200 rounded-lg flex-shrink-0">
+              <div className="flex items-start">
+                <Info className="w-5 h-5 text-blue-600 mr-2 flex-shrink-0 mt-0.5" />
+                <div className="text-xs text-blue-700 space-y-1">
+                  <p className="font-medium">使用说明 / How to Use:</p>
+                  <ol className="list-decimal ml-4 space-y-1">
+                    <li>点击下方"复制提示词"按钮</li>
+                    <li>打开ChatGPT、Claude或其他AI对话工具</li>
+                    <li>粘贴提示词，并在指定位置粘贴您的论文原文</li>
+                    <li>发送后等待AI返回修改建议</li>
+                  </ol>
+                  <div className="mt-2 p-2 bg-amber-100 rounded border border-amber-200">
+                    <p className="font-medium text-amber-800">⚠️ 重要提醒:</p>
+                    <ul className="list-disc ml-4 mt-1 text-amber-700">
+                      <li><strong>参考文献</strong>: 请务必提供完整的参考文献列表，AI无法凭空生成准确的引用</li>
+                      <li><strong>实验数据</strong>: 所有数据、统计结果必须由您提供，AI不会编造数据</li>
+                      <li><strong>专业术语</strong>: 如有特定领域的专业术语，请在提示词中说明</li>
+                      <li><strong>格式要求</strong>: 如有特定的格式要求（如期刊模板），请额外说明</li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Prompt Content */}
+            <div className="flex-1 overflow-auto p-4">
+              <div className="bg-gray-50 rounded-lg border border-gray-200 p-3">
+                <pre className="text-xs text-gray-700 whitespace-pre-wrap font-mono leading-relaxed">
+                  {generatedPrompt}
+                </pre>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 border-t border-gray-200 flex items-center justify-between flex-shrink-0">
+              <p className="text-xs text-gray-500">
+                提示词长度: {generatedPrompt.length} 字符
+              </p>
+              <div className="flex items-center space-x-3">
+                <button
+                  onClick={() => setShowPromptModal(false)}
+                  className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors text-sm"
+                >
+                  关闭
+                </button>
+                <button
+                  onClick={copyPromptToClipboard}
+                  className={clsx(
+                    'px-4 py-2 rounded-lg transition-colors text-sm flex items-center',
+                    copiedPrompt
+                      ? 'bg-green-600 text-white'
+                      : 'bg-violet-600 text-white hover:bg-violet-700'
+                  )}
+                >
+                  {copiedPrompt ? (
+                    <>
+                      <Check className="w-4 h-4 mr-1" />
+                      已复制
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-4 h-4 mr-1" />
+                      复制提示词
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Legacy simple recommendation (fallback) */}
+      {/* 旧版简单建议（后备） */}
+      {!analysis.detailedSuggestions && analysis.recommendationZh && (
         <div className="p-3 bg-indigo-50 border border-indigo-200 rounded-lg">
           <div className="flex items-center text-sm">
             <Lightbulb className="w-4 h-4 text-indigo-600 mr-2" />
-            <span className="text-indigo-700 font-medium">分析建议</span>
+            <span className="text-indigo-700 font-medium">改进建议</span>
           </div>
           <p className="text-xs text-indigo-600 mt-1">{analysis.recommendationZh}</p>
+          {/* Disclaimer for simple recommendation too */}
+          <p className="text-xs text-amber-600 mt-2 flex items-center">
+            <AlertTriangle className="w-3 h-3 mr-1" />
+            基于AI的DEAIGC分析，不保证逻辑和语义，请自行斟酌
+          </p>
         </div>
       )}
 

@@ -3,7 +3,6 @@ import { AlertTriangle, Lock } from 'lucide-react';
 import { clsx } from 'clsx';
 import type { SentenceAnalysis } from '../../types';
 import RiskBadge from '../common/RiskBadge';
-import InfoTooltip from '../common/InfoTooltip';
 
 interface SentenceCardProps {
   sentence: SentenceAnalysis;
@@ -188,18 +187,47 @@ export default function SentenceCard({
 
       {/* PPL, fingerprint, and connector indicators */}
       <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-gray-100 text-sm">
-        <div className="flex items-center text-gray-500">
-          <span className="mr-1">PPL: {sentence.ppl.toFixed(1)}</span>
-          <InfoTooltip
-            title="PPL (困惑度)"
-            content="使用zlib压缩比计算。PPL越低表示文本越可预测，AI特征越明显。阈值：<25高风险，25-45中风险，>45低风险。"
-          />
-        </div>
+        <PPLIndicator ppl={sentence.ppl} pplRisk={sentence.pplRisk} />
         <FingerprintIndicator count={sentence.fingerprints.length} />
         {sentence.connectorWord && (
           <ConnectorIndicator word={sentence.connectorWord} />
         )}
       </div>
+    </div>
+  );
+}
+
+// PPL (Perplexity) indicator with risk-based coloring and emoji
+// PPL（困惑度）指示器，带风险着色和emoji
+function PPLIndicator({ ppl, pplRisk }: { ppl: number; pplRisk: string }) {
+  // Emoji based on risk level: high risk = 🤖 (AI-like), low risk = 🧑 (human-like)
+  // 基于风险等级的emoji：高风险 = 🤖（AI特征），低风险 = 🧑（人类特征）
+  const getEmoji = () => {
+    if (pplRisk === 'high') return '🤖';
+    if (pplRisk === 'medium') return '⚠️';
+    return '👍';
+  };
+
+  const getColorClass = () => {
+    if (pplRisk === 'high') return 'text-red-600';
+    if (pplRisk === 'medium') return 'text-amber-600';
+    return 'text-green-600';
+  };
+
+  const getTooltip = () => {
+    if (pplRisk === 'high') {
+      return `PPL=${ppl.toFixed(1)}：困惑度很低，文本高度可预测，强烈AI特征。使用ONNX模型计算（如果不可用则用zlib压缩比）`;
+    }
+    if (pplRisk === 'medium') {
+      return `PPL=${ppl.toFixed(1)}：困惑度较低，有一定AI特征。使用ONNX模型计算（如果不可用则用zlib压缩比）`;
+    }
+    return `PPL=${ppl.toFixed(1)}：困惑度正常，文本较为自然。使用ONNX模型计算（如果不可用则用zlib压缩比）`;
+  };
+
+  return (
+    <div className={`flex items-center ${getColorClass()}`} title={getTooltip()}>
+      <span className="mr-1">PPL: {ppl.toFixed(1)}</span>
+      <span className="text-base">{getEmoji()}</span>
     </div>
   );
 }

@@ -439,6 +439,15 @@ export const sessionApi = {
     const response = await api.post(`/session/${sessionId}/goto/${index}`);
     return transformKeys<SessionState>(response.data);
   },
+
+  /**
+   * Update session current step
+   * 更新会话当前步骤
+   */
+  updateStep: async (sessionId: string, step: string): Promise<{ sessionId: string; currentStep: string }> => {
+    const response = await api.post(`/session/${sessionId}/step/${step}`);
+    return transformKeys<{ sessionId: string; currentStep: string }>(response.data);
+  },
 };
 
 // Transition APIs (Phase 3: Level 2 De-AIGC)
@@ -652,10 +661,11 @@ export const structureApi = {
    * Step 1-1: Analyze document STRUCTURE only (global patterns)
    * 步骤 1-1：仅分析文档结构（全局模式）
    *
-   * Returns: sections, paragraphs, structure_score, structure_issues
+   * Returns: sections, paragraphs, structure_score, structure_issues, style_analysis
    */
   analyzeStep1_1: async (
-    documentId: string
+    documentId: string,
+    sessionId?: string
   ): Promise<{
     sections: Array<{
       number: string;
@@ -682,9 +692,23 @@ export const structureApi = {
     }>;
     scoreBreakdown: Record<string, number>;
     recommendationZh: string;
+    // Style analysis fields (for colloquialism level support)
+    // 风格分析字段（用于支持口语化级别）
+    styleAnalysis?: {
+      detectedStyle: number;
+      styleName: string;
+      styleNameZh: string;
+      styleIndicators: string[];
+      styleIndicatorsZh: string[];
+      mismatchWarning?: string;
+      mismatchWarningZh?: string;
+      targetColloquialism?: number;
+      styleMismatchLevel?: number;
+    };
   }> => {
     const response = await api.post('/structure/document/step1-1', {
       document_id: documentId,
+      session_id: sessionId,
     });
     return transformKeys(response.data);
   },
@@ -823,6 +847,138 @@ export const structureApi = {
     totalScore: number;
   }> => {
     const response = await api.post('/structure/risk-card', { text });
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Get detailed suggestion for a specific structure issue
+   * 获取针对特定结构问题的详细建议
+   *
+   * Uses LLM with comprehensive De-AIGC knowledge to generate:
+   * - Detailed diagnosis of the issue
+   * - Multiple modification strategies
+   * - A complete modification prompt for other AI tools
+   */
+  getIssueSuggestion: async (
+    documentId: string,
+    issue: {
+      type: string;
+      description: string;
+      descriptionZh: string;
+      severity: string;
+      affectedPositions?: string[];
+    },
+    quickMode: boolean = false
+  ): Promise<{
+    diagnosisZh: string;
+    strategies: Array<{
+      name_zh: string;
+      description_zh: string;
+      example_before?: string;
+      example_after?: string;
+      difficulty: string;
+      effectiveness: string;
+    }>;
+    modificationPrompt: string;
+    priorityTipsZh: string;
+    cautionZh: string;
+    quickFixZh?: string;
+    estimatedImprovement?: number;
+  }> => {
+    const response = await api.post('/structure/issue-suggestion', {
+      documentId,
+      issueType: issue.type,
+      issueDescription: issue.description,
+      issueDescriptionZh: issue.descriptionZh,
+      severity: issue.severity,
+      affectedPositions: issue.affectedPositions || [],
+      quickMode,
+    });
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Generate merge modification prompt for selected issues
+   * 为选定的问题生成合并修改提示词
+   *
+   * User can copy this prompt to use with other AI tools.
+   */
+  mergeModifyPrompt: async (
+    documentId: string,
+    selectedIssues: Array<{
+      type: string;
+      description: string;
+      descriptionZh: string;
+      severity: string;
+      affectedPositions?: string[];
+    }>,
+    options?: {
+      sessionId?: string;
+      userNotes?: string;
+    }
+  ): Promise<{
+    prompt: string;
+    promptZh: string;
+    issuesSummaryZh: string;
+    colloquialismLevel?: number;
+    estimatedChanges: number;
+  }> => {
+    const response = await api.post('/structure/merge-modify/prompt', {
+      documentId,
+      sessionId: options?.sessionId,
+      selectedIssues: selectedIssues.map(issue => ({
+        type: issue.type,
+        description: issue.description,
+        descriptionZh: issue.descriptionZh,
+        severity: issue.severity,
+        affectedPositions: issue.affectedPositions || [],
+      })),
+      userNotes: options?.userNotes,
+      mode: 'prompt',
+    });
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Apply AI modification directly to document
+   * 直接将AI修改应用到文档
+   *
+   * Returns modified text, limited to 3 regeneration attempts.
+   */
+  mergeModifyApply: async (
+    documentId: string,
+    selectedIssues: Array<{
+      type: string;
+      description: string;
+      descriptionZh: string;
+      severity: string;
+      affectedPositions?: string[];
+    }>,
+    options?: {
+      sessionId?: string;
+      userNotes?: string;
+    }
+  ): Promise<{
+    modifiedText: string;
+    changesSummaryZh: string;
+    changesCount: number;
+    issuesAddressed: string[];
+    remainingAttempts: number;
+    colloquialismLevel?: number;
+  }> => {
+    const response = await api.post('/structure/merge-modify/apply', {
+      documentId,
+      sessionId: options?.sessionId,
+      selectedIssues: selectedIssues.map(issue => ({
+        type: issue.type,
+        description: issue.description,
+        descriptionZh: issue.descriptionZh,
+        severity: issue.severity,
+        affectedPositions: issue.affectedPositions || [],
+      })),
+      userNotes: options?.userNotes,
+      mode: 'apply',
+    });
     return transformKeys(response.data);
   },
 };

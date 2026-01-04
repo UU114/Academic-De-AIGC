@@ -157,6 +157,10 @@ export interface DocumentInfo {
   createdAt: string;
 }
 
+// Session step type
+// 会话步骤类型
+export type SessionStep = 'step1-1' | 'step1-2' | 'step2' | 'step3' | 'level2' | 'level3' | 'review';
+
 // Session info for listing
 // 用于列表的会话信息
 export interface SessionInfo {
@@ -165,6 +169,7 @@ export interface SessionInfo {
   documentName: string;
   mode: ProcessMode;
   status: string;
+  currentStep: SessionStep;
   totalSentences: number;
   processed: number;
   progressPercent: number;
@@ -508,6 +513,30 @@ export interface StructureOption {
 
 // Structure analysis response
 // 结构分析响应
+// Section-level suggestion for detailed improvements
+// 章节级别的详细改进建议
+export interface SectionSuggestion {
+  sectionNumber: string;  // e.g., "1", "2.1", "Abstract"
+  sectionTitle: string;
+  severity: 'high' | 'medium' | 'low';
+  suggestionType: 'add_content' | 'restructure' | 'merge' | 'split' | 'reorder' | 'remove_connector' | 'add_citation';
+  suggestionZh: string;
+  suggestionEn: string;
+  details: string[];  // Specific action items
+  affectedParagraphs: string[];  // e.g., ["1(1)", "1(2)"]
+}
+
+// Detailed improvement suggestions
+// 详细改进建议
+export interface DetailedImprovementSuggestions {
+  abstractSuggestions: string[];  // Suggestions for abstract
+  logicSuggestions: string[];  // Overall logic/order suggestions
+  sectionSuggestions: SectionSuggestion[];  // Per-section suggestions
+  priorityOrder: string[];  // Section numbers in priority order
+  overallAssessmentZh: string;
+  overallAssessmentEn: string;
+}
+
 export interface StructureAnalysisResponse {
   // Basic info
   totalParagraphs: number;
@@ -527,6 +556,10 @@ export interface StructureAnalysisResponse {
   scoreBreakdown?: Record<string, number>;
   recommendation?: string;
   recommendationZh?: string;
+
+  // Detailed improvement suggestions
+  // 详细改进建议
+  detailedSuggestions?: DetailedImprovementSuggestions;
 
   // Explicit connectors and logic breaks (AI fingerprint detection)
   // 显性连接词和逻辑断裂点（AI指纹检测）

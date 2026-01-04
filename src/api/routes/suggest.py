@@ -64,11 +64,9 @@ async def get_suggestions(
 
     # Calculate original risk score using actual scorer (CAASS v2.0 Phase 2)
     # 使用实际评分器计算原始风险分数（CAASS v2.0 第二阶段）
-    # Use fixed tone_level=4 to match document upload scoring (documents.py)
-    # This ensures consistent scoring between upload time and suggestion time
-    # 使用固定的tone_level=4以匹配文档上传时的评分（documents.py）
-    # 这确保上传时和建议生成时的评分一致
-    tone_level = 4
+    # Use user's colloquialism_level for consistent scoring across all steps
+    # 使用用户的口语化级别以确保所有步骤的评分一致
+    tone_level = request.colloquialism_level
     original_analysis = _scorer.analyze(
         request.sentence,
         tone_level=tone_level,
@@ -185,8 +183,21 @@ async def apply_suggestion(
     Apply a suggestion to a sentence (does NOT advance to next sentence)
     将建议应用到句子（不自动跳转到下一句）
     """
-    from src.db.models import Modification, Sentence
+    from src.db.models import Modification, Sentence, Session
     from sqlalchemy import select
+
+    # Get session to retrieve colloquialism_level
+    # 获取会话以获取口语化级别
+    session_result = await db.execute(
+        select(Session).where(Session.id == session_id)
+    )
+    session = session_result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+
+    # Get colloquialism_level from session (default to 4 if not set)
+    # 从会话获取口语化级别（如果未设置则默认为4）
+    tone_level = session.colloquialism_level if session.colloquialism_level is not None else 4
 
     # Get the original sentence to get the original text if modified_text not provided
     # 获取原句以便在没有提供modified_text时使用原文
@@ -203,11 +214,11 @@ async def apply_suggestion(
 
     # Calculate new risk score using RiskScorer (CAASS v2.0)
     # 使用RiskScorer计算新风险分数（CAASS v2.0）
-    # Use default tone_level=4 (standard academic) for apply endpoint
-    # 对apply端点使用默认语气等级4（标准学术）
+    # Use session's colloquialism_level for consistent scoring
+    # 使用会话的口语化级别以确保评分一致
     new_risk_score = 0
     if text_for_risk:
-        analysis = _scorer.analyze(text_for_risk, tone_level=4)
+        analysis = _scorer.analyze(text_for_risk, tone_level=tone_level)
         new_risk_score = analysis.risk_score
 
     # Check if modification already exists for this sentence

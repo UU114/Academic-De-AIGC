@@ -1,11 +1,337 @@
 # AcademicGuard 开发进度
 # AcademicGuard Development Progress
 
-> 最后更新 Last Updated: 2026-01-03
+> 最后更新 Last Updated: 2026-01-04
 
 ---
 
 ## 最近更新 | Recent Updates
+
+### 2026-01-04 - 修复缓存持久化问题 | Fix Cache Persistence Issue
+
+#### 问题 | Problem
+服务器重启后，Step 1-1 的分析缓存丢失，导致 Step 1-2 报错 "Step 1-1 (structure analysis) must be completed first"。
+
+After server restart, Step 1-1 analysis cache was lost, causing Step 1-2 to fail with "Step 1-1 (structure analysis) must be completed first".
+
+#### 原因 | Cause
+SQLAlchemy 的 JSON 字段在原地修改时不会自动检测变化。需要使用 `flag_modified()` 显式标记字段已修改。
+
+SQLAlchemy JSON fields don't automatically detect in-place modifications. Need to use `flag_modified()` to explicitly mark fields as modified.
+
+#### 修改内容 | Changes
+
+| 文件 File | 修改 Modification |
+|----------|-------------------|
+| `src/api/routes/structure.py` | 添加 `flag_modified` 导入；在所有缓存写入处添加 `flag_modified(document, 'structure_analysis_cache')` |
+| `src/api/routes/structure_guidance.py` | 添加 `flag_modified` 导入；在缓存写入处添加 `flag_modified()` |
+
+#### 技术细节 | Technical Details
+
+```python
+from sqlalchemy.orm.attributes import flag_modified
+
+# 修改 JSON 字段后必须调用
+document.structure_analysis_cache[cache_key] = result
+flag_modified(document, 'structure_analysis_cache')
+await db.commit()
+```
+
+#### 结果 | Result
+现在所有分析缓存都会正确保存到 SQLite 数据库，服务器重启后数据不会丢失。
+
+All analysis caches are now correctly persisted to SQLite database and survive server restarts.
+
+---
+
+### 2026-01-04 - Step1-1 合并修改功能 | Step1-1 Merge Modify Feature
+
+#### 需求 | Requirements
+在 Step1-1 的上传文件与改进建议之间，增加"合并修改"功能：
+1. 在分析出的问题前面加上复选框，用户可以选择多个问题
+2. 提供两个选项：AI直接修改 和 AI生成修改提示词
+3. 点击按钮后确认选定的问题，让用户补充注意事项（可选）
+4. 合并所选问题生成提示词，注意用户选择的口语化等级
+5. AI直接修改可重新生成，限制3次
+
+Add "Merge Modify" feature between file upload and improvement suggestions in Step1-1:
+1. Add checkboxes before each issue for multi-selection
+2. Two options: AI Direct Modify and Generate Prompt
+3. Confirm selected issues and allow user notes (optional)
+4. Generate combined prompt respecting colloquialism level
+5. AI Direct Modify can regenerate up to 3 times
+
+#### 修改内容 | Changes
+
+| 文件 File | 修改 Modification |
+|----------|-------------------|
+| `src/api/schemas.py` | 新增 `SelectedIssue`, `MergeModifyRequest`, `MergeModifyPromptResponse`, `MergeModifyApplyResponse` 模型 |
+| `src/api/routes/structure.py` | 新增 `POST /merge-modify/prompt` 和 `POST /merge-modify/apply` 端点；添加 `MERGE_MODIFY_PROMPT_TEMPLATE`、`MERGE_MODIFY_APPLY_TEMPLATE` 和 `STYLE_LEVEL_DESCRIPTIONS` |
+| `frontend/src/services/api.ts` | `structureApi` 新增 `mergeModifyPrompt()` 和 `mergeModifyApply()` 方法 |
+| `frontend/src/pages/Step1_1.tsx` | 添加问题复选框、全选功能、合并修改按钮、确认对话框、结果展示、重新生成和采纳功能 |
+
+#### 技术细节 | Technical Details
+
+**后端 API:**
+- `POST /structure/merge-modify/prompt`: 生成合并修改提示词
+  - 输入：documentId, sessionId, selectedIssues, userNotes
+  - 输出：prompt, promptZh, issuesSummaryZh, colloquialismLevel, estimatedChanges
+- `POST /structure/merge-modify/apply`: 直接调用 LLM 修改文档
+  - 输入：同上
+  - 输出：modifiedText, changesSummaryZh, changesCount, issuesAddressed, remainingAttempts
+
+**口语化级别集成:**
+- 从 session 获取用户设置的 colloquialism_level
+- 使用 STYLE_LEVEL_DESCRIPTIONS (0-10级) 描述目标风格
+- LLM 提示词要求保持目标风格级别
+
+**前端交互流程:**
+1. 用户勾选要修改的问题（支持全选）
+2. 点击"生成修改提示词"或"AI直接修改"
+3. 弹出确认对话框，显示选中的问题，允许输入注意事项
+4. 确认后调用相应 API
+5. 显示结果：
+   - 提示词模式：显示可复制的提示词
+   - 直接修改模式：显示修改后的文本，可重新生成（最多3次），点击"采纳修改"将文本填入修改区域
+
+#### 结果 | Result
+用户现在可以在 Step1-1 页面选择多个结构问题，使用AI批量生成修改提示词或直接获得修改后的文档，显著提高修改效率。
+
+Users can now select multiple structure issues in Step1-1, use AI to batch generate modification prompts or directly get modified documents, significantly improving modification efficiency.
+
+---
+
+### 2026-01-04 - 改写示例语言一致性 | Rewrite Example Language Consistency
+
+#### 需求 | Requirements
+修改后的部分应与原文语言保持一致。即如果原文是英文，改写示例也应该是英文；如果原文是中文，改写示例也应该是中文。
+
+Rewritten examples should match the language of the original text. If original is English, rewrite in English. If original is Chinese, rewrite in Chinese.
+
+#### 修改内容 | Changes
+
+| 文件 File | 修改 Modification |
+|----------|-------------------|
+| `src/core/analyzer/smart_structure.py` | 修改 `rewrite_example` 字段说明，要求与原文语言保持一致；添加中英文示例 |
+
+#### 技术细节 | Technical Details
+
+**修改前:**
+```
+- **rewrite_example** (Optional - in English):
+  A rewritten version of the first 1-2 sentences in English showing how to improve.
+```
+
+**修改后:**
+```
+- **rewrite_example** (IMPORTANT - same language as original):
+  A rewritten version of the first 1-2 sentences showing how to improve.
+  MUST be in the SAME LANGUAGE as the original paragraph text.
+  If original is English, write in English. If original is Chinese, write in Chinese.
+```
+
+#### 结果 | Result
+LLM 生成的改写示例现在会与原文语言保持一致，提升用户体验。
+
+LLM-generated rewrite examples now match the language of the original text, improving user experience.
+
+---
+
+### 2026-01-03 - ONNX PPL 集成与口语化级别贯穿 | ONNX PPL Integration & Colloquialism Level Throughout
+
+#### 需求 | Requirements
+1. 将 ONNX 模型计算的 PPL（困惑度）真正用于风险评分公式
+2. 在前端 UI 显示 PPL 分析结果，包括风险等级着色和 emoji
+3. 口语化级别选择要贯穿全部步骤，不仅是结构分析
+
+User requirements:
+1. Use ONNX model PPL (perplexity) in the risk scoring formula
+2. Display PPL analysis results in frontend UI with risk-based coloring and emoji
+3. Colloquialism level selection should be applied throughout all steps, not just structure analysis
+
+#### 修改内容 | Changes
+
+| 文件 File | 修改 Modification |
+|----------|-------------------|
+| `src/core/analyzer/scorer.py` | 添加 `ppl_contribution` 到评分公式 (0-20分)；高风险 PPL 加15-20分，中风险加5-15分 |
+| `frontend/src/components/editor/SentenceCard.tsx` | 新增 `PPLIndicator` 组件，显示 PPL 值、风险着色和 emoji (🤖/⚠️/👍) |
+| `src/core/analyzer/smart_structure.py` | 添加 `StyleAnalysis` 模型和风格分析功能，检测文档实际风格与目标口语化级别的不匹配 |
+| `src/api/routes/structure.py` | 接收 session_id 参数，获取用户的 colloquialism_level 进行风格分析 |
+| `src/api/schemas.py` | `DocumentStructureRequest` 添加 `session_id` 字段 |
+| `src/api/routes/suggest.py` | 修复硬编码的 `tone_level=4`，改为使用用户设置的 `colloquialism_level` |
+| `frontend/src/services/api.ts` | `analyzeStep1_1` 添加 `sessionId` 参数 |
+| `frontend/src/pages/Step1_1.tsx` | 传递 sessionId 到结构分析，显示风格不匹配警告 |
+
+#### 技术细节 | Technical Details
+
+**CAASS v2.0 Phase 2 评分公式:**
+```
+raw_score = context_baseline + fingerprint_score + structure_score + ppl_contribution
+total_score = raw_score - human_deduction
+```
+
+**PPL 贡献分计算:**
+- `ppl_risk == "high"` (PPL < 20): 加 15-20 分
+- `ppl_risk == "medium"` (PPL 20-40): 加 5-15 分
+- `ppl_risk == "low"` (PPL > 40): 不加分
+
+**PPL 来源优先级:**
+1. ONNX 模型 (distilgpt2): 真实 token 级困惑度
+2. zlib 压缩比: 后备方案
+
+**风格分析:**
+- 检测文档实际风格等级 (0-10)
+- 与用户选择的 colloquialism_level 比较
+- 差距超过 3 级则生成不匹配警告
+
+**PPLIndicator 组件:**
+- 高风险 (🤖): 红色，表示强 AI 特征
+- 中风险 (⚠️): 橙色，表示有 AI 特征
+- 低风险 (👍): 绿色，表示文本自然
+
+#### 结果 | Result
+- PPL 现在真正参与风险评分，AI 特征文本会获得更高分数
+- 前端清晰显示 PPL 风险等级，帮助用户理解评分依据
+- 口语化级别选择现在贯穿 Level 1 结构分析和 Level 3 句子改写
+
+PPL now contributes to risk scoring, AI-like text receives higher scores. Frontend clearly displays PPL risk levels, helping users understand scoring rationale. Colloquialism level now applies throughout Level 1 structure analysis and Level 3 sentence rewriting.
+
+---
+
+### 2026-01-03 - Step1-1 文档修改功能 | Step1-1 Document Modification
+
+#### 需求 | Requirements
+在 Step1-1 分析结果下面，提供上传新文件或输入新内容的功能，用户可以根据建议修改文档后上传继续处理。
+
+Add document upload/input functionality below Step1-1 analysis results, allowing users to modify and upload revised documents based on suggestions.
+
+#### 修改内容 | Changes
+
+| 文件 File | 修改 Modification |
+|----------|-------------------|
+| `frontend/src/pages/Step1_1.tsx` | 新增文档修改区域：上传文件/粘贴文本；"确定修改并继续"和"跳过"按钮；移除原有的"跳过此步"和"继续 Step1-2"按钮 |
+
+#### 技术细节 | Technical Details
+
+**新增功能:**
+- 文件上传模式：支持 TXT/DOCX 格式
+- 文本粘贴模式：直接输入修改后的内容
+- "确定修改并继续"：上传新文档，用新文档 ID 继续 step1-2
+- "跳过，使用原文档继续"：使用原文档继续 step1-2
+
+**交互流程:**
+1. 用户查看结构分析结果和建议
+2. 如果需要修改：上传修改后的文件或粘贴文本 → 点击"确定修改并继续"
+3. 如果不需要修改：点击"跳过，使用原文档继续"
+
+#### 结果 | Result
+用户现在可以在 Step1-1 页面根据分析建议修改文档，并上传修改后的版本继续后续处理流程。
+
+Users can now modify their document based on Step1-1 analysis suggestions and upload the revised version to continue processing.
+
+---
+
+### 2026-01-03 - 任务步骤持久化与恢复 | Task Step Persistence & Resume
+
+#### 需求 | Requirements
+实现历史任务的步骤状态持久化，用户从历史页面恢复任务时能跳转到正确的步骤，并保留之前的分析结果和建议。
+
+Implement task step state persistence so users can resume from the correct step when restoring tasks from history, preserving previous analysis results and suggestions.
+
+#### 修改内容 | Changes
+
+| 文件 File | 修改 Modification |
+|----------|-------------------|
+| `src/db/models.py` | Session 模型新增 `current_step` 字段 (step1-1, step1-2, level2, level3, review) |
+| `src/api/schemas.py` | SessionInfo 新增 `current_step` 字段 |
+| `src/api/routes/session.py` | 新增 `POST /{session_id}/step/{step}` API；list 接口返回 current_step；complete 时自动设为 review |
+| `frontend/src/types/index.ts` | 新增 `SessionStep` 类型；SessionInfo 新增 currentStep |
+| `frontend/src/services/api.ts` | sessionApi 新增 `updateStep()` 方法 |
+| `frontend/src/pages/History.tsx` | 根据 currentStep 导航到正确页面；显示当前步骤标签 |
+| `frontend/src/pages/Upload.tsx` | 上传后创建 session 并传递 sessionId 到后续流程 |
+| `frontend/src/pages/Step1_1.tsx` | 加载时更新 step；导航传递 sessionId |
+| `frontend/src/pages/Step1_2.tsx` | 加载时更新 step；导航传递 sessionId |
+| `frontend/src/pages/Level2.tsx` | 加载时更新 step；根据 mode 导航到 intervention/yolo |
+| `frontend/src/pages/Intervention.tsx` | 加载时更新 step 为 level3 |
+| `frontend/src/pages/Yolo.tsx` | 加载时更新 step 为 level3 |
+
+#### 技术细节 | Technical Details
+
+**步骤流转:**
+- Upload -> step1-1 (创建 session，开始跟踪)
+- step1-1 -> step1-2 -> level2 -> level3 (intervention/yolo) -> review
+- 每个页面加载时调用 `sessionApi.updateStep()` 更新当前步骤
+
+**历史恢复逻辑:**
+- 任务卡片显示当前步骤标签 (L1-结构分析, L1-段落分析, L2-衔接优化, L3-句子处理, 审核完成)
+- 点击恢复根据 currentStep 导航到对应页面
+
+**数据保留:**
+- 文档内容: `Document.original_text`
+- 分析结果: `Document.structure_analysis_cache`, `transition_analysis_cache`
+- 会话状态: `Session.current_step`, `current_index`, `config_json`
+
+#### 结果 | Result
+用户现在可以从历史页面恢复任务到正确的步骤，所有之前的分析结果和进度都会保留。
+
+Users can now resume tasks from history to the correct step, with all previous analysis results and progress preserved.
+
+---
+
+### 2026-01-03 - 历史页面重构为统一任务列表 | History Page Refactored to Unified Task List
+
+#### 需求 | Requirements
+将历史页面的"会话列表"和"文档列表"两个 tabs 合并为一个统一的"任务列表"，展示所有任务的状态、文档、进度等信息。
+
+Merge "Session List" and "Document List" tabs in the history page into a unified "Task List" that displays all task status, documents, progress, and other information.
+
+#### 修改内容 | Changes
+
+| 文件 File | 修改 Modification |
+|----------|-------------------|
+| `frontend/src/pages/History.tsx` | 完全重构：移除 tabs 切换，创建统一的 TaskItem 接口合并会话和文档信息，任务卡片显示状态、模式、风险等级、处理进度，添加刷新按钮 |
+
+#### 技术细节 | Technical Details
+
+**TaskItem 统一数据结构:**
+- 合并 SessionInfo 和 DocumentInfo 的关键字段
+- 包含：sessionId, documentId, documentName, mode, status, progress, risk counts
+
+**任务卡片布局:**
+- 顶部：文档名、状态图标、模式标签、创建时间、删除按钮
+- 中部：风险等级徽章（高/中/低风险数量）
+- 底部：处理进度条、继续/查看按钮
+
+**视觉优化:**
+- 左侧边框颜色编码（绿=完成，蓝=进行中，黄=暂停，灰=待处理）
+- 刷新按钮便于重新加载数据
+
+#### 结果 | Result
+历史页面现在展示统一的任务列表，用户可以一目了然地查看所有任务的完整状态和进度。
+
+History page now displays a unified task list where users can see the complete status and progress of all tasks at a glance.
+
+---
+
+### 2026-01-03 - 上传页面模式提示 | Upload Page Mode Hint
+
+#### 需求 | Requirements
+在文件上传页面的模式选择区域添加提示信息，说明 YOLO 模式和干预模式的适用场景。
+
+Add hint text in the mode selection area on the upload page to explain the applicable scenarios for YOLO mode and Intervention mode.
+
+#### 修改内容 | Changes
+
+| 文件 File | 修改 Modification |
+|----------|-------------------|
+| `frontend/src/pages/Upload.tsx:292-294` | 新增：模式选择下方添加提示"💡 YOLO模式仅适用于灌水文章，想认真改的请用干预模式" |
+
+#### 结果 | Result
+上传页面现在会在模式选择区域显示提示信息，帮助用户选择合适的处理模式。
+
+Upload page now displays a hint in the mode selection area to help users choose the appropriate processing mode.
+
+---
 
 ### 2026-01-03 - 僵尸代码激活与清理 | Zombie Code Activation & Cleanup
 
@@ -3178,3 +3504,751 @@ Messages should rotate randomly to keep users entertained while waiting.
 
 Users now see randomly rotating fun messages while waiting, refreshing every 3-3.5 seconds.
 All messages are bilingual (Chinese + English), with option to show/hide English.
+
+
+---
+
+## 2026-01-03: 增强结构分析详细建议功能 | Enhanced Structure Analysis Detailed Suggestions
+
+### 需求 | Requirements
+
+用户反馈当前的"改进建议"太简陋，需要更具针对性的意见：
+1. 摘要里面要提到某内容在某章节
+2. 怎样改整体的逻辑顺序
+3. 分章节给出具体意见（补充内容、拆分段落、合并章节等）
+4. 在建议页面醒目位置提示：基于AI的DEAIGC分析，不保证逻辑和语义，请自行斟酌
+
+Users want more specific improvement suggestions instead of generic advice.
+
+### 方法 | Method
+
+1. **添加详细建议数据模型** / Add detailed suggestion data models:
+   - 新增 `SectionSuggestion` 模型：章节级别的详细建议
+   - 新增 `DetailedImprovementSuggestions` 模型：包含摘要建议、逻辑建议、分章节建议
+   - 在 `SmartStructureResponse` 中添加 `detailed_suggestions` 字段
+
+2. **修改后端提示词** / Modify backend prompt:
+   - 更新 `SMART_STRUCTURE_PROMPT` 在 `smart_structure.py`
+   - 要求LLM生成详细的 `detailed_suggestions` JSON结构
+   - 包含：abstract_suggestions, logic_suggestions, section_suggestions, priority_order, overall_assessment
+
+3. **更新API响应** / Update API response:
+   - 修改 `/structure/document` 端点解析和返回详细建议
+   - 将LLM返回的详细建议转换为 `DetailedImprovementSuggestions` 对象
+
+4. **更新前端组件** / Update frontend component:
+   - 添加前端类型定义 `SectionSuggestion` 和 `DetailedImprovementSuggestions`
+   - 修改 `StructurePanel.tsx` 显示详细建议
+   - 添加免责声明横幅
+
+### 修改内容 | Changes
+
+| 文件 | 修改 |
+|------|------|
+| `src/api/schemas.py` | 添加 `SectionSuggestion` 和 `DetailedImprovementSuggestions` 模型 |
+| `src/core/analyzer/smart_structure.py` | 更新 `SMART_STRUCTURE_PROMPT` 要求生成详细建议 |
+| `src/api/routes/structure.py` | 解析和返回 `detailed_suggestions` |
+| `frontend/src/types/index.ts` | 添加 `SectionSuggestion` 和 `DetailedImprovementSuggestions` 接口 |
+| `frontend/src/components/editor/StructurePanel.tsx` | 添加详细建议展示组件和免责声明 |
+
+### 新增建议类型 | New Suggestion Types
+
+- `add_content`: 补充内容 - 增加文献引用、背景描述等
+- `split`: 拆分 - 将过长章节拆分为多个小节
+- `merge`: 合并 - 将相关章节合并整合
+- `reorder`: 调整顺序 - 重新排列章节顺序
+- `restructure`: 重组 - 重新组织段落结构
+- `remove_connector`: 移除连接词 - 删除AI典型的显性连接词
+- `add_citation`: 补充引用 - 增加文献引用
+
+### 结果 | Result
+
+1. **免责声明横幅** - 在建议区域顶部显示醒目的黄色横幅提示用户谨慎参考
+2. **总体评估** - 显示文档整体的AI痕迹评估
+3. **摘要改进** - 提供具体的摘要修改建议（如：应提到某章内容）
+4. **结构调整** - 提供整体逻辑顺序的调整意见
+5. **分章节建议** - 为每个章节提供具体的修改意见，包括：
+   - 章节标识和标题
+   - 建议类型标签（合并/拆分/补充内容等）
+   - 优先级标签（高/中/低优先）
+   - 具体修改建议文字
+   - 详细操作步骤列表
+   - 涉及的段落位置列表
+
+The improvement suggestions panel now shows specific, actionable advice for each section with clear disclaimers about AI-based analysis.
+
+---
+
+## 2026-01-03: 添加生成提示词功能 | Add Prompt Generation Feature
+
+### 需求 | Requirements
+
+用户希望能够生成修改提示词，配合其他AI工具（如ChatGPT、Claude）来修改论文：
+1. 在step1-1, step1-2, step2的建议下面提供"生成提示词"按钮
+2. 生成的提示词包含分析结果和修改建议
+3. 提示用户如何使用，特别是参考文献和实验数据的处理
+4. 醒目提醒"基于AI的DEAIGC分析，不保证逻辑和语义，请自行斟酌"
+
+### 方法 | Method
+
+1. **添加提示词生成按钮**:
+   - 在详细建议区域下方添加"AI辅助修改"卡片
+   - 提供两个按钮：生成全文修改提示词、生成章节修改提示词
+
+2. **创建提示词生成逻辑**:
+   - `generatePrompt('full')`: 生成完整的全文修改提示词
+   - `generatePrompt('section')`: 生成章节级修改提示词
+   - 提示词包含：分析结果、检测问题、具体建议、修改原则
+
+3. **添加弹窗组件**:
+   - 显示生成的提示词
+   - 包含免责声明横幅
+   - 包含详细使用说明
+   - 特别提醒参考文献和实验数据的重要性
+
+4. **添加复制功能**:
+   - 一键复制提示词到剪贴板
+   - 复制成功后显示确认状态
+
+### 修改内容 | Changes
+
+| 文件 | 修改 |
+|------|------|
+| `frontend/src/components/editor/StructurePanel.tsx` | 添加提示词生成功能、弹窗组件、复制功能 |
+
+### 新增功能特性 | New Features
+
+1. **生成全文修改提示词**:
+   - 包含整体评估（风险分数、段落数、章节数）
+   - 包含检测到的问题（线性流程、重复模式、均匀长度等）
+   - 包含需要移除的显性连接词列表
+   - 包含详细的分章节修改建议
+   - 包含修改原则和输出要求
+
+2. **生成章节修改提示词**:
+   - 针对单个章节的修改任务
+   - 包含各章节的具体建议
+   - 更简洁的提示词格式
+
+3. **使用说明**:
+   - 步骤化的使用指南
+   - 重要提醒（参考文献、实验数据、专业术语、格式要求）
+
+4. **免责声明**:
+   - 弹窗顶部醒目的黄色横幅
+   - 中英双语提示
+
+### 结果 | Result
+
+用户可以：
+1. 点击"生成全文修改提示词"或"生成章节修改提示词"按钮
+2. 在弹窗中查看生成的提示词
+3. 阅读使用说明和重要提醒
+4. 一键复制提示词
+5. 将提示词粘贴到其他AI工具中使用
+
+The prompt generation feature helps users leverage other AI tools for paper revision with structured guidance.
+
+---
+
+## 2026-01-03: Step1-1 �ĵ��޸Ĺ�����֤ | Step1-1 Document Modification Feature Verification
+
+### �û����� | User Requirement
+
+��֤ Step1-1 ҳ����ĵ��޸Ĺ����Ƿ�����������
+
+### ��֤��� | Verification Result
+
+������֤�ɹ� - Step1-1 ҳ�����й�������������
+
+1. **�ṹ�������**:
+   - ��ȷ��ʾ�½����Ͷ�����
+   - ��ȷ��Ⲣ��ʾ�ṹ���⣨�����س̶ȱ�ǩ��
+   - ��Ӣ˫������
+
+2. **�Ľ�����**:
+   - ��ɫ��Ƭ��ʾ����Ե��޸Ľ���
+
+3. **�ĵ��޸�����** (��������):
+   - �ϴ��ļ� / ճ���ı� ģʽ�л�
+   - �ļ��Ϸ��ϴ�����֧�� TXT/DOCX ��ʽ
+   - ������ʹ��ԭ�ĵ����� ��ť
+   - ȷ���޸Ĳ����� ��ť
+
+### �������� | Test Flow
+
+1. �ϴ�ҳ����������ı�
+2. ѡ���Ԥģʽ�������ʼ����
+3. �Զ���ת�� Step1-1 ҳ��
+4. ҳ����ȷ��ʾ����������ĵ��޸�����
+5. UI ���ֺͽ������ܾ�����
+
+Feature verification completed successfully.
+
+---
+
+## 2026-01-03: Step1-1 问题点击展开建议功能 | Step1-1 Issue Click-to-Expand Suggestion Feature
+
+### 用户需求 | User Requirement
+
+在 Step1-1 页面，点击结构问题应能获取：
+1. 详细的问题诊断
+2. 多种修改策略（带难度和效果评级）
+3. 可复制到其他AI工具使用的完整提示词
+4. 优先修改建议和注意事项
+
+所有建议必须基于全面的 De-AIGC 知识库，同时确保修改后的文章仍符合学术规范。
+
+### 方法 | Method
+
+**1. 创建 De-AIGC 知识库** (`src/prompts/structure_deaigc.py`):
+- `STRUCTURE_DEAIGC_KNOWLEDGE`: 结构层面 De-AIGC 方法大全
+  - 宏观结构优化（打破线性叙事、章节功能重组、打破完美对称）
+  - 段落层面优化（移除显性连接词、打破公式化模式、句子长度变化）
+  - 衔接层面优化（隐性逻辑衔接、学术引用作为衔接）
+  - 开头与结尾优化
+  - 跨段落优化
+- `ISSUE_SUGGESTION_PROMPT`: 详细建议提示词模板
+- `QUICK_ISSUE_SUGGESTION_PROMPT`: 快速建议提示词模板
+- `format_issue_prompt()`: 格式化提示词函数
+
+**2. 添加后端 API** (`src/api/routes/structure.py`):
+- 新增 `POST /api/v1/structure/issue-suggestion` 端点
+- 接收问题类型、描述、严重程度和文档ID
+- 调用 LLM（支持 Volcengine/DeepSeek/Gemini）
+- 返回诊断、策略、提示词、建议和注意事项
+
+**3. 添加前端 API 方法** (`frontend/src/services/api.ts`):
+- `structureApi.getIssueSuggestion()`: 调用建议端点
+
+**4. 修改 Step1_1 页面** (`frontend/src/pages/Step1_1.tsx`):
+- 问题卡片可点击，点击后展开详细建议面板
+- 加载状态显示
+- 展开面板显示：
+  - 问题诊断（详细分析）
+  - 修改策略（3种，带难度/效果标签）
+  - AI修改提示词（带一键复制按钮）
+  - 优先修改建议
+  - 注意事项
+
+### 修改/新增的内容 | Changes
+
+| 文件 | 类型 | 说明 |
+|------|------|------|
+| `src/prompts/structure_deaigc.py` | 新增 | De-AIGC 知识库和提示词模板 |
+| `src/api/routes/structure.py` | 修改 | 添加 `/issue-suggestion` 端点 (line 1415) |
+| `src/api/schemas.py` | 修改 | 添加 IssueSuggestionRequest/Response |
+| `frontend/src/services/api.ts` | 修改 | 添加 getIssueSuggestion 方法 |
+| `frontend/src/pages/Step1_1.tsx` | 修改 | 可点击问题卡片、展开建议面板 |
+
+### 结果 | Result
+
+用户可以：
+1. 在 Step1-1 页面点击任意结构问题
+2. 查看详细的问题诊断（问题本质+具体表现）
+3. 查看多种修改策略，每种标明难度和效果
+4. 一键复制完整的 AI 修改提示词到其他工具使用
+5. 查看优先修改建议和注意事项
+
+**测试验证**：
+- 后端 API 正常返回（经 curl 测试）
+- 前端点击展开功能正常
+- LLM 成功生成高质量的中文建议
+- 提示词复制功能可用
+
+截图保存于: `.playwright-mcp/step1-1-issue-suggestion-success.png`
+
+The issue click-to-expand suggestion feature is fully implemented and tested successfully.
+
+### Bug修复 | Bug Fix
+
+**问题**：修改策略面板只显示难度/效果标签，策略名称和描述为空
+
+**原因**：前端 `transformKeys` 函数将后端返回的 `snake_case` 键转换为 `camelCase`，但前端渲染代码仍使用旧的键名：
+- `strategy.name_zh` → 应为 `strategy.nameZh`
+- `strategy.description_zh` → 应为 `strategy.descriptionZh`
+- `strategy.example_before` → 应为 `strategy.exampleBefore`
+- `strategy.example_after` → 应为 `strategy.exampleAfter`
+
+**修复**：更新 `frontend/src/pages/Step1_1.tsx` 中的属性访问名称
+
+---
+
+## 2026-01-03 Bug修复 | Bug Fix
+
+### 用户需求 | User Request
+重启前后端服务器
+
+### 问题 | Issue
+启动 session 时出现 500 错误：`ImportError: cannot import name 'FingerprintWord' from 'src.api.schemas'`
+
+### 原因 | Cause
+`session.py` 中引用了 `FingerprintWord` 类（第 651 行），但该类未在 `schemas.py` 中定义。
+
+### 修改内容 | Changes
+
+| 文件 | 类型 | 说明 |
+|------|------|------|
+| `src/api/schemas.py` | 修改 | 添加 `FingerprintWord` Pydantic 模型（line 121-131） |
+
+### 结果 | Result
+- 后端服务器自动热重载成功
+- `/api/v1/session/start` 端点正常工作
+- 健康检查通过：`{"status":"healthy"}`
+
+---
+
+## 2026-01-03 - 口语化级别全流程集成 | Colloquialism Level Full Integration
+
+### 用户需求 | User Requirements
+
+用户反馈：选择了口语化程度1级（非常学术化），但系统给出的分析意见没有指出文章实际上是非常口语化的、主观的（像日记），与学术风格不符。口语化级别的选择应该在全部步骤中使用。
+
+### 完成的功能 | Completed Features
+
+| 优先级 | 功能 Feature | 文件 Files | 状态 Status |
+|--------|--------------|-----------|-------------|
+| P0 | Level 1 风格分析能力 | `src/core/analyzer/smart_structure.py` | ✅ 完成 |
+| P0 | 风格分析 Prompt | `src/core/analyzer/smart_structure.py` | ✅ 完成 |
+| P0 | 风格不匹配检测与警告 | `src/core/analyzer/smart_structure.py` | ✅ 完成 |
+| P1 | 后端 API 传递 colloquialism_level | `src/api/routes/structure.py` | ✅ 完成 |
+| P1 | 前端传递 sessionId | `frontend/src/services/api.ts`, `frontend/src/pages/Step1_1.tsx` | ✅ 完成 |
+| P1 | 前端风格警告显示 | `frontend/src/pages/Step1_1.tsx` | ✅ 完成 |
+| P2 | Level 3 评分使用用户 colloquialism_level | `src/api/routes/suggest.py` | ✅ 完成 |
+| P3 | Level 2 衔接分析口语化 | 待定 | ⏳ 后续优化 |
+
+### 新增/修改的文件 | New/Modified Files
+
+**后端修改 Backend Changes:**
+
+| 文件 File | 类型 Type | 说明 Description |
+|-----------|----------|------------------|
+| `src/core/analyzer/smart_structure.py` | 修改 | 添加 StyleAnalysis Pydantic模型、风格分析prompt、`_build_style_context()`、`_check_style_mismatch()` 方法 |
+| `src/api/routes/structure.py` | 修改 | step1-1 端点接收 session_id，从 session 获取 colloquialism_level |
+| `src/api/schemas.py` | 修改 | DocumentStructureRequest 添加 session_id 字段 |
+| `src/api/routes/suggest.py` | 修改 | 修复硬编码 tone_level=4，使用 request.colloquialism_level |
+
+**前端修改 Frontend Changes:**
+
+| 文件 File | 类型 Type | 说明 Description |
+|-----------|----------|------------------|
+| `frontend/src/services/api.ts` | 修改 | analyzeStep1_1 接收 sessionId 参数，返回类型添加 styleAnalysis |
+| `frontend/src/pages/Step1_1.tsx` | 修改 | 传递 sessionId，显示风格分析结果和不匹配警告 |
+
+### 实现细节 | Implementation Details
+
+**1. 风格分析能力 (smart_structure.py):**
+
+- 新增 `StyleAnalysis` Pydantic模型，包含：
+  - `detected_style`: 检测到的风格级别 (0-10)
+  - `style_name`/`style_name_zh`: 风格名称
+  - `style_indicators`/`style_indicators_zh`: 风格判断依据
+  - `mismatch_warning`/`mismatch_warning_zh`: 不匹配警告
+
+- 新增 `COLLOQUIALISM_LEVELS` 映射：
+  ```python
+  0: ("Most Academic", "最学术化")
+  1: ("Very Academic", "非常学术")
+  ...
+  10: ("Most Casual", "最口语化")
+  ```
+
+- `_build_style_context()`: 根据用户目标级别构建 prompt 上下文
+- `_check_style_mismatch()`: 检测风格不匹配（差异>=3级时触发警告）
+
+**2. 风格分析 Prompt:**
+
+LLM 被指示分析文档的实际风格，检查：
+- 人称代词频率 (I/my/we vs. 非人称)
+- 缩略语存在 (don't, can't, it's)
+- 情感化/主观语言
+- 引用/参考文献风格
+- 句子复杂度和长度变化
+- 使用模糊语言 vs. 绝对陈述
+- 叙事 vs. 论证结构
+
+**3. 风格不匹配警告逻辑:**
+
+```python
+if style_diff >= 3:
+    # 生成警告
+    if detected_style > target_colloquialism:
+        # 文档比预期更口语化
+        mismatch_warning = "⚠️ 风格不匹配警告..."
+    else:
+        # 文档比预期更正式
+        mismatch_warning = "⚠️ 风格不匹配警告..."
+
+    # 同时添加到 structure_issues 以提高可见性
+    result["structure_issues"].insert(0, {
+        "type": "style_mismatch",
+        ...
+    })
+```
+
+**4. Level 3 评分修复:**
+
+```python
+# 之前（硬编码）
+tone_level = 4
+
+# 现在（使用用户设置）
+tone_level = request.colloquialism_level
+```
+
+### 前端显示 | Frontend Display
+
+Step1_1 页面新增"文档风格分析"卡片：
+- 显示检测到的风格级别和名称
+- 显示风格判断依据列表
+- 如有不匹配，显示醒目的黄色警告
+- 如匹配良好，显示绿色确认
+
+### 结果 | Result
+
+用户现在可以：
+1. 在上传时选择目标口语化级别 (0-10)
+2. 在 Step1-1 看到文档实际风格分析
+3. 如果文章风格与目标不匹配（如选1级学术但文章很口语化），系统会显示明确警告
+4. Level 3 的评分和建议会根据用户选择的级别调整
+
+**测试验证**：
+- 后端服务器启动成功，健康检查通过
+- 前端 HMR 更新成功
+- 风格分析功能待实际文档测试
+
+
+---
+
+### 2026-01-04 - Step1-2 功能对齐 Step1-1 | Step1-2 Feature Alignment with Step1-1
+
+#### 需求 | Requirements
+Step1-2 页面需要与 Step1-1 功能对齐：
+1. 问题可展开查看详细建议
+2. 问题可勾选（复选框）
+3. 合并生成提示词或AI直接修改
+4. 上传新文件功能
+
+Step1-2 page needs to align with Step1-1 features:
+1. Expandable issue details with suggestions
+2. Checkbox selection for issues
+3. Merge modify (generate prompt or AI direct modify)
+4. Upload new file functionality
+
+#### 修改内容 | Changes
+
+| 文件 File | 类型 Type | 说明 Description |
+|-----------|----------|------------------|
+| `frontend/src/pages/Step1_2.tsx` | 重写 Rewrite | 完整重构以添加所有 Step1-1 功能 |
+
+#### 实现细节 | Implementation Details
+
+**1. UnifiedIssue 接口：**
+
+将四种不同类型的问题统一为单一接口：
+- `connector`: 显性连接词问题
+- `logic_break`: 逻辑断层问题
+- `paragraph_risk`: 高风险段落
+- `relationship`: 关系问题
+
+```typescript
+interface UnifiedIssue {
+  id: string;
+  type: string;
+  description: string;
+  descriptionZh: string;
+  severity: string;
+  affectedPositions: string[];
+  category: 'connector' | 'logic_break' | 'paragraph_risk' | 'relationship';
+  originalData: unknown;
+}
+```
+
+**2. 问题展开功能：**
+
+- `handleIssueClick()`: 点击问题时展开/收起详情
+- 调用 `structureApi.getIssueSuggestion()` 获取 LLM 建议
+- 显示诊断、修改策略、AI修改提示词、优先建议、注意事项
+
+**3. 复选框选择功能：**
+
+- `selectedIssueIndices`: Set<number> 管理选中状态
+- `toggleIssueSelection()`: 切换单个问题选择
+- `toggleSelectAll()`: 全选/取消全选
+- 视觉反馈：选中时显示蓝色边框
+
+**4. 合并修改功能：**
+
+- `openMergeConfirm()`: 打开确认对话框，支持 'prompt' 或 'apply' 模式
+- `executeMergeModify()`: 调用对应 API
+  - prompt 模式: `structureApi.mergeModifyPrompt()`
+  - apply 模式: `structureApi.mergeModifyApply()`
+- `handleRegenerate()`: AI修改可重新生成（最多3次）
+- `handleAcceptModification()`: 采纳AI修改，自动填入文本输入区
+
+**5. 文档修改上传功能：**
+
+- 两种模式：文件上传 / 文本粘贴
+- 支持 TXT、DOCX 格式
+- 验证文件类型和大小限制（10MB）
+- 采纳AI修改后自动切换到文本模式
+
+#### 新增状态管理 | New State Management
+
+```typescript
+// 问题展开
+const [expandedIssueIndex, setExpandedIssueIndex] = useState<number | null>(null);
+const [issueSuggestion, setIssueSuggestion] = useState<...>(null);
+const [isLoadingSuggestion, setIsLoadingSuggestion] = useState(false);
+
+// 合并修改
+const [selectedIssueIndices, setSelectedIssueIndices] = useState<Set<number>>(new Set());
+const [showMergeConfirm, setShowMergeConfirm] = useState(false);
+const [mergeMode, setMergeMode] = useState<'prompt' | 'apply'>('prompt');
+const [mergeResult, setMergeResult] = useState<...>(null);
+const [regenerateCount, setRegenerateCount] = useState(0);
+
+// 文档修改
+const [modifyMode, setModifyMode] = useState<'file' | 'text'>('file');
+const [newFile, setNewFile] = useState<File | null>(null);
+const [newText, setNewText] = useState('');
+```
+
+#### 结果 | Result
+
+Step1-2 现在拥有与 Step1-1 完全相同的功能：
+- ✅ 检测到的问题可展开查看详细 LLM 建议
+- ✅ 问题可通过复选框选择（支持全选）
+- ✅ 选中问题后可生成合并提示词或AI直接修改
+- ✅ AI修改结果可重新生成（最多3次）或采纳
+- ✅ 支持上传修改后的文件或粘贴文本继续处理
+- ✅ 完整的加载状态和错误处理
+
+---
+
+### 2026-01-04 - Step1-2 提示词添加 Step1-1 上下文约束 | Step1-2 Prompt Add Step1-1 Context
+
+#### 问题 | Problem
+Step1-2 的修改提示词没有包含 Step1-1 的分析结果，导致 LLM 可能会把之前的改进撤销，恢复到原文的风格。
+
+Step1-2's modification prompts didn't include Step1-1 analysis results, causing LLM to potentially revert previous improvements back to original patterns.
+
+#### 解决方案 | Solution
+在合并修改的提示词中添加 Step1-1 的上下文约束，明确告诉 LLM 保持之前的改进。
+
+Added Step1-1 context constraints to merge-modify prompts, explicitly instructing LLM to preserve previous improvements.
+
+#### 修改内容 | Changes
+
+| 文件 File | 修改 Modification |
+|-----------|-------------------|
+| `src/api/routes/structure.py` | 1. 修改 `MERGE_MODIFY_PROMPT_TEMPLATE` 添加 `{previous_improvements}` 占位符 |
+| | 2. 修改 `MERGE_MODIFY_APPLY_TEMPLATE` 添加 `{previous_improvements}` 占位符 |
+| | 3. 新增 `_build_previous_improvements_context()` 函数从缓存提取上下文 |
+| | 4. 更新两个 API 端点调用该函数并传递参数 |
+
+#### 实现细节 | Implementation Details
+
+**新增辅助函数 `_build_previous_improvements_context()`:**
+
+```python
+def _build_previous_improvements_context(document) -> str:
+    # 从 Step 1-1 缓存提取:
+    # - structure_issues (结构问题)
+    # - style_analysis (风格分析)
+    # 从 Step 1-2 缓存提取:
+    # - relationship_issues (关系问题)
+    
+    # 返回格式化的上下文块，包含:
+    # - 已识别的问题列表
+    # - 关键指令：保持改进，不要撤销
+```
+
+**提示词模板更新:**
+
+```
+## ⚠️ PREVIOUS ANALYSIS CONTEXT (MUST PRESERVE):
+在之前的步骤中已对文档进行了分析，识别出以下问题/改进点：
+- [Step 1-1 识别的问题列表]
+- 文档原始风格: [风格名称]
+
+**CRITICAL INSTRUCTION 关键指令:**
+- 必须保留已根据这些问题所做的改进
+- 不要将文档恢复到被标记为有问题的模式
+- 仅对当前问题进行新的改进，同时保持之前的更改不变
+```
+
+#### 结果 | Result
+现在 Step1-2 的合并修改功能会：
+- ✅ 自动获取 Step1-1 的分析缓存
+- ✅ 将之前识别的问题作为上下文传递给 LLM
+- ✅ 明确指示 LLM 保持之前的改进
+- ✅ 避免 LLM 把修改后的文档又改回原来的风格
+
+---
+
+### 2026-01-04 - 语义回声替换功能完整实现 | Semantic Echo Replacement Full Implementation
+
+#### 需求 | Requirements
+显性连接词转隐性连接功能需要：
+1. 自动提取前一段的关键概念
+2. 生成具体的语义回声替换示例
+3. 在问题详情和合并修改中直接提供可用的替换文本
+
+Explicit connector to implicit connection feature needs:
+1. Auto-extract key concepts from previous paragraph
+2. Generate concrete semantic echo replacement examples
+3. Provide usable replacement text in issue details and merge modify
+
+#### 修改内容 | Changes
+
+| 文件 File | 修改 Modification |
+|-----------|-------------------|
+| `src/core/analyzer/smart_structure.py` | Step 1-2 prompt 添加语义回声替换生成指令 |
+| `src/prompts/structure_deaigc.py` | Issue Suggestion prompt 添加 `semantic_echo_replacements` 输出 |
+| `src/api/routes/structure.py` | 1. 更新合并修改模板添加 `{semantic_echo_context}` |
+| | 2. 新增 `_build_semantic_echo_context()` 函数 |
+| | 3. 两个合并修改 API 调用新函数 |
+
+#### 实现细节 | Implementation Details
+
+**1. Step 1-2 Prompt 更新 (`smart_structure.py`):**
+
+每个检测到的显性连接词现在必须包含：
+```json
+{
+  "word": "Furthermore",
+  "position": "1(2)",
+  "prev_paragraph_ending": "...the statistical significance reached p<0.05.",
+  "prev_key_concepts": ["statistical significance", "p-value threshold"],
+  "current_opening": "Furthermore, the results demonstrate...",
+  "semantic_echo_replacement": "This pattern of statistical significance extends to...",
+  "replacement_explanation_zh": "用前段关键概念'statistical significance'自然承接"
+}
+```
+
+**2. Issue Suggestion Prompt 更新 (`structure_deaigc.py`):**
+
+新增输出字段：
+```json
+{
+  "semantic_echo_replacements": [
+    {
+      "original_text": "原始包含显性连接词的句子",
+      "connector_word": "检测到的连接词",
+      "prev_paragraph_concepts": ["关键概念1", "关键概念2"],
+      "replacement_text": "使用语义回声重写后的句子",
+      "explanation_zh": "解释为什么这个替换有效"
+    }
+  ]
+}
+```
+
+**3. 新增 `_build_semantic_echo_context()` 函数:**
+
+从 Step 1-2 缓存提取语义回声替换，格式化为：
+```
+## 🔄 SEMANTIC ECHO REPLACEMENTS (语义回声替换 - 必须使用):
+
+### 位置 1(2): "Furthermore"
+- **原文**: Furthermore, the results demonstrate...
+- **前段关键概念**: statistical significance, p-value
+- **语义回声替换**: This pattern of statistical significance extends to...
+- **说明**: 用前段'statistical significance'概念自然承接
+```
+
+**4. 合并修改模板更新:**
+
+- 添加 `{semantic_echo_context}` 占位符
+- 强调 LLM 必须使用提供的替换文本
+- 添加 CRITICAL 规则确保替换被执行
+
+#### 流程 | Flow
+
+```
+Step 1-2 分析
+    ↓
+检测显性连接词 + 提取前段关键概念 + 生成语义回声替换
+    ↓
+保存到 step1_2_cache
+    ↓
+用户点击问题展开 → Issue Suggestion 生成详细替换建议
+    ↓
+用户选择合并修改 → _build_semantic_echo_context() 提取替换
+    ↓
+LLM 收到具体替换指令 → 直接使用替换文本
+```
+
+#### 结果 | Result
+
+现在系统可以：
+- ✅ 自动检测所有显性连接词
+- ✅ 提取前一段的关键概念
+- ✅ 生成可直接使用的语义回声替换文本
+- ✅ 在问题详情中显示具体替换示例
+- ✅ 在合并修改时强制使用这些替换
+- ✅ 生成的替换保持学术风格和原文含义
+
+---
+
+### 2026-01-04 - Level2/Level3 改名为 Step2/Step3 | Rename Level2/Level3 to Step2/Step3
+
+#### 需求 | Requirements
+1. 将 Level2 改名为 Step2，Level3 改名为 Step3
+2. Step2 需要与 Step1-2 相同的功能：多选问题、合并修改（提示词/直接修改）、上传新文件、确认/跳过
+3. 合并修改时需注明前面改了什么，哪些可以动哪些不能动
+
+1. Rename Level2 to Step2, Level3 to Step3
+2. Step2 needs same features as Step1-2: multi-select issues, merge modify (prompt/apply), file upload, confirm/skip
+3. Merge modify must note previous improvements and what can/cannot be changed
+
+#### 修改内容 | Changes
+
+| 文件 File | 修改 Modification |
+|----------|-------------------|
+| `frontend/src/pages/Step2.tsx` | 新建文件，实现完整的 Step2 页面，包含多选问题、合并修改、文件上传等功能 |
+| `frontend/src/pages/Level2.tsx` | 删除（已被 Step2.tsx 替代） |
+| `frontend/src/App.tsx` | 路由从 `/flow/level2/` 改为 `/flow/step2/`，导入 Step2 组件 |
+| `frontend/src/types/index.ts` | `SessionStep` 类型添加 `'step2' | 'step3'`（保持 level2/level3 向后兼容） |
+| `frontend/src/pages/Step1_2.tsx` | 导航目标从 `/flow/level2/` 改为 `/flow/step2/`；进度指示器更新 |
+| `frontend/src/pages/Step1_1.tsx` | 进度指示器从 "Level 2 → Level 3" 改为 "Step 2 → Step 3" |
+| `frontend/src/pages/History.tsx` | 步骤路由和标签更新，添加 step2/step3 支持（保持 level2/level3 向后兼容） |
+| `frontend/src/pages/Intervention.tsx` | `sessionApi.updateStep` 从 'level3' 改为 'step3' |
+| `frontend/src/pages/Yolo.tsx` | `sessionApi.updateStep` 从 'level3' 改为 'step3' |
+| `frontend/src/pages/ThreeLevelFlow.tsx` | UI 文本和注释从 Level 2/Level 3 改为 Step 2/Step 3 |
+
+#### Step2.tsx 主要功能 | Step2.tsx Main Features
+
+**多选功能:**
+- 问题列表前加复选框
+- 支持全选/取消全选
+- 显示选中数量
+
+**合并修改功能:**
+- 生成提示词模式：调用 `structureApi.mergeModifyPrompt()`
+- AI直接修改模式：调用 `structureApi.mergeModifyApply()`
+- 结果显示支持复制和采纳
+- 重新生成限制3次
+
+**上下文保护:**
+```typescript
+const enhancedNotes = `${mergeUserNotes}
+
+【重要】这是 Step 2（衔接分析）的修改。
+Step 1-1 和 Step 1-2 中已经对文档结构和段落关系进行了分析和改进。
+请务必保持这些改进，只针对当前选中的衔接问题进行修改。`;
+```
+
+**文件上传功能:**
+- 支持上传 .txt/.md 文件
+- 支持直接粘贴文本
+- 验证后填入修改区域
+
+#### 结果 | Result
+
+- ✅ Level2/Level3 全面改名为 Step2/Step3
+- ✅ Step2 具备与 Step1-2 相同的功能（多选、合并修改、上传）
+- ✅ 路由和导航已更新
+- ✅ 历史页面支持新旧步骤名称
+- ✅ 合并修改时自动注入上下文保护说明
+- ✅ ThreeLevelFlow 遗留组件也已更新

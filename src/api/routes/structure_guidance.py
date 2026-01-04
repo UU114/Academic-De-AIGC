@@ -11,6 +11,7 @@ This module provides endpoints for:
 
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 from typing import Optional, Dict, Any, List
 import logging
 import json
@@ -179,9 +180,10 @@ async def get_structure_issues(
             smart_analyzer = SmartStructureAnalyzer()
             analysis = await smart_analyzer.analyze(document.original_text)
 
-            # Cache the result
-            # 缓存结果
+            # Cache the result to SQLite
+            # 缓存结果到 SQLite
             document.structure_analysis_cache = analysis
+            flag_modified(document, 'structure_analysis_cache')
             await db.commit()
 
         # Extract issues from analysis

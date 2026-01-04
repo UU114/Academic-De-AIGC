@@ -54,6 +54,7 @@ class Session(Base):
     target_lang = Column(String(10), default="zh")
     config_json = Column(JSON, nullable=True)
     status = Column(String(20), default="active")  # active, paused, completed
+    current_step = Column(String(20), default="step1-1")  # step1-1, step1-2, level2, level3, review
     current_index = Column(Integer, default=0)
     created_at = Column(DateTime, server_default=func.now())
     completed_at = Column(DateTime, nullable=True)

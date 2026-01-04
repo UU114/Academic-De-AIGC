@@ -31,8 +31,8 @@ import type {
   ParagraphRestructureResponse,
 } from '../types';
 
-// Processing levels: Step 1-1 (structure), Step 1-2 (relationships), Level 2 (transition), Level 3 (sentence)
-// 处理层级：Step 1-1（结构）、Step 1-2（关系）、Level 2（衔接）、Level 3（句子）
+// Processing levels: Step 1-1 (structure), Step 1-2 (relationships), Step 2 (transition), Step 3 (sentence)
+// 处理层级：Step 1-1（结构）、Step 1-2（关系）、Step 2（衔接）、Step 3（句子）
 type ProcessingLevel = 'step1_1' | 'step1_2' | 'level_2' | 'level_3';
 type ProcessingMode = 'intervention' | 'yolo';
 
@@ -58,9 +58,10 @@ interface YoloLogEntry {
  * Three-Level Flow Page - Complete De-AIGC Processing Workflow
  * 三层级流程页面 - 完整的 De-AIGC 处理工作流
  *
- * Step 1: Level 1 - Structure Analysis (骨架重组)
- * Step 2: Level 2 - Transition Analysis (关节润滑)
- * Step 3: Level 3 - Sentence Polish (皮肤精修) -> Redirects to Intervention page
+ * Step 1-1: Structure Analysis (全文结构)
+ * Step 1-2: Relationship Analysis (段落关系)
+ * Step 2: Transition Analysis (段落衔接)
+ * Step 3: Sentence Polish (句子精修) -> Redirects to Intervention page
  */
 export default function ThreeLevelFlow() {
   const { documentId } = useParams<{ documentId: string }>();
@@ -86,8 +87,8 @@ export default function ThreeLevelFlow() {
   // 当前处理层级
   const [currentLevel, setCurrentLevel] = useState<ProcessingLevel>('step1_1');
 
-  // Level statuses - 4 steps now: Step 1-1, Step 1-2, Level 2, Level 3
-  // 层级状态 - 现在4个步骤：Step 1-1、Step 1-2、Level 2、Level 3
+  // Level statuses - 4 steps now: Step 1-1, Step 1-2, Step 2, Step 3
+  // 层级状态 - 现在4个步骤：Step 1-1、Step 1-2、Step 2、Step 3
   const [levelStatuses, setLevelStatuses] = useState<LevelStatus[]>([
     { level: 'step1_1', status: 'in_progress' },
     { level: 'step1_2', status: 'pending' },
@@ -387,8 +388,8 @@ export default function ThreeLevelFlow() {
     }
   }, [documentId]);
 
-  // Handle Step 1-2 completion - Move to Level 2
-  // 处理 Step 1-2 完成 - 进入 Level 2
+  // Handle Step 1-2 completion - Move to Step 2
+  // 处理 Step 1-2 完成 - 进入 Step 2
   const handleStep1_2Complete = useCallback(() => {
     setLevelStatuses(prev => prev.map(s =>
       s.level === 'step1_2'
@@ -409,8 +410,8 @@ export default function ThreeLevelFlow() {
     analyzeTransitions();
   }, [step1_2Result]);
 
-  // Handle Step 1-2 skip - Move to Level 2
-  // 处理 Step 1-2 跳过 - 进入 Level 2
+  // Handle Step 1-2 skip - Move to Step 2
+  // 处理 Step 1-2 跳过 - 进入 Step 2
   const handleStep1_2Skip = useCallback(() => {
     setLevelStatuses(prev => prev.map(s =>
       s.level === 'step1_2'
@@ -424,8 +425,8 @@ export default function ThreeLevelFlow() {
     analyzeTransitions();
   }, []);
 
-  // Handle Level 2 transition apply
-  // 处理 Level 2 衔接应用
+  // Handle Step 2 transition apply
+  // 处理 Step 2 衔接应用
   const handleTransitionApply = useCallback((_option: TransitionOption) => {
     // Move to next transition or complete Level 2
     // 移动到下一个衔接或完成 Level 2
@@ -438,8 +439,8 @@ export default function ThreeLevelFlow() {
     }
   }, [currentTransitionIndex, transitionAnalyses.length]);
 
-  // Handle Level 2 transition skip
-  // 处理 Level 2 衔接跳过
+  // Handle Step 2 transition skip
+  // 处理 Step 2 衔接跳过
   const handleTransitionSkip = useCallback(() => {
     if (currentTransitionIndex < transitionAnalyses.length - 1) {
       setCurrentTransitionIndex(prev => prev + 1);
@@ -448,8 +449,8 @@ export default function ThreeLevelFlow() {
     }
   }, [currentTransitionIndex, transitionAnalyses.length]);
 
-  // Handle Level 2 completion
-  // 处理 Level 2 完成
+  // Handle Step 2 completion
+  // 处理 Step 2 完成
   const handleLevel2Complete = useCallback(() => {
     const issuesFound = transitionAnalyses.reduce((sum, t) => sum + t.issues.length, 0);
     setLevelStatuses(prev => prev.map(s =>
@@ -468,8 +469,8 @@ export default function ThreeLevelFlow() {
     setExpandedLevel('level_3');
   }, [transitionAnalyses]);
 
-  // Handle Level 2 skip all
-  // 处理 Level 2 全部跳过
+  // Handle Step 2 skip all
+  // 处理 Step 2 全部跳过
   const handleLevel2SkipAll = useCallback(() => {
     setLevelStatuses(prev => prev.map(s =>
       s.level === 'level_2'
@@ -542,14 +543,14 @@ export default function ThreeLevelFlow() {
     }
   }, [step1_1Result]);
 
-  // Handle proceed to Level 3 (Intervention)
-  // 处理进入 Level 3（干预页面）
+  // Handle proceed to Step 3 (Intervention)
+  // 处理进入 Step 3（干预页面）
   const handleProceedToLevel3 = useCallback(async () => {
     if (!documentId) return;
 
     try {
-      // Start a flow/session for Level 3
-      // 为 Level 3 启动流程/会话
+      // Start a flow/session for Step 3
+      // 为 Step 3 启动流程/会话
       const flowResult = await flowApi.start(documentId, { mode: 'deep' });
       setFlowId(flowResult.flowId);
       setSessionId(flowResult.sessionId);
@@ -632,8 +633,8 @@ export default function ThreeLevelFlow() {
       ));
       setCurrentLevel('level_2');
 
-      // Level 2: Analyze and auto-apply transitions
-      // Level 2: 分析并自动应用衔接修改
+      // Step 2: Analyze and auto-apply transitions
+      // Step 2: 分析并自动应用衔接修改
       addYoloLog('level_2', 'start', '开始段落衔接分析... Starting transition analysis...');
 
       const transitionSummary = await transitionApi.analyzeDocument(documentId);
@@ -651,8 +652,8 @@ export default function ThreeLevelFlow() {
         addYoloLog('level_2', 'skip', '文档段落少于2段，无需衔接分析');
       }
 
-      // Update to Level 3
-      // 更新到 Level 3
+      // Update to Step 3
+      // 更新到 Step 3
       setLevelStatuses(prev => prev.map(s =>
         s.level === 'level_2'
           ? { ...s, status: 'completed', issuesFound: transitionSummary.transitions?.length || 0 }
@@ -662,12 +663,12 @@ export default function ThreeLevelFlow() {
       ));
       setCurrentLevel('level_3');
 
-      // Level 3: Navigate to YOLO page for sentence processing
-      // Level 3: 导航到YOLO页面进行句子处理
+      // Step 3: Navigate to YOLO page for sentence processing
+      // Step 3: 导航到YOLO页面进行句子处理
       addYoloLog('level_3', 'start', '准备进入句子级自动处理... Preparing sentence-level processing...');
 
-      // Start flow for Level 3
-      // 为 Level 3 启动流程
+      // Start flow for Step 3
+      // 为 Step 3 启动流程
       const flowResult = await flowApi.start(documentId, { mode: 'deep' });
       setFlowId(flowResult.flowId);
       setSessionId(flowResult.sessionId);
@@ -733,9 +734,9 @@ export default function ThreeLevelFlow() {
       case 'step1_2':
         return { zh: '段落关系', en: 'Relationship', step: '1-2' };
       case 'level_2':
-        return { zh: '段落衔接', en: 'Transition', step: '2' };
+        return { zh: '衔接分析', en: 'Transition', step: '2' };
       case 'level_3':
-        return { zh: '句子精修', en: 'Sentence', step: '3' };
+        return { zh: '句子处理', en: 'Sentence', step: '3' };
     }
   };
 
@@ -1260,7 +1261,7 @@ export default function ThreeLevelFlow() {
                     跳过
                   </Button>
                   <Button variant="primary" onClick={handleStep1_2Complete}>
-                    继续 Level 2
+                    继续 Step 2
                     <ArrowRight className="w-4 h-4 ml-2" />
                   </Button>
                 </div>
@@ -1274,8 +1275,8 @@ export default function ThreeLevelFlow() {
         )}
       </div>
 
-      {/* Level 2: Transition Analysis */}
-      {/* Level 2: 衔接分析 */}
+      {/* Step 2: Transition Analysis */}
+      {/* Step 2: 衔接分析 */}
       <div className="mb-4">
         <button
           onClick={() => setExpandedLevel(expandedLevel === 'level_2' ? null : 'level_2')}
@@ -1296,7 +1297,7 @@ export default function ThreeLevelFlow() {
             <Link className="w-5 h-5 mr-3 text-teal-600" />
             <div className="text-left">
               <h3 className="font-semibold text-gray-800">
-                Level 2: 段落衔接 / Transition Analysis
+                Step 2: 衔接分析 / Transition Analysis
               </h3>
               <p className="text-sm text-gray-600">
                 分析相邻段落衔接，消灭显性连接词
@@ -1333,7 +1334,7 @@ export default function ThreeLevelFlow() {
                 <CheckCircle className="w-8 h-8 text-green-500 mx-auto mb-2" />
                 <p className="text-gray-600">文档段落少于2段，无需衔接分析</p>
                 <Button className="mt-4" onClick={handleLevel2Complete}>
-                  继续到 Level 3
+                  继续到 Step 3
                   <ArrowRight className="w-4 h-4 ml-2" />
                 </Button>
               </div>
@@ -1363,8 +1364,8 @@ export default function ThreeLevelFlow() {
         )}
       </div>
 
-      {/* Level 3: Sentence Polish */}
-      {/* Level 3: 句子精修 */}
+      {/* Step 3: Sentence Polish */}
+      {/* Step 3: 句子处理 */}
       <div className="mb-4">
         <button
           onClick={() => setExpandedLevel(expandedLevel === 'level_3' ? null : 'level_3')}
@@ -1383,7 +1384,7 @@ export default function ThreeLevelFlow() {
             <FileText className="w-5 h-5 mr-3 text-purple-600" />
             <div className="text-left">
               <h3 className="font-semibold text-gray-800">
-                Level 3: 句子精修 / Sentence Polish
+                Step 3: 句子处理 / Sentence Polish
               </h3>
               <p className="text-sm text-gray-600">
                 逐句分析，指纹词替换，降低AI检测率
@@ -1404,10 +1405,10 @@ export default function ThreeLevelFlow() {
               准备进入句子级精修
             </h3>
             <p className="text-gray-600 mb-6">
-              Step 1-1、Step 1-2 和 Level 2 处理完成，现在进入逐句编辑模式
+              Step 1-1、Step 1-2 和 Step 2 处理完成，现在进入逐句编辑模式
             </p>
             <Button variant="primary" size="lg" onClick={handleProceedToLevel3}>
-              开始 Level 3 处理
+              开始 Step 3 处理
               <ArrowRight className="w-5 h-5 ml-2" />
             </Button>
           </div>

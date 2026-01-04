@@ -463,11 +463,28 @@ class RiskScorer:
         # 计算人类特征减分
         human_deduction = self._calculate_human_deduction(text)
 
-        # CAASS v2.0 Phase 2: Scoring formula with context baseline
-        # CAASS v2.0 第二阶段: 带上下文基准的评分公式
-        # Score = Context_baseline + FP_absolute + Structure_patterns - Human_bonus
-        # 评分 = 上下文基准分 + 指纹词绝对分 + 结构模式分 - 人类特征减分
-        raw_score = context_baseline + fingerprint_score + structure_score
+        # CAASS v2.0 Phase 2: Scoring formula with context baseline and ONNX PPL
+        # CAASS v2.0 第二阶段: 带上下文基准和ONNX PPL的评分公式
+        # Score = Context_baseline + FP_absolute + Structure_patterns + PPL_contribution - Human_bonus
+        # 评分 = 上下文基准分 + 指纹词绝对分 + 结构模式分 + PPL贡献分 - 人类特征减分
+
+        # Calculate PPL contribution to score (0-20 points)
+        # 计算PPL对分数的贡献（0-20分）
+        # Low PPL (AI-like) adds points, high PPL (human-like) adds nothing
+        # 低PPL（AI特征）加分，高PPL（人类特征）不加分
+        ppl_contribution = 0
+        if ppl_risk == "high":
+            # PPL < 20: AI-like, add 15-20 points
+            # PPL < 20: AI特征，加15-20分
+            ppl_contribution = min(20, int(ppl_score * 0.22))
+        elif ppl_risk == "medium":
+            # PPL 20-40: Somewhat AI-like, add 5-15 points
+            # PPL 20-40: 有些AI特征，加5-15分
+            ppl_contribution = min(15, int(ppl_score * 0.25))
+        # ppl_risk == "low": PPL > 40, human-like, no addition
+        # ppl_risk == "low": PPL > 40，人类特征，不加分
+
+        raw_score = context_baseline + fingerprint_score + structure_score + ppl_contribution
 
         # Apply human deduction (but don't go below 0)
         # 应用人类减分（但不低于0）
@@ -477,14 +494,14 @@ class RiskScorer:
         # 记录评分详情用于调试
         logger.debug(
             f"CAASS v2.0 Phase 2: Ctx={context_baseline}, FP={fingerprint_score}, "
-            f"Struct={structure_score}, Human=-{human_deduction}, "
+            f"Struct={structure_score}, PPL={ppl_contribution}(raw={ppl:.1f}), Human=-{human_deduction}, "
             f"Total={total_score}, Tone={tone_level}"
         )
         # DEBUG: Print scoring details to diagnose Track B 0-score issue
         # 调试：打印评分详情以诊断轨道B 0分问题
         # Use logger instead of print for cross-platform compatibility (Windows GBK / Linux UTF-8)
         # 使用logger而非print以实现跨平台兼容（Windows GBK / Linux UTF-8）
-        logger.info(f"[DEBUG Scorer] Text len={len(text)}, Ctx={context_baseline}, FP={fingerprint_score}, Struct={structure_score}, Human=-{human_deduction}, Total={total_score}")
+        logger.info(f"[DEBUG Scorer] Text len={len(text)}, Ctx={context_baseline}, FP={fingerprint_score}, Struct={structure_score}, PPL={ppl_contribution}(raw={ppl:.1f}), Human=-{human_deduction}, Total={total_score}")
 
         # Determine risk level (adjusted thresholds for better sensitivity)
         # 确定风险等级（调整阈值以提高敏感度）

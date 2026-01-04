@@ -256,12 +256,15 @@ export default function Intervention() {
     prevSentenceIdRef.current = currentId;
   }, [session?.currentSentence?.id, getAnalysisForSentence]);
 
-  // Load session on mount
-  // 挂载时加载会话
+  // Load session on mount and update step
+  // 挂载时加载会话并更新步骤
   useEffect(() => {
     if (sessionId) {
       loadCurrentState(sessionId);
       loadAllSentences(sessionId);
+      // Update session step to step3
+      // 更新会话步骤到 step3
+      sessionApi.updateStep(sessionId, 'step3').catch(console.error);
     }
   }, [sessionId, loadCurrentState]);
 

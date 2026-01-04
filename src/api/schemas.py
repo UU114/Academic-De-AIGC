@@ -118,6 +118,19 @@ class FingerprintMatch(BaseModel):
     replacements: List[str] = []
 
 
+class FingerprintWord(BaseModel):
+    """
+    Fingerprint word with position information
+    带位置信息的指纹词
+    """
+    word: str
+    position: int
+    end_position: int
+    risk_weight: float
+    category: str
+    replacements: List[str] = []
+
+
 class IssueDetail(BaseModel):
     """
     Detected issue detail
@@ -281,6 +294,7 @@ class SessionInfo(BaseModel):
     document_name: str
     mode: ProcessMode
     status: str
+    current_step: str = "step1-1"  # step1-1, step1-2, level2, level3, review
     total_sentences: int
     processed: int
     progress_percent: float
@@ -613,6 +627,48 @@ class LogicBreak(BaseModel):
     suggestion_zh: str = Field(default="")  # Chinese suggestion (empty for smooth transitions)
 
 
+class SectionSuggestion(BaseModel):
+    """
+    Detailed suggestion for a specific section/chapter
+    针对特定章节的详细建议
+    """
+    section_number: str  # e.g., "1", "2.1", "Abstract"
+    section_title: str  # e.g., "Introduction"
+    severity: str  # high, medium, low
+    suggestion_type: str  # e.g., "add_content", "restructure", "merge", "split", "reorder"
+    suggestion_zh: str  # Detailed Chinese suggestion
+    suggestion_en: str  # English version
+    details: List[str] = []  # Specific action items in Chinese
+    affected_paragraphs: List[str] = []  # e.g., ["1(1)", "1(2)"]
+
+
+class DetailedImprovementSuggestions(BaseModel):
+    """
+    Comprehensive improvement suggestions for the document
+    文档的全面改进建议
+    """
+    # Summary-level suggestions (for abstract/摘要)
+    # 摘要层面的建议
+    abstract_suggestions: List[str] = []  # e.g., ["摘要应提到第2章的研究方法在第4章的应用"]
+
+    # Overall logic/order suggestions
+    # 整体逻辑/顺序建议
+    logic_suggestions: List[str] = []  # e.g., ["建议调整第3章和第4章的顺序"]
+
+    # Section-by-section suggestions
+    # 分章节建议
+    section_suggestions: List[SectionSuggestion] = []
+
+    # Priority ranking of suggestions
+    # 建议优先级排序
+    priority_order: List[str] = []  # Section numbers in priority order
+
+    # Overall assessment
+    # 总体评估
+    overall_assessment_zh: str = ""
+    overall_assessment_en: str = ""
+
+
 class SmartStructureResponse(BaseModel):
     """
     Response from smart structure analysis
@@ -627,6 +683,9 @@ class SmartStructureResponse(BaseModel):
     score_breakdown: Dict[str, int] = {}
     recommendation: str = ""
     recommendation_zh: str = ""
+    # New: Detailed section-by-section improvement suggestions
+    # 新增：详细的分章节改进建议
+    detailed_suggestions: Optional[DetailedImprovementSuggestions] = None
     # Explicit connectors detected (AI fingerprints)
     # 检测到的显性连接词（AI指纹）
     explicit_connectors: List[ExplicitConnector] = []
@@ -813,6 +872,7 @@ class DocumentStructureRequest(BaseModel):
     """
     document_id: str = Field(..., description="Document ID to analyze")
     extract_thesis: bool = Field(True, description="Whether to extract core thesis")
+    session_id: Optional[str] = Field(None, description="Session ID to get colloquialism_level for style analysis")
 
 
 class ParagraphSuggestionRequest(BaseModel):
@@ -1314,3 +1374,112 @@ class ReorderSuggestionResponse(BaseModel):
     # 预估
     estimated_improvement: int = Field(0, description="Estimated score improvement")
     confidence: float = Field(0.8, description="Confidence score 0-1")
+
+
+# =============================================================================
+# Issue-Specific Suggestion Schemas (Step 1-1 Click-to-Expand)
+# 针对特定问题的建议模式（Step 1-1 点击展开）
+# =============================================================================
+
+class IssueSuggestionStrategy(BaseModel):
+    """
+    A single strategy for addressing a structure issue
+    解决结构问题的单个策略
+    """
+    name_zh: str = Field(..., description="Chinese name of the strategy")
+    description_zh: str = Field(..., description="Detailed Chinese description with steps")
+    example_before: Optional[str] = Field(None, description="Example before modification")
+    example_after: Optional[str] = Field(None, description="Example after modification")
+    difficulty: str = Field("medium", description="Difficulty level: easy/medium/hard")
+    effectiveness: str = Field("medium", description="Effectiveness: high/medium/low")
+
+
+class IssueSuggestionRequest(BaseModel):
+    """
+    Request for issue-specific suggestion
+    针对特定问题的建议请求
+    """
+    model_config = ConfigDict(populate_by_name=True)
+
+    document_id: str = Field(..., alias="documentId", description="Document ID")
+    issue_type: str = Field(..., alias="issueType", description="Type of the structure issue")
+    issue_description: str = Field("", alias="issueDescription", description="English description")
+    issue_description_zh: str = Field(..., alias="issueDescriptionZh", description="Chinese description")
+    severity: str = Field("medium", description="Issue severity: high/medium/low")
+    affected_positions: List[str] = Field(default=[], alias="affectedPositions", description="Affected positions")
+    quick_mode: bool = Field(False, alias="quickMode", description="Use quick mode for faster response")
+
+
+class IssueSuggestionResponse(BaseModel):
+    """
+    Response containing issue-specific suggestions
+    包含针对特定问题建议的响应
+    """
+    diagnosis_zh: str = Field(..., description="Detailed Chinese diagnosis")
+    strategies: List[IssueSuggestionStrategy] = Field(default=[], description="List of modification strategies")
+    modification_prompt: str = Field("", description="Copy-pasteable prompt for other AI tools")
+    priority_tips_zh: str = Field("", description="Prioritized tips in Chinese")
+    caution_zh: str = Field("", description="Cautions to maintain academic quality")
+    quick_fix_zh: Optional[str] = Field(None, description="Quick fix suggestion")
+    estimated_improvement: Optional[int] = Field(None, description="Estimated score improvement")
+
+
+# =============================================================================
+# Merge Modify Schemas (Step 1-1 Combined Issue Modification)
+# 合并修改模式（Step 1-1 多问题合并修改）
+# =============================================================================
+
+class SelectedIssue(BaseModel):
+    """
+    A single selected issue for merge modification
+    合并修改中选择的单个问题
+    """
+    model_config = ConfigDict(populate_by_name=True)
+
+    type: str = Field(..., description="Issue type identifier")
+    description: str = Field("", description="English description")
+    description_zh: str = Field(..., alias="descriptionZh", description="Chinese description")
+    severity: str = Field("medium", description="Severity: high/medium/low")
+    affected_positions: List[str] = Field(default=[], alias="affectedPositions", description="Affected positions")
+
+
+class MergeModifyRequest(BaseModel):
+    """
+    Request for merge modification (generate prompt or apply directly)
+    合并修改请求（生成提示词或直接修改）
+
+    User selects multiple issues and can optionally provide notes.
+    用户选择多个问题，可选择性地提供注意事项。
+    """
+    model_config = ConfigDict(populate_by_name=True)
+
+    document_id: str = Field(..., alias="documentId", description="Document ID")
+    session_id: Optional[str] = Field(None, alias="sessionId", description="Session ID for colloquialism level")
+    selected_issues: List[SelectedIssue] = Field(..., alias="selectedIssues", description="List of selected issues")
+    user_notes: Optional[str] = Field(None, alias="userNotes", description="User's optional notes/requirements")
+    mode: str = Field("prompt", description="Mode: 'prompt' (generate prompt) or 'apply' (direct modification)")
+
+
+class MergeModifyPromptResponse(BaseModel):
+    """
+    Response containing generated modification prompt
+    包含生成的修改提示词的响应
+    """
+    prompt: str = Field(..., description="Generated modification prompt for user to copy")
+    prompt_zh: str = Field(..., description="Prompt description in Chinese")
+    issues_summary_zh: str = Field("", description="Summary of selected issues in Chinese")
+    colloquialism_level: Optional[int] = Field(None, description="Target colloquialism level (0-10)")
+    estimated_changes: int = Field(0, description="Estimated number of changes")
+
+
+class MergeModifyApplyResponse(BaseModel):
+    """
+    Response containing AI-modified document
+    包含AI修改后文档的响应
+    """
+    modified_text: str = Field(..., description="Modified document text")
+    changes_summary_zh: str = Field("", description="Summary of changes in Chinese")
+    changes_count: int = Field(0, description="Number of changes made")
+    issues_addressed: List[str] = Field(default=[], description="List of issue types addressed")
+    remaining_attempts: int = Field(3, description="Remaining regeneration attempts")
+    colloquialism_level: Optional[int] = Field(None, description="Target colloquialism level used")

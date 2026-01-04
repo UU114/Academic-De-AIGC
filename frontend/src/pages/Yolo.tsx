@@ -56,6 +56,14 @@ export default function Yolo() {
     logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs]);
 
+  // Update session step on mount
+  // 挂载时更新会话步骤
+  useEffect(() => {
+    if (sessionId) {
+      sessionApi.updateStep(sessionId, 'step3').catch(console.error);
+    }
+  }, [sessionId]);
+
   // Start polling for progress
   // 开始轮询进度
   useEffect(() => {

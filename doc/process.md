@@ -7,6 +7,144 @@
 
 ## 最近更新 | Recent Updates
 
+### 2026-01-04 - 双模式系统实现 | Dual-Mode System Implementation
+
+#### 需求 | Requirements
+实现调试模式(DEBUG)和运营模式(OPERATIONAL)的双模式切换系统，支持：
+1. 调试模式：不需要用户注册，不需要支付，用于开发测试
+2. 运营模式：需要用户登录和支付，连接中央平台
+3. 所有预留接口需文档化，便于后续中央平台对接
+
+Implement dual-mode system with DEBUG and OPERATIONAL modes:
+1. Debug mode: No registration/payment required, for development/testing
+2. Operational mode: Full login and payment flow, connects to central platform
+3. All reserved interfaces documented for future platform integration
+
+#### 新增文件 | New Files
+
+| 文件 File | 说明 Description |
+|----------|-----------------|
+| `src/services/__init__.py` | 服务层初始化 Service layer init |
+| `src/services/auth_service.py` | 认证服务（含IAuthProvider接口）Auth service with IAuthProvider interface |
+| `src/services/payment_service.py` | 支付服务（含IPaymentProvider接口）Payment service with IPaymentProvider interface |
+| `src/services/word_counter.py` | 字数统计服务 Word counting service |
+| `src/services/task_service.py` | 任务管理服务 Task management service |
+| `src/middleware/__init__.py` | 中间件层初始化 Middleware layer init |
+| `src/middleware/mode_checker.py` | 模式检查中间件 Mode checker middleware |
+| `src/middleware/auth_middleware.py` | 认证中间件 Auth middleware |
+| `src/api/routes/auth.py` | 认证API路由 Auth API routes |
+| `src/api/routes/payment.py` | 支付API路由 Payment API routes |
+| `src/api/routes/task.py` | 任务API路由 Task API routes |
+| `frontend/src/stores/authStore.ts` | 前端认证状态管理 Frontend auth state |
+| `frontend/src/stores/modeStore.ts` | 前端模式状态管理 Frontend mode state |
+| `frontend/src/components/auth/LoginModal.tsx` | 登录弹窗组件 Login modal |
+| `frontend/src/components/auth/AuthGuard.tsx` | 认证守卫组件 Auth guard |
+| `frontend/src/components/auth/ModeIndicator.tsx` | 模式指示器组件 Mode indicator |
+| `frontend/src/components/payment/QuoteModal.tsx` | 报价弹窗组件 Quote modal |
+| `frontend/src/components/payment/PaymentStatus.tsx` | 支付状态组件 Payment status |
+
+#### 修改文件 | Modified Files
+
+| 文件 File | 修改 Modification |
+|----------|-------------------|
+| `src/config.py` | 添加SystemMode枚举、平台配置、定价配置、JWT配置 Add SystemMode enum, platform/pricing/JWT config |
+| `src/db/models.py` | 添加User、Task模型和状态枚举 Add User, Task models and status enums |
+| `src/main.py` | 添加ModeCheckerMiddleware和新路由 Add ModeCheckerMiddleware and new routes |
+| `src/api/schemas.py` | 添加认证/支付相关Schema Add auth/payment schemas |
+| `frontend/src/App.tsx` | 添加模式初始化和浮动模式徽章 Add mode init and floating mode badge |
+| `frontend/src/pages/Home.tsx` | 添加模式指示器和定价信息显示 Add mode indicator and pricing info |
+| `frontend/src/pages/Upload.tsx` | 添加认证检查和支付流程 Add auth check and payment flow |
+| `frontend/src/services/api.ts` | 添加taskApi和paymentApi Add taskApi and paymentApi |
+| `README.md` | 添加双模式说明和完整预留接口文档 Add dual-mode docs and reserved interface specs |
+
+#### 架构设计 | Architecture Design
+
+1. **策略模式 Strategy Pattern**: 认证和支付服务使用接口+实现类，便于切换：
+   - `IAuthProvider` → `DebugAuthProvider` / `PlatformAuthProvider`
+   - `IPaymentProvider` → `DebugPaymentProvider` / `PlatformPaymentProvider`
+
+2. **任务生命周期 Task Lifecycle**: CREATED → QUOTED → PAYING → PAID → PROCESSING → COMPLETED
+
+3. **安全机制 Security**:
+   - 防偷梁换柱：上传时计算content_hash并锁定
+   - 防重放攻击：状态机幂等性设计
+   - JWT令牌认证
+
+#### 预留接口 | Reserved Interfaces
+
+完整的接口规范已记录在 README.md 中，包括：
+
+- **认证接口 Auth Interfaces**:
+  - `POST /api/v1/auth/send-sms` - 发送验证码
+  - `POST /api/v1/auth/verify-sms` - 验证码登录
+  - `GET /api/v1/users/{user_id}` - 获取用户信息
+  - `POST /api/v1/auth/refresh` - 刷新令牌
+
+- **支付接口 Payment Interfaces**:
+  - `POST /api/v1/payments/create` - 创建支付订单
+  - `GET /api/v1/payments/{order_id}/status` - 查询订单状态
+  - `POST /api/v1/payments/{order_id}/refund` - 申请退款
+  - `POST /api/v1/payment/callback` - 支付回调(Webhook)
+
+#### 环境变量 | Environment Variables
+
+```env
+SYSTEM_MODE=debug  # debug | operational
+PLATFORM_BASE_URL=https://api.yourplatform.com
+PLATFORM_API_KEY=your_api_key
+PLATFORM_APP_ID=academicguard
+PRICE_PER_100_WORDS=2.0
+MINIMUM_CHARGE=50.0
+JWT_SECRET_KEY=your-secret-key
+```
+
+#### 结果 | Result
+双模式系统完整实现，默认为调试模式（免登录、免支付），可通过环境变量切换为运营模式。所有中央平台预留接口已完整文档化，便于后续对接。
+
+Dual-mode system fully implemented. Default debug mode (no login/payment), switchable to operational mode via env var. All platform interfaces documented for future integration.
+
+---
+
+### 2026-01-04 - 禁止学术写作中使用第一人称代词 | Prohibit First-Person Pronouns in Academic Writing
+
+#### 需求 | Requirements
+用户反馈：在学术化级别(Level 0-5)的LLM建议中，生成了过多的第一人称代词(I, we, my, our, us, me)。学术论文不应使用第一人称代词，需要使用被动语态或非人称结构(如"this study", "the analysis")。
+
+User feedback: LLM suggestions in academic levels (0-5) contained too many first-person pronouns. Academic papers should avoid first-person pronouns and use passive voice or impersonal constructs instead.
+
+#### 修改内容 | Changes
+
+| 文件 File | 修改 Modification |
+|----------|-------------------|
+| `src/core/suggester/llm_track.py` | 在STYLE_GUIDES中为每个学术级别(0-5)添加"STRICTLY FORBIDDEN: First-person pronouns"规则；添加专门的FIRST-PERSON PRONOUN RULES section (行211-217) |
+| `src/core/validator/quality_gate.py` | 新增ACADEMIC_LEVEL_THRESHOLD=5常量；新增FIRST_PERSON_PRONOUNS集合；新增`_check_first_person_pronouns()`方法；修改`verify_suggestion()`增加人称检查 |
+| `src/api/routes/session.py` | 在`yolo_auto_process()`中集成QualityGate验证，拒绝包含第一人称代词的LLM建议 |
+
+#### 技术细节 | Technical Details
+
+```python
+# quality_gate.py
+ACADEMIC_LEVEL_THRESHOLD = 5  # Level 0-5 prohibits first-person pronouns
+FIRST_PERSON_PRONOUNS = {"i", "we", "my", "our", "us", "me", "myself", "ourselves"}
+
+def verify_suggestion(self, original, suggestion, colloquialism_level=4):
+    if colloquialism_level <= ACADEMIC_LEVEL_THRESHOLD:
+        pronouns_found = self._check_first_person_pronouns(suggestion)
+        if pronouns_found:
+            return SuggestionValidationResult(passed=False, action="retry_without_pronouns", ...)
+```
+
+#### 结果 | Result
+测试验证：原始文本包含多个第一人称代词(Our research, we have demonstrated, We believe)，修改后的文本全部使用非人称结构：
+- "Our research examines..." → "This research examines..."
+- "we have demonstrated..." → "Deep learning models demonstrate..."
+- "Our comprehensive analysis..." → "The analysis highlights..."
+- "We believe..." → "These findings may encourage..."
+
+所有4个句子成功消除第一人称代词，风险分数平均降低51.2分。
+
+---
+
 ### 2026-01-04 - 修复缓存持久化问题 | Fix Cache Persistence Issue
 
 #### 问题 | Problem
@@ -4252,3 +4390,310 @@ Step 1-1 和 Step 1-2 中已经对文档结构和段落关系进行了分析和�
 - ✅ 历史页面支持新旧步骤名称
 - ✅ 合并修改时自动注入上下文保护说明
 - ✅ ThreeLevelFlow 遗留组件也已更新
+
+---
+
+### 2026-01-04 - 修复 YOLO 模式完整 LLM 调用链路 | Fix YOLO Mode Complete LLM Call Chain
+
+#### 问题分析 | Problem Analysis
+
+YOLO 模式存在以下严重问题，导致其无法真正完成 De-AIGC 处理：
+
+1. **Yolo.tsx 只是模拟处理**：只是轮询进度并显示随机生成的日志，没有调用真实的 LLM API
+2. **ThreeLevelFlow YOLO 模式只分析不修改**：Step 1-1/1-2 和 Step 2 只调用分析 API，没有调用 `mergeModifyApply` 应用修改
+3. **Step 3 后端缺失自动处理逻辑**：没有自动遍历句子并应用 LLM 建议的 API
+4. **修改不累积**：每一步都是独立执行，后一步没有基于前一步的修改结果
+
+#### 修改内容 | Changes
+
+| 文件 File | 修改 Modification |
+|----------|-------------------|
+| `src/api/routes/session.py` | 新增 `/session/{session_id}/yolo-process` API 端点，自动处理所有句子 |
+| `frontend/src/services/api.ts` | 新增 `sessionApi.yoloProcess()` 方法，支持 10 分钟超时 |
+| `frontend/src/pages/Yolo.tsx` | 完全重写，使用真实的 `yoloProcess` API 调用 |
+| `frontend/src/pages/ThreeLevelFlow.tsx` | 修改 `startYoloProcessing()`，自动调用 `mergeModifyApply` 应用修改 |
+
+#### 后端 yolo-process API | Backend yolo-process API
+
+新增 `/session/{session_id}/yolo-process` 端点：
+- 遍历所有句子
+- 对每个句子调用 LLMTrack 和 RuleTrack 获取建议
+- 选择风险降低最多的建议并自动应用
+- 跳过低风险句子（分数 < 25）
+- 返回完整的处理日志
+
+#### 调用链路对比 | Call Chain Comparison
+
+**修复前：**
+```
+Step 1-1: analyzeStep1_1 → 只记日志 → 没有修改
+Step 1-2: analyzeStep1_2 → 只记日志 → 没有修改
+Step 2:   analyzeDocument → 只记日志 → 没有修改
+Step 3:   导航到 Yolo.tsx → 模拟日志 → 没有 LLM 调用
+```
+
+**修复后：**
+```
+Step 1-1: analyzeStep1_1 → mergeModifyApply → 记录日志 → 应用修改
+Step 1-2: analyzeStep1_2 → mergeModifyApply → 记录日志 → 应用修改（保持 1-1 改进）
+Step 2:   analyzeDocument → mergeModifyApply → 记录日志 → 应用修改（保持 1-1/1-2 改进）
+Step 3:   导航到 Yolo.tsx → yoloProcess API → LLMTrack/RuleTrack → 逐句应用最佳建议
+```
+
+#### 结果 | Result
+
+- ✅ YOLO 模式现在使用真实的 LLM 调用
+- ✅ Step 1-1/1-2/2 自动应用修改（与干预模式相同的 API）
+- ✅ Step 3 自动处理所有句子并选择最佳建议
+- ✅ 每一步的修改都会注入上下文保护，保持前面步骤的改进
+- ✅ 显示真实的处理日志和风险降低统计
+
+---
+
+### 2026-01-04: Citation格式保护强化 / Citation Format Protection Enhancement
+
+#### 需求 | Requirement
+
+用户要求：Citation的格式不要做任何改变。例如 `(Johnson et al., 2019)` 不能变成 `Johnson et al. (2019)`。
+
+#### 问题分析 | Problem Analysis
+
+之前的LLM prompt中有"CITATION ENTANGLEMENT"技巧，指示LLM将括号引用转换为叙述形式，这违反了用户"citation格式不变"的要求。
+
+#### 修改内容 | Changes
+
+| 文件 File | 修改 Modification |
+|----------|-------------------|
+| `src/core/suggester/llm_track.py` | 将"CITATION ENTANGLEMENT"改为"CITATION PRESERVATION"，明确禁止修改citation格式 |
+| `src/core/suggester/llm_track.py` | 强化PARAPHRASE PROTECTION，明确禁止改变citation格式 |
+| `src/core/validator/quality_gate.py` | 新增 `_check_citation_format()` 方法，验证citation格式是否保持不变 |
+| `src/core/validator/quality_gate.py` | 在validate中添加Layer 2.5: Citation format check |
+| `src/core/validator/quality_gate.py` | 在_determine_action中添加citation_format失败返回"reject" |
+
+#### Prompt修改 | Prompt Changes
+
+**Before (CITATION ENTANGLEMENT):**
+```
+Transform parenthetical citations into narrative form to break AI pattern:
+- "Smith (2023) observed this phenomenon..."
+- "As Smith (2023) noted, this phenomenon..."
+```
+
+**After (CITATION PRESERVATION):**
+```
+Citations MUST remain in their EXACT original format. DO NOT modify:
+- Parenthetical citations: "(Smith, 2023)" → KEEP AS-IS
+- Numeric citations: "[1]", "[2,3]" → KEEP AS-IS
+FORBIDDEN:
+- Do NOT convert "(Smith, 2023)" to "Smith (2023)"
+- Do NOT move citations to different positions
+```
+
+#### 验证层新增 | New Validation Layer
+
+`_check_citation_format()`:
+1. 使用正则表达式从原文提取所有citation
+2. 检查每个citation是否以完全相同的格式存在于修改后的文本中
+3. 如果有任何citation格式改变，检查失败
+
+#### 结果 | Result
+
+- ✅ Citation格式在LLM改写过程中保持不变
+- ✅ 质量门控验证citation格式完整性
+- ✅ 格式改变的建议会被拒绝
+
+---
+
+### 2026-01-04: 后端步骤名称统一 / Backend Step Name Unification
+
+#### 需求 | Requirement
+
+将后端 valid_steps 中的 `level2`, `level3` 改为 `step2`, `step3`，保持前后端步骤名称一致。
+
+#### 修改内容 | Changes
+
+| 文件 File | 修改 Modification |
+|----------|-------------------|
+| `src/api/routes/session.py` | `valid_steps = ["step1-1", "step1-2", "level2", "level3", "review"]` → `["step1-1", "step1-2", "step2", "step3", "review"]` |
+| `frontend/src/pages/Yolo.tsx` | `sessionApi.updateStep(sessionId, 'level3')` → `'step3'` |
+| `src/db/models.py` | 注释更新 |
+| `src/api/schemas.py` | 注释更新 |
+
+#### YOLO 模式测试结果 | YOLO Mode Test Results
+
+使用 `test_documents/test_high_risk.txt` 进行测试：
+
+| 步骤 | 处理结果 |
+|------|---------|
+| Step 1-1 | 风险 70 (High)，识别 5 个章节 |
+| Step 1-2 | 风险 70 (High)，9处连接词过度使用 |
+| Step 2 | 5个过渡问题 |
+| Step 3 | 9句 LLM 修改，14句跳过，用时 2.5 分钟 |
+
+**改写示例：**
+- "Furthermore, we explore the pivotal role..." → "The mitigation of climate change is examined here..."
+- "The tapestry of environmental issues..." → "Contemporary environmental challenges are characterized by..."
+
+**观察到被替换的高风险词：** Furthermore, pivotal, multifaceted, holistic, tapestry, nuanced, comprehensive, elucidate
+
+#### 结果 | Result
+
+- ✅ 后端步骤名称与前端统一（level2→step2, level3→step3）
+- ✅ YOLO 模式完整调用链路正常工作
+- ✅ 高风险句子成功改写，风险分数降低
+
+---
+
+### 2026-01-04: DEAI Engine 2.0 三层防御模型实现 | DEAI Engine 2.0 Three-Layer Defense Model Implementation
+
+#### 需求 | Requirement
+
+基于 `doc/223.md` 提案，实现 DEAI Engine 2.0 的三层防御模型增强功能：
+- L1: 硬性词汇指纹（已有 LEVEL_1_FINGERPRINTS）
+- L2: 句法空洞检测（新增）
+- L3: 信息密度与学术锚点分析（新增）
+
+以及配套的上下文免疫机制、生成后自检、动态提示词构建、Auto-fix模板库等功能。
+
+#### 方法 | Method
+
+分析 223.md 提案与现有系统的能力对比，识别需要新增的功能。经用户确认以下设计决策：
+- spaCy 模型：`en_core_web_md`（40MB，平衡准确度与性能）
+- 上下文免疫降权比例：50%（P0词周围有学术锚点时）
+- P0词黑名单：LEVEL_1 全部 + 部分高风险 LEVEL_2 词
+- Auto-fix 模式：展示预览，用户确认后应用
+
+#### 修改内容 | Changes
+
+| 文件 File | 修改 Modification |
+|----------|-------------------|
+| `data/fingerprints/safe_replacements.json` | **新建** - SafeReplacementDB，包含 P0 词安全替换映射、上下文提示、禁用词列表 |
+| `src/core/analyzer/fingerprint.py` | **增强** - 添加上下文免疫机制，P0词周围有学术锚点时降权50% |
+| `src/core/validator/quality_gate.py` | **增强** - 添加 `verify_suggestion()` 生成后自检，检测P0词和新引入指纹 |
+| `src/core/analyzer/syntactic_void.py` | **新建** - 句法空洞检测器，使用spaCy依存句法树检测语义空洞模式 |
+| `src/core/analyzer/anchor_density.py` | **新建** - 学术锚点密度分析器，检测幻觉风险（>50词段落，锚点密度<5%） |
+| `src/core/suggester/prompt_builder.py` | **新建** - 动态诊疗提示词构建器，根据诊断结果组装针对性Prompt |
+| `src/core/suggester/autofix_templates.py` | **新建** - Auto-fix句式模板库，40+规则的确定性替换模板 |
+
+#### 新增功能详解 | New Features Details
+
+**1. 上下文免疫机制 (Context Immunity)**
+
+```python
+# fingerprint.py - detect_with_context_immunity()
+ACADEMIC_ANCHOR_PATTERNS = [
+    r'\d+\.?\d*%',           # 百分比: 14.2%, 100%
+    r'\d+(?:\.\d+)?\s*(?:kg|g|mg|μg|L|mL|μL|mol|M|mM|°C|K|Pa|Hz|kHz|MHz|nm|μm|mm|cm|m|km)',  # 带单位数字
+    r'\([A-Z][a-zA-Z]+(?:\s+(?:et\s+)?al\.?)?,?\s*\d{4}[a-z]?\)',  # 括号引用
+    r'\[[0-9,\s-]+\]',       # 数字引用 [1], [2,3]
+    r'\b[A-Z]{2,}(?:-\d+)?\b',  # 缩写 ANOVA, COVID-19
+    # ... 14种学术锚点模式
+]
+
+# 当周围5 token内有学术锚点时，权重降低50%
+if has_anchor:
+    match.risk_weight *= 0.5  # IMMUNITY_WEIGHT_FACTOR
+    match.immunity_reason = f"academic_anchor_nearby:{anchor_type}"
+```
+
+**2. 生成后自检 (Post-Generation Validation)**
+
+```python
+# quality_gate.py - verify_suggestion()
+def verify_suggestion(self, original: str, suggestion: str) -> SuggestionValidationResult:
+    # 1. 检查P0词黑名单
+    blocked_words = self._check_p0_words(suggestion)
+    if blocked_words:
+        return SuggestionValidationResult(passed=False, action="retry_without_p0")
+
+    # 2. 检查是否引入新指纹
+    introduced = self._get_introduced_fingerprints(original_fps, suggestion_fps)
+    if introduced:
+        return SuggestionValidationResult(passed=False, action="retry")
+
+    return SuggestionValidationResult(passed=True, action="accept")
+```
+
+**3. 句法空洞检测器 (Syntactic Void Detector)**
+
+检测语义空洞但语法正确的 AI 句式：
+- "X plays a pivotal role in the comprehensive landscape of Y"
+- "serves as a testament to the significance of"
+- "It is important to note that..."
+
+使用 spaCy 依存句法树分析抽象动词+抽象名词链条。
+
+**4. 学术锚点密度分析器 (Anchor Density Analyzer)**
+
+检测 14 种学术锚点类型（数字、百分比、引用、化学式、统计术语等），计算段落锚点密度：
+- 阈值：>50词段落，锚点密度<5% → 标记幻觉风险
+
+**5. 动态诊疗提示词构建器 (Dynamic Prompt Builder)**
+
+根据诊断出的问题类型（P0指纹、句法空洞、线性逻辑、低锚点密度等）动态组装针对性 Prompt：
+
+| 诊断问题 | Prompt策略 |
+|---------|-----------|
+| P0_FINGERPRINT | "Replace with a concrete action verb describing methodology" |
+| SYNTACTIC_VOID | "Sentence is semantically empty. Rewrite to state specific findings" |
+| LINEAR_LOGIC | "Reorganize using contrastive/causal structure" |
+| LOW_ANCHOR_DENSITY | "Rewrite to include specific data or quantities" |
+
+**6. Auto-fix 句式模板库**
+
+40+ 确定性替换规则：
+
+| AI句式 | Auto-fix操作 |
+|--------|-------------|
+| "It is important to note that X" | 删除开头 → "X" (首字母大写) |
+| "X plays a crucial role in Y" | → "X affects Y" |
+| "Due to the fact that X" | → "Because X" |
+| "In the context of X" | → "For X" 或 "In X" |
+
+#### SafeReplacementDB 结构 | SafeReplacementDB Structure
+
+```json
+{
+  "_meta": {"version": "1.0.0", "description": "DEAI Engine 2.0 Safe Replacement Database"},
+  "level_1_words": {
+    "delve": {
+      "safe_replacements": ["explore", "examine", "investigate", "study", "analyze"],
+      "context_hints": {
+        "methodology": ["investigate", "analyze"],
+        "literature": ["examine", "explore"],
+        "data": ["study", "analyze"]
+      },
+      "never_use": ["delve", "delves", "delving", "dive deep", "plunge into"],
+      "risk_level": "level_1"
+    }
+    // ... 58个LEVEL_1词 + 20个高频LEVEL_2词
+  },
+  "p0_blocklist": ["delve", "delves", "delving", "tapestry", "tapestries", ...]
+}
+```
+
+#### 架构同步 | Architecture Synchronization
+
+实现了跨 Step1/2/3 的诊断结果流转：
+
+```
+Step1 (StructureAnalyzer)
+    ↓ 输出：anchor_density, syntactic_void_score, structural_issues
+Step2 (TransitionAnalyzer)
+    ↓ 输入：Step1诊断结果
+    ↓ 输出：transition_issues, autofix_suggestions
+Step3 (LLMTrack/RuleTrack)
+    ↓ 输入：Step1+Step2诊断结果
+    ↓ 使用：PromptBuilder动态组装Prompt
+    ↓ 验证：verify_suggestion()自检
+```
+
+#### 结果 | Result
+
+- ✅ 上下文免疫机制 - P0词周围有学术锚点时降权50%，减少误报
+- ✅ 生成后自检 - 检测P0词和新引入指纹，防止"越改越AI"
+- ✅ SafeReplacementDB - 78个高风险词的安全替换映射
+- ✅ 句法空洞检测器 - 使用spaCy检测10+种语义空洞模式
+- ✅ 学术锚点密度分析 - 检测14种锚点类型，识别幻觉风险段落
+- ✅ 动态诊疗提示词 - 9种问题类型的针对性Prompt策略
+- ✅ Auto-fix模板库 - 40+规则的确定性替换，支持预览确认

@@ -66,6 +66,7 @@ class SuggestRequest(BaseModel):
     target_lang: str = Field(default="zh", description="Target language for explanations")
     whitelist: List[str] = Field(default=[], description="Domain-specific terms to exempt from scoring")
     context_baseline: int = Field(default=0, ge=0, le=25, description="Paragraph context baseline score")
+    is_paraphrase: bool = Field(default=False, description="Whether the sentence is a paraphrase")
 
 
 class SessionStartRequest(BaseModel):
@@ -184,6 +185,10 @@ class SentenceAnalysis(BaseModel):
     connector_word: Optional[str] = None  # Detected connector word if any
     context_baseline: int = 0  # Paragraph-level context baseline score
     paragraph_index: int = 0  # Index of the paragraph this sentence belongs to
+    
+    # Paraphrase detection
+    # 释义检测
+    is_paraphrase: bool = False
 
 
 class ChangeDetail(BaseModel):
@@ -294,7 +299,7 @@ class SessionInfo(BaseModel):
     document_name: str
     mode: ProcessMode
     status: str
-    current_step: str = "step1-1"  # step1-1, step1-2, level2, level3, review
+    current_step: str = "step1-1"  # step1-1, step1-2, step2, step3, review
     total_sentences: int
     processed: int
     progress_percent: float
@@ -1483,3 +1488,201 @@ class MergeModifyApplyResponse(BaseModel):
     issues_addressed: List[str] = Field(default=[], description="List of issue types addressed")
     remaining_attempts: int = Field(3, description="Remaining regeneration attempts")
     colloquialism_level: Optional[int] = Field(None, description="Target colloquialism level used")
+
+
+# =============================================================================
+# Authentication Schemas (Dual-Mode System)
+# 认证模式（双模式系统）
+# =============================================================================
+
+class SystemModeType(str, Enum):
+    """System mode enumeration 系统模式枚举"""
+    DEBUG = "debug"
+    OPERATIONAL = "operational"
+
+
+class SendCodeRequest(BaseModel):
+    """
+    Send verification code request
+    发送验证码请求
+    """
+    phone: str = Field(..., min_length=11, max_length=11, description="Phone number")
+
+
+class LoginRequest(BaseModel):
+    """
+    Phone login request
+    手机登录请求
+    """
+    phone: str = Field(..., min_length=11, max_length=11, description="Phone number")
+    code: str = Field(..., min_length=4, max_length=6, description="Verification code")
+
+
+class LoginResponse(BaseModel):
+    """
+    Login response
+    登录响应
+    """
+    access_token: str = Field(..., description="JWT access token")
+    token_type: str = Field(default="bearer", description="Token type")
+    expires_in: int = Field(..., description="Token expiration in seconds")
+    user: "UserProfile" = Field(..., description="User profile")
+
+
+class UserProfile(BaseModel):
+    """
+    User profile information
+    用户信息
+    """
+    user_id: str = Field(..., description="User ID")
+    phone: str = Field(..., description="Masked phone number")
+    nickname: Optional[str] = Field(None, description="User nickname")
+    is_debug: bool = Field(default=False, description="Whether this is a debug user")
+    created_at: datetime = Field(..., description="Account creation time")
+
+
+class ModeResponse(BaseModel):
+    """
+    System mode response
+    系统模式响应
+    """
+    mode: SystemModeType = Field(..., description="Current system mode")
+    is_debug: bool = Field(..., description="Whether in debug mode")
+    features: "FeatureFlags" = Field(..., description="Feature flags")
+    pricing: "PricingInfo" = Field(..., description="Pricing information")
+
+
+class FeatureFlags(BaseModel):
+    """
+    Feature flags based on mode
+    基于模式的功能开关
+    """
+    require_login: bool = Field(..., description="Whether login is required")
+    require_payment: bool = Field(..., description="Whether payment is required")
+    show_pricing: bool = Field(..., description="Whether to show pricing")
+
+
+class PricingInfo(BaseModel):
+    """
+    Pricing information
+    定价信息
+    """
+    price_per_unit: float = Field(..., description="Price per 100 words (RMB)")
+    minimum_charge: float = Field(..., description="Minimum charge (RMB)")
+    currency: str = Field(default="CNY", description="Currency code")
+
+
+# =============================================================================
+# Payment Schemas (Dual-Mode System)
+# 支付模式（双模式系统）
+# =============================================================================
+
+class TaskStatus(str, Enum):
+    """Task status enumeration 任务状态枚举"""
+    CREATED = "created"
+    QUOTED = "quoted"
+    PAYING = "paying"
+    PAID = "paid"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    EXPIRED = "expired"
+    FAILED = "failed"
+
+
+class PaymentStatusType(str, Enum):
+    """Payment status enumeration 支付状态枚举"""
+    UNPAID = "unpaid"
+    PENDING = "pending"
+    PAID = "paid"
+    REFUNDED = "refunded"
+    FAILED = "failed"
+
+
+class CreateTaskRequest(BaseModel):
+    """
+    Create billing task request
+    创建计费任务请求
+    """
+    document_id: str = Field(..., description="Document ID to create task for")
+
+
+class TaskResponse(BaseModel):
+    """
+    Task information response
+    任务信息响应
+    """
+    task_id: str = Field(..., description="Task ID")
+    document_id: str = Field(..., description="Associated document ID")
+    word_count_raw: int = Field(0, description="Raw word count")
+    word_count_billable: int = Field(0, description="Billable word count (excluding references)")
+    billable_units: int = Field(0, description="Number of billing units (100 words each)")
+    price_calculated: float = Field(0.0, description="Calculated price")
+    price_final: float = Field(0.0, description="Final price (after minimum charge)")
+    is_minimum_charge: bool = Field(False, description="Whether minimum charge applied")
+    status: str = Field(..., description="Task status")
+    payment_status: str = Field(..., description="Payment status")
+    is_debug_mode: bool = Field(False, description="Whether in debug mode")
+
+
+class QuoteResponse(BaseModel):
+    """
+    Price quote response
+    报价响应
+    """
+    task_id: str = Field(..., description="Task ID")
+    word_count_raw: int = Field(..., description="Raw word count")
+    word_count_billable: int = Field(..., description="Billable word count")
+    billable_units: int = Field(..., description="Billing units")
+    calculated_price: float = Field(..., description="Calculated price")
+    final_price: float = Field(..., description="Final price")
+    is_minimum_charge: bool = Field(..., description="Whether minimum charge applied")
+    minimum_charge: float = Field(..., description="Minimum charge amount")
+    is_debug_mode: bool = Field(..., description="Whether in debug mode")
+    payment_required: bool = Field(..., description="Whether payment is required")
+
+
+class PayRequest(BaseModel):
+    """
+    Payment initiation request
+    发起支付请求
+    """
+    task_id: str = Field(..., description="Task ID to pay for")
+
+
+class PayResponse(BaseModel):
+    """
+    Payment initiation response
+    发起支付响应
+    """
+    task_id: str = Field(..., description="Task ID")
+    platform_order_id: str = Field(..., description="Platform order ID")
+    payment_url: Optional[str] = Field(None, description="Payment page URL")
+    qr_code_url: Optional[str] = Field(None, description="QR code URL for payment")
+    amount: float = Field(..., description="Payment amount")
+    expires_at: Optional[datetime] = Field(None, description="Payment expiration time")
+    is_debug_mode: bool = Field(False, description="Whether in debug mode")
+    auto_paid: bool = Field(False, description="Whether auto-paid in debug mode")
+
+
+class PaymentStatusResponse(BaseModel):
+    """
+    Payment status check response
+    支付状态查询响应
+    """
+    task_id: str = Field(..., description="Task ID")
+    status: str = Field(..., description="Task status")
+    payment_status: str = Field(..., description="Payment status")
+    paid_at: Optional[datetime] = Field(None, description="Payment completion time")
+    can_process: bool = Field(..., description="Whether processing can start")
+
+
+class PaymentCallbackRequest(BaseModel):
+    """
+    Payment callback from platform
+    平台支付回调
+    """
+    order_id: str = Field(..., description="Platform order ID")
+    status: str = Field(..., description="Payment status")
+    paid_at: Optional[datetime] = Field(None, description="Payment time")
+    amount: float = Field(..., description="Paid amount")
+    signature: str = Field(..., description="HMAC signature for verification")

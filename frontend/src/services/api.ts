@@ -448,6 +448,35 @@ export const sessionApi = {
     const response = await api.post(`/session/${sessionId}/step/${step}`);
     return transformKeys<{ sessionId: string; currentStep: string }>(response.data);
   },
+
+  /**
+   * YOLO auto-process all sentences
+   * YOLO 自动处理所有句子
+   *
+   * This method calls LLM for each sentence and applies the best suggestion automatically.
+   * 此方法为每个句子调用 LLM 并自动应用最佳建议。
+   */
+  yoloProcess: async (sessionId: string): Promise<{
+    status: string;
+    sessionId: string;
+    totalSentences: number;
+    processed: number;
+    skipped: number;
+    avgRiskReduction: number;
+    logs: Array<{
+      index: number;
+      action: string;
+      message: string;
+      originalRisk: number;
+      newRisk: number;
+      source?: string;
+    }>;
+  }> => {
+    const response = await api.post(`/session/${sessionId}/yolo-process`, null, {
+      timeout: 600000,  // 10 minutes timeout for processing many sentences
+    });
+    return transformKeys(response.data);
+  },
 };
 
 // Transition APIs (Phase 3: Level 2 De-AIGC)
@@ -1432,6 +1461,152 @@ export const structureGuidanceApi = {
     return transformKeys(response.data);
   },
 };
+
+// Task APIs (Billing System)
+// 任务 API（计费系统）
+export const taskApi = {
+  /**
+   * Create a billing task for a document
+   * 为文档创建计费任务
+   */
+  create: async (documentId: string): Promise<{
+    taskId: string;
+    documentId: string;
+    wordCountRaw: number;
+    wordCountBillable: number;
+    billableUnits: number;
+    priceCalculated: number;
+    priceFinal: number;
+    isMinimumCharge: boolean;
+    status: string;
+    paymentStatus: string;
+    isDebugMode: boolean;
+  }> => {
+    const response = await api.post('/task/create', {
+      document_id: documentId,
+    });
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Get task by ID
+   * 根据ID获取任务
+   */
+  get: async (taskId: string): Promise<{
+    taskId: string;
+    documentId: string;
+    wordCountBillable: number;
+    priceFinal: number;
+    status: string;
+    paymentStatus: string;
+    isDebugMode: boolean;
+  }> => {
+    const response = await api.get(`/task/${taskId}`);
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Get task by document ID
+   * 根据文档ID获取任务
+   */
+  getByDocument: async (documentId: string): Promise<{
+    taskId: string;
+    documentId: string;
+    status: string;
+    paymentStatus: string;
+  } | null> => {
+    const response = await api.get(`/task/by-document/${documentId}`);
+    return response.data ? transformKeys(response.data) : null;
+  },
+
+  /**
+   * Check if task can start processing
+   * 检查任务是否可以开始处理
+   */
+  checkCanProcess: async (taskId: string): Promise<{
+    canProcess: boolean;
+    reason: string;
+  }> => {
+    const response = await api.post(`/task/${taskId}/check-can-process`);
+    return transformKeys(response.data);
+  },
+};
+
+// Payment APIs (Billing System)
+// 支付 API（计费系统）
+export const paymentApi = {
+  /**
+   * Get price quote for a task
+   * 获取任务报价
+   */
+  getQuote: async (taskId: string): Promise<{
+    taskId: string;
+    wordCountRaw: number;
+    wordCountBillable: number;
+    billableUnits: number;
+    calculatedPrice: number;
+    finalPrice: number;
+    isMinimumCharge: boolean;
+    minimumCharge: number;
+    isDebugMode: boolean;
+    paymentRequired: boolean;
+  }> => {
+    const response = await api.get(`/payment/quote/${taskId}`);
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Initiate payment for a task
+   * 发起任务支付
+   */
+  pay: async (taskId: string): Promise<{
+    taskId: string;
+    platformOrderId: string;
+    paymentUrl: string | null;
+    qrCodeUrl: string | null;
+    amount: number;
+    expiresAt: string | null;
+    isDebugMode: boolean;
+    autoPaid: boolean;
+  }> => {
+    const response = await api.post(`/payment/pay/${taskId}`);
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Check payment status
+   * 检查支付状态
+   */
+  checkStatus: async (taskId: string): Promise<{
+    taskId: string;
+    status: string;
+    paymentStatus: string;
+    paidAt: string | null;
+    canProcess: boolean;
+  }> => {
+    const response = await api.get(`/payment/status/${taskId}`);
+    return transformKeys(response.data);
+  },
+};
+
+// Add auth token interceptor
+// 添加认证令牌拦截器
+api.interceptors.request.use((config) => {
+  // Try to get token from localStorage
+  // 尝试从 localStorage 获取令牌
+  try {
+    const authData = localStorage.getItem('academicguard-auth');
+    if (authData) {
+      const parsed = JSON.parse(authData);
+      if (parsed.state?.token) {
+        config.headers.Authorization = `Bearer ${parsed.state.token}`;
+      }
+    }
+  } catch (e) {
+    // Ignore parse errors
+  }
+  return config;
+});
 
 // Add error interceptor
 // 添加错误拦截器

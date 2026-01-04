@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import Layout from './components/common/Layout'
 import Home from './pages/Home'
@@ -10,6 +11,9 @@ import ThreeLevelFlow from './pages/ThreeLevelFlow'
 import Step1_1 from './pages/Step1_1'
 import Step1_2 from './pages/Step1_2'
 import Step2 from './pages/Step2'
+import { useModeStore } from './stores/modeStore'
+import { useAuthStore } from './stores/authStore'
+import { FloatingModeBadge } from './components/auth/ModeIndicator'
 
 /**
  * Main Application Component
@@ -22,6 +26,19 @@ import Step2 from './pages/Step2'
  * - /intervention/:sessionId - Step 3: Sentence polish (intervention mode)
  */
 function App() {
+  const { loadMode } = useModeStore();
+  const { checkAuth } = useAuthStore();
+
+  // Initialize mode and auth state on app load
+  // 应用加载时初始化模式和认证状态
+  useEffect(() => {
+    const init = async () => {
+      await loadMode();
+      await checkAuth();
+    };
+    init();
+  }, [loadMode, checkAuth]);
+
   return (
     <BrowserRouter
       future={{
@@ -47,6 +64,9 @@ function App() {
           <Route path="review/:sessionId" element={<Review />} />
         </Route>
       </Routes>
+      {/* Floating debug mode badge */}
+      {/* 浮动调试模式徽章 */}
+      <FloatingModeBadge />
     </BrowserRouter>
   )
 }

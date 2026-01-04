@@ -11,10 +11,13 @@ settings = get_settings()
 
 # Create async engine
 # 创建异步引擎
+# Note: SQLite doesn't support pool_size/max_overflow, so we use check_same_thread for SQLite
+# 注意：SQLite不支持连接池配置，使用check_same_thread配置
 engine = create_async_engine(
     settings.database_url,
     echo=settings.debug,
-    future=True
+    future=True,
+    connect_args={"check_same_thread": False} if "sqlite" in settings.database_url else {},
 )
 
 # Create async session factory

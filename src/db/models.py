@@ -3,16 +3,124 @@ SQLAlchemy ORM Models
 数据库ORM模型
 """
 
-from sqlalchemy import Column, String, Text, Integer, Float, Boolean, ForeignKey, DateTime, JSON
+from sqlalchemy import Column, String, Text, Integer, Float, Boolean, ForeignKey, DateTime, JSON, Enum as SQLEnum
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from src.db.database import Base
 import uuid
+from enum import Enum
 
 
 def generate_uuid():
     """Generate UUID string"""
     return str(uuid.uuid4())
+
+
+# ==========================================
+# Task and Payment Status Enums
+# 任务和支付状态枚举
+# ==========================================
+
+class TaskStatus(str, Enum):
+    """
+    Task status enumeration
+    任务状态枚举
+    """
+    CREATED = "created"        # Just created, not quoted
+    QUOTED = "quoted"          # Quoted, awaiting payment
+    PAYING = "paying"          # Payment in progress
+    PAID = "paid"              # Paid, ready for processing
+    PROCESSING = "processing"  # Processing in progress
+    COMPLETED = "completed"    # Processing completed
+    EXPIRED = "expired"        # Expired (unpaid timeout)
+    FAILED = "failed"          # Processing failed
+
+
+class PaymentStatus(str, Enum):
+    """
+    Payment status enumeration
+    支付状态枚举
+    """
+    UNPAID = "unpaid"
+    PENDING = "pending"        # Payment processing
+    PAID = "paid"
+    REFUNDED = "refunded"
+    FAILED = "failed"
+
+
+# ==========================================
+# User Model (for platform user local cache)
+# 用户模型（平台用户本地缓存）
+# ==========================================
+
+class User(Base):
+    """
+    User model - Local cache of platform user info
+    用户模型 - 平台用户信息的本地缓存
+    """
+    __tablename__ = "users"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    platform_user_id = Column(String(64), unique=True, nullable=False)  # Central platform user ID
+    phone = Column(String(20), nullable=True)  # Phone number (masked for storage)
+    nickname = Column(String(100), nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    last_login_at = Column(DateTime, nullable=True)
+
+    # Relationships
+    tasks = relationship("Task", back_populates="user", cascade="all, delete-orphan")
+
+
+# ==========================================
+# Task Model (billing core)
+# 任务模型（计费核心）
+# ==========================================
+
+class Task(Base):
+    """
+    Task model - Billable processing task
+    任务模型 - 计费处理任务
+    """
+    __tablename__ = "tasks"
+
+    task_id = Column(String(36), primary_key=True, default=generate_uuid)
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=True)  # DEBUG mode can be null
+    document_id = Column(String(36), ForeignKey("documents.id"), nullable=False)
+    session_id = Column(String(36), ForeignKey("sessions.id"), nullable=True)
+
+    # File information for anti-tampering
+    # 文件信息（防篡改）
+    file_path_raw = Column(String(512), nullable=True)      # Original upload file path
+    file_path_clean = Column(String(512), nullable=True)    # Cleaned file path
+    content_hash = Column(String(64), nullable=True)        # SHA-256 hash for anti-tampering
+
+    # Billing information
+    # 计费信息
+    word_count_raw = Column(Integer, nullable=True)         # Original word count
+    word_count_billable = Column(Integer, nullable=True)    # Billable word count (excluding references)
+    billable_units = Column(Integer, nullable=True)         # Billing units (100 words/unit)
+    price_calculated = Column(Float, nullable=True)         # Calculated price
+    price_final = Column(Float, nullable=True)              # Final price (>=50)
+    is_minimum_charge = Column(Boolean, default=False)      # Whether minimum charge triggered
+
+    # Status management
+    # 状态管理
+    status = Column(String(20), default=TaskStatus.CREATED.value)
+    payment_status = Column(String(20), default=PaymentStatus.UNPAID.value)
+    platform_order_id = Column(String(64), nullable=True)   # Central platform order ID
+
+    # Timestamps
+    # 时间戳
+    created_at = Column(DateTime, server_default=func.now())
+    quoted_at = Column(DateTime, nullable=True)
+    paid_at = Column(DateTime, nullable=True)
+    processed_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime, nullable=True)            # Expiry time for unpaid tasks
+
+    # Relationships
+    user = relationship("User", back_populates="tasks")
+    document = relationship("Document", back_populates="task")
+    session = relationship("Session", foreign_keys=[session_id])
 
 
 class Document(Base):
@@ -38,6 +146,7 @@ class Document(Base):
     # Relationships
     sentences = relationship("Sentence", back_populates="document", cascade="all, delete-orphan")
     sessions = relationship("Session", back_populates="document", cascade="all, delete-orphan")
+    task = relationship("Task", back_populates="document", uselist=False)  # One-to-one with Task
 
 
 class Session(Base):
@@ -54,7 +163,7 @@ class Session(Base):
     target_lang = Column(String(10), default="zh")
     config_json = Column(JSON, nullable=True)
     status = Column(String(20), default="active")  # active, paused, completed
-    current_step = Column(String(20), default="step1-1")  # step1-1, step1-2, level2, level3, review
+    current_step = Column(String(20), default="step1-1")  # step1-1, step1-2, step2, step3, review
     current_index = Column(Integer, default=0)
     created_at = Column(DateTime, server_default=func.now())
     completed_at = Column(DateTime, nullable=True)

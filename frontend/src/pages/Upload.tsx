@@ -1,12 +1,17 @@
 import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Upload as UploadIcon, FileText, Type, AlertCircle, Loader2 } from 'lucide-react';
+import { Upload as UploadIcon, FileText, Type, AlertCircle, Loader2, Calculator } from 'lucide-react';
 import { clsx } from 'clsx';
 import Button from '../components/common/Button';
 import ColloquialismSlider from '../components/settings/ColloquialismSlider';
 import { useRotatingLoadingMessage } from '../utils/loadingMessages';
-import { documentApi, sessionApi } from '../services/api';
+import { documentApi, sessionApi, taskApi, paymentApi } from '../services/api';
 import { useConfigStore } from '../stores/configStore';
+import { useModeStore } from '../stores/modeStore';
+import { useAuthStore } from '../stores/authStore';
+import LoginModal from '../components/auth/LoginModal';
+import QuoteModal from '../components/payment/QuoteModal';
+import PaymentStatus from '../components/payment/PaymentStatus';
 import type { RiskLevel } from '../types';
 
 /**
@@ -16,6 +21,8 @@ import type { RiskLevel } from '../types';
 export default function Upload() {
   const navigate = useNavigate();
   const { processLevels, setProcessLevels, colloquialismLevel } = useConfigStore();
+  const { isDebug, features, pricing, isLoaded } = useModeStore();
+  const { isLoggedIn } = useAuthStore();
 
   // Fun loading message for upload state
   // 趣味上传加载提示
@@ -35,6 +42,18 @@ export default function Upload() {
   // Both modes start from Level 1 (structure analysis)
   // 两种模式都从 Level 1（结构分析）开始
   const [sessionMode, setSessionMode] = useState<'intervention' | 'yolo'>('intervention');
+
+  // Auth and payment state (for operational mode)
+  // 认证和支付状态（运营模式用）
+  const [showLoginModal, setShowLoginModal] = useState(false);
+  const [showQuoteModal, setShowQuoteModal] = useState(false);
+  const [showPaymentStatus, setShowPaymentStatus] = useState(false);
+  const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
+  const [currentDocumentId, setCurrentDocumentId] = useState<string | null>(null);
+  const [paymentInfo, setPaymentInfo] = useState<{
+    paymentUrl?: string;
+    qrCodeUrl?: string;
+  } | null>(null);
 
   // Handle file drop
   // 处理文件拖放
@@ -89,8 +108,8 @@ export default function Upload() {
     setProcessLevels(newLevels);
   };
 
-  // Handle submit
-  // 处理提交
+  // Handle submit - with auth and payment flow for operational mode
+  // 处理提交 - 运营模式包含认证和支付流程
   const handleSubmit = async () => {
     if (uploadMode === 'file' && !file) {
       setError('请选择一个文件');
@@ -104,6 +123,13 @@ export default function Upload() {
 
     if (processLevels.length === 0) {
       setError('请至少选择一个处理风险等级');
+      return;
+    }
+
+    // Check auth for operational mode
+    // 运营模式下检查认证
+    if (!isDebug && features.requireLogin && !isLoggedIn) {
+      setShowLoginModal(true);
       return;
     }
 
@@ -123,6 +149,33 @@ export default function Upload() {
         documentId = result.id;
       }
 
+      setCurrentDocumentId(documentId);
+
+      // For operational mode with payment required, create task and show quote
+      // 运营模式需要支付时，创建任务并显示报价
+      if (!isDebug && features.requirePayment) {
+        const taskResult = await taskApi.create(documentId);
+        setCurrentTaskId(taskResult.taskId);
+        setIsUploading(false);
+        setShowQuoteModal(true);
+        return;
+      }
+
+      // Debug mode or no payment required - proceed directly
+      // 调试模式或不需要支付 - 直接继续
+      await proceedToProcessing(documentId);
+    } catch (err) {
+      setError((err as Error).message || '上传失败，请重试');
+      setIsUploading(false);
+    }
+  };
+
+  // Proceed to processing after payment confirmed or in debug mode
+  // 支付确认后或调试模式下继续处理
+  const proceedToProcessing = async (documentId: string) => {
+    try {
+      setIsUploading(true);
+
       // Create session for this document
       // 为此文档创建会话
       const sessionResult = await sessionApi.start(documentId, {
@@ -137,9 +190,66 @@ export default function Upload() {
       // 干预模式和YOLO模式都从 Step 1-1 开始
       navigate(`/flow/step1-1/${documentId}?mode=${sessionMode}&session=${sessionResult.sessionId}`);
     } catch (err) {
-      setError((err as Error).message || '上传失败，请重试');
+      setError((err as Error).message || '处理失败，请重试');
       setIsUploading(false);
     }
+  };
+
+  // Handle quote confirmation - initiate payment
+  // 处理报价确认 - 发起支付
+  const handleQuoteConfirm = async (taskId: string) => {
+    setShowQuoteModal(false);
+
+    try {
+      const payResult = await paymentApi.pay(taskId);
+
+      // In debug mode, payment is auto-completed
+      // 调试模式下支付自动完成
+      if (payResult.autoPaid) {
+        if (currentDocumentId) {
+          await proceedToProcessing(currentDocumentId);
+        }
+        return;
+      }
+
+      // Show payment status with QR code or payment URL
+      // 显示支付状态及二维码或支付链接
+      setPaymentInfo({
+        paymentUrl: payResult.paymentUrl || undefined,
+        qrCodeUrl: payResult.qrCodeUrl || undefined,
+      });
+      setShowPaymentStatus(true);
+    } catch (err) {
+      setError((err as Error).message || '发起支付失败，请重试');
+    }
+  };
+
+  // Handle payment success
+  // 处理支付成功
+  const handlePaymentSuccess = async () => {
+    setShowPaymentStatus(false);
+    setPaymentInfo(null);
+
+    if (currentDocumentId) {
+      await proceedToProcessing(currentDocumentId);
+    }
+  };
+
+  // Handle payment failure
+  // 处理支付失败
+  const handlePaymentFailed = () => {
+    setShowPaymentStatus(false);
+    setPaymentInfo(null);
+    setError('支付失败，请重试');
+  };
+
+  // Handle payment cancel
+  // 处理支付取消
+  const handlePaymentCancel = () => {
+    setShowPaymentStatus(false);
+    setPaymentInfo(null);
+    setCurrentTaskId(null);
+    setCurrentDocumentId(null);
   };
 
   return (
@@ -352,6 +462,28 @@ export default function Upload() {
         </div>
       )}
 
+      {/* Pricing Info for operational mode */}
+      {/* 运营模式下显示定价信息 */}
+      {isLoaded && !isDebug && features.showPricing && (
+        <div className="card p-4 mb-6 bg-gradient-to-r from-blue-50 to-purple-50">
+          <div className="flex items-center gap-3">
+            <Calculator className="w-6 h-6 text-blue-600" />
+            <div>
+              <p className="font-medium text-gray-900">
+                费用说明 | Pricing
+              </p>
+              <p className="text-sm text-gray-600">
+                按字数计费：<span className="font-bold text-blue-600">¥{pricing.pricePerUnit}</span> / 100词，
+                最低消费 <span className="font-bold">¥{pricing.minimumCharge}</span>
+              </p>
+              <p className="text-xs text-gray-500 mt-1">
+                参考文献不计入字数 | References excluded from word count
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Submit Button */}
       <Button
         variant="primary"
@@ -367,10 +499,48 @@ export default function Upload() {
           </>
         ) : (
           <>
-            开始处理
+            {!isDebug && features.requireLogin && !isLoggedIn ? '登录后开始' : '开始处理'}
           </>
         )}
       </Button>
+
+      {/* Login Modal */}
+      {/* 登录弹窗 */}
+      <LoginModal
+        isOpen={showLoginModal}
+        onClose={() => setShowLoginModal(false)}
+      />
+
+      {/* Quote Modal */}
+      {/* 报价弹窗 */}
+      {currentTaskId && (
+        <QuoteModal
+          isOpen={showQuoteModal}
+          onClose={() => {
+            setShowQuoteModal(false);
+            setCurrentTaskId(null);
+            setCurrentDocumentId(null);
+          }}
+          taskId={currentTaskId}
+          documentName={file?.name}
+          onConfirm={handleQuoteConfirm}
+        />
+      )}
+
+      {/* Payment Status */}
+      {/* 支付状态 */}
+      {showPaymentStatus && currentTaskId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <PaymentStatus
+            taskId={currentTaskId}
+            paymentUrl={paymentInfo?.paymentUrl}
+            qrCodeUrl={paymentInfo?.qrCodeUrl}
+            onPaid={handlePaymentSuccess}
+            onFailed={handlePaymentFailed}
+            onCancel={handlePaymentCancel}
+          />
+        </div>
+      )}
     </div>
   );
 }

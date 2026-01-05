@@ -6,7 +6,7 @@ AI指纹词检测模块
 import re
 import json
 from dataclasses import dataclass, field
-from typing import List, Dict, Set, Optional
+from typing import List, Dict, Set, Optional, Tuple
 from pathlib import Path
 import logging
 
@@ -25,6 +25,11 @@ class FingerprintMatch:
     risk_weight: float
     category: str  # high_freq, phrase, connector, academic_fluff
     replacements: List[str] = field(default_factory=list)
+    # Context immunity fields (DEAI Engine 2.0)
+    # 上下文免疫字段（DEAI引擎2.0）
+    original_weight: float = 0.0  # Original weight before immunity adjustment
+    immunity_applied: bool = False  # Whether context immunity was applied
+    immunity_reason: Optional[str] = None  # Reason for immunity (e.g., "academic_anchor_nearby")
 
 
 class FingerprintDetector:
@@ -128,6 +133,55 @@ class FingerprintDetector:
         "the findings suggest": {"weight": 0.5, "replacements": ["results show", "data indicates", "results indicate"]},
     }
 
+    # Academic anchors for context immunity (DEAI Engine 2.0)
+    # 学术锚点用于上下文免疫（DEAI引擎2.0）
+    # These patterns indicate human-written content and reduce AI suspicion
+    # 这些模式表明人类撰写的内容，降低AI嫌疑
+    ACADEMIC_ANCHOR_PATTERNS = [
+        # Numbers with decimals (e.g., 14.2%, 3.5, 0.05)
+        # 带小数的数字
+        r'\d+\.\d+',
+        # Percentages (e.g., 50%, 14.2%)
+        # 百分比
+        r'\d+(?:\.\d+)?%',
+        # Statistical values (e.g., p < 0.05, r = 0.82, n = 500)
+        # 统计值
+        r'[pnrR]\s*[<>=]\s*\d+(?:\.\d+)?',
+        # Sample sizes (e.g., n=500, N = 1000)
+        # 样本量
+        r'[nN]\s*=\s*\d+',
+        # Citations (e.g., [1], [2,3], (Smith, 2020))
+        # 引用
+        r'\[\d+(?:,\s*\d+)*\]',
+        r'\([A-Z][a-z]+(?:\s+(?:et\s+al\.?|&\s+[A-Z][a-z]+))?,?\s*\d{4}\)',
+        # Units (e.g., 5mL, 20°C, 3.5kg, 100ms)
+        # 单位
+        r'\d+(?:\.\d+)?\s*(?:mL|L|kg|g|mg|°C|°F|K|ms|s|min|h|Hz|kHz|MHz|GHz|nm|mm|cm|m|km|μm)',
+        # Chemical formulas (e.g., H2O, CO2, NaCl)
+        # 化学式
+        r'[A-Z][a-z]?\d*(?:[A-Z][a-z]?\d*)+',
+        # Specific numeric values with context (e.g., 500 samples, 3 groups)
+        # 带上下文的具体数值
+        r'\d+\s+(?:samples?|participants?|subjects?|groups?|trials?|experiments?|patients?|cases?|observations?)',
+        # Scientific notation (e.g., 1.5e-3, 2.0×10^6)
+        # 科学计数法
+        r'\d+(?:\.\d+)?[eE][+-]?\d+',
+        r'\d+(?:\.\d+)?\s*[×x]\s*10\^?\d+',
+        # Acronyms in all caps (e.g., ANOVA, CNN, LSTM, COVID-19)
+        # 全大写缩写
+        r'\b[A-Z]{2,}(?:-\d+)?\b',
+        # Equation references (e.g., Eq. 1, Equation (2))
+        # 方程引用
+        r'(?:Eq(?:uation)?\.?\s*\(?)?[Ee]q(?:uation)?\.?\s*\(?\d+\)?',
+        # Figure/Table references (e.g., Fig. 1, Table 2)
+        # 图表引用
+        r'(?:Fig(?:ure)?\.?|Table)\s*\d+',
+    ]
+
+    # Context immunity weight reduction factor (DEAI Engine 2.0)
+    # 上下文免疫权重降低因子
+    IMMUNITY_WEIGHT_FACTOR = 0.5  # Reduce weight to 50% when anchor nearby
+
     # Overused connectors
     # 过度使用的连接词
     CONNECTOR_PATTERNS: Dict[str, dict] = {
@@ -165,6 +219,10 @@ class FingerprintDetector:
         # 编译模式
         self._compile_patterns()
 
+        # Compile academic anchor patterns (DEAI Engine 2.0)
+        # 编译学术锚点模式
+        self._compile_anchor_patterns()
+
     def _load_custom_fingerprints(self, path: str):
         """
         Load custom fingerprints from JSON file
@@ -200,6 +258,158 @@ class FingerprintDetector:
         # Word pattern for boundary matching
         # 用于边界匹配的单词模式
         self.word_boundary = re.compile(r'\b\w+\b')
+
+    def _compile_anchor_patterns(self):
+        """
+        Compile academic anchor patterns for context immunity (DEAI Engine 2.0)
+        编译学术锚点模式用于上下文免疫
+        """
+        self.compiled_anchors = [
+            re.compile(pattern, re.IGNORECASE)
+            for pattern in self.ACADEMIC_ANCHOR_PATTERNS
+        ]
+
+    def _get_context_window(
+        self,
+        text: str,
+        position: int,
+        end_position: int,
+        window_size: int = 5
+    ) -> Tuple[str, int, int]:
+        """
+        Get the context window around a fingerprint match (DEAI Engine 2.0)
+        获取指纹词周围的上下文窗口
+
+        Args:
+            text: Full text
+            position: Start position of the fingerprint
+            end_position: End position of the fingerprint
+            window_size: Number of tokens to include on each side (default: 5)
+
+        Returns:
+            Tuple of (context_text, context_start, context_end)
+        """
+        # Find word boundaries using simple tokenization
+        # 使用简单分词找到词边界
+        words = list(self.word_boundary.finditer(text))
+
+        # Find which word indices correspond to our fingerprint
+        # 找到与指纹对应的词索引
+        fp_word_indices = []
+        for i, word_match in enumerate(words):
+            if word_match.start() >= position and word_match.end() <= end_position:
+                fp_word_indices.append(i)
+            elif word_match.start() < position and word_match.end() > position:
+                fp_word_indices.append(i)
+            elif word_match.start() < end_position and word_match.end() > end_position:
+                fp_word_indices.append(i)
+
+        if not fp_word_indices:
+            # Fallback: use character-based window
+            # 回退：使用基于字符的窗口
+            context_start = max(0, position - 50)
+            context_end = min(len(text), end_position + 50)
+            return (text[context_start:context_end], context_start, context_end)
+
+        # Get window around fingerprint words
+        # 获取指纹词周围的窗口
+        min_word_idx = min(fp_word_indices)
+        max_word_idx = max(fp_word_indices)
+
+        start_word_idx = max(0, min_word_idx - window_size)
+        end_word_idx = min(len(words) - 1, max_word_idx + window_size)
+
+        context_start = words[start_word_idx].start()
+        context_end = words[end_word_idx].end()
+
+        return (text[context_start:context_end], context_start, context_end)
+
+    def _has_academic_anchor(self, context_text: str) -> Tuple[bool, Optional[str]]:
+        """
+        Check if context contains academic anchors (DEAI Engine 2.0)
+        检查上下文是否包含学术锚点
+
+        Args:
+            context_text: The context window text
+
+        Returns:
+            Tuple of (has_anchor, anchor_type)
+        """
+        anchor_types = [
+            "decimal_number", "percentage", "statistical_value", "sample_size",
+            "citation_bracket", "citation_author", "unit_measurement", "chemical_formula",
+            "specific_count", "scientific_notation", "scientific_notation_alt",
+            "acronym", "equation_ref", "figure_table_ref"
+        ]
+
+        for i, pattern in enumerate(self.compiled_anchors):
+            if pattern.search(context_text):
+                anchor_type = anchor_types[i] if i < len(anchor_types) else "unknown"
+                return (True, anchor_type)
+
+        return (False, None)
+
+    def detect_with_context_immunity(
+        self,
+        text: str,
+        window_size: int = 5
+    ) -> List[FingerprintMatch]:
+        """
+        Detect fingerprints with context immunity applied (DEAI Engine 2.0)
+        应用上下文免疫检测指纹词
+
+        When a fingerprint word appears near academic anchors (numbers, citations,
+        units, etc.), its risk weight is reduced by IMMUNITY_WEIGHT_FACTOR.
+        当指纹词出现在学术锚点（数字、引用、单位等）附近时，
+        其风险权重会降低 IMMUNITY_WEIGHT_FACTOR。
+
+        Args:
+            text: Input text to analyze
+            window_size: Number of tokens to check on each side (default: 5)
+
+        Returns:
+            List of FingerprintMatch objects with immunity applied
+        """
+        # First, detect all fingerprints normally
+        # 首先正常检测所有指纹词
+        matches = self.detect(text)
+
+        if not matches:
+            return matches
+
+        # Apply context immunity to each match
+        # 对每个匹配应用上下文免疫
+        for match in matches:
+            # Store original weight
+            # 保存原始权重
+            match.original_weight = match.risk_weight
+
+            # Get context window
+            # 获取上下文窗口
+            context_text, _, _ = self._get_context_window(
+                text,
+                match.position,
+                match.end_position,
+                window_size
+            )
+
+            # Check for academic anchors
+            # 检查学术锚点
+            has_anchor, anchor_type = self._has_academic_anchor(context_text)
+
+            if has_anchor:
+                # Apply immunity: reduce weight
+                # 应用免疫：降低权重
+                match.risk_weight *= self.IMMUNITY_WEIGHT_FACTOR
+                match.immunity_applied = True
+                match.immunity_reason = f"academic_anchor_nearby:{anchor_type}"
+                logger.debug(
+                    f"Context immunity applied to '{match.word}': "
+                    f"{match.original_weight} -> {match.risk_weight} "
+                    f"(anchor: {anchor_type})"
+                )
+
+        return matches
 
     def detect(self, text: str) -> List[FingerprintMatch]:
         """
@@ -409,7 +619,7 @@ class FingerprintDetector:
         return suggestions
 
 
-# Convenience function
+# Convenience functions
 # 便捷函数
 def detect_fingerprints(text: str) -> List[FingerprintMatch]:
     """
@@ -418,3 +628,23 @@ def detect_fingerprints(text: str) -> List[FingerprintMatch]:
     """
     detector = FingerprintDetector()
     return detector.detect(text)
+
+
+def detect_fingerprints_with_immunity(text: str, window_size: int = 5) -> List[FingerprintMatch]:
+    """
+    Convenience function to detect fingerprints with context immunity (DEAI Engine 2.0)
+    带上下文免疫的指纹检测便捷函数
+
+    When fingerprint words appear near academic anchors (numbers, citations, units, etc.),
+    their risk weights are reduced by 50%.
+    当指纹词出现在学术锚点附近时，风险权重降低50%。
+
+    Args:
+        text: Input text to analyze
+        window_size: Number of tokens to check on each side (default: 5)
+
+    Returns:
+        List of FingerprintMatch objects with immunity applied
+    """
+    detector = FingerprintDetector()
+    return detector.detect_with_context_immunity(text, window_size)

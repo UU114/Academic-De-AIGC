@@ -578,20 +578,43 @@ export default function ThreeLevelFlow() {
     }]);
   }, []);
 
-  // YOLO mode: Auto process all levels
-  // YOLO模式：自动处理所有层级
+  // YOLO mode: Auto process all levels with real LLM calls
+  // YOLO模式：使用真实 LLM 调用自动处理所有层级
   const startYoloProcessing = useCallback(async () => {
     if (!documentId || !step1_1Result) return;
 
     setIsYoloProcessing(true);
 
     try {
-      // Step 1-1: Structure Analysis (already completed when this starts)
-      // Step 1-1: 结构分析（开始时已完成）
+      // Step 1-1: Structure Analysis - Auto apply if issues found
+      // Step 1-1: 结构分析 - 如果发现问题则自动应用
       addYoloLog('step1_1', 'start', '全文结构分析已完成 Document structure analysis completed');
 
       if (step1_1Result.structureIssues && step1_1Result.structureIssues.length > 0) {
-        addYoloLog('step1_1', 'apply', `发现 ${step1_1Result.structureIssues.length} 个结构问题`);
+        addYoloLog('step1_1', 'apply', `发现 ${step1_1Result.structureIssues.length} 个结构问题，正在自动修复...`);
+
+        // Auto apply structure fixes using the same API as intervention mode
+        // 使用与干预模式相同的 API 自动应用结构修复
+        try {
+          const issuesToFix = step1_1Result.structureIssues
+            .filter((issue: { severity: string }) => issue.severity === 'high' || issue.severity === 'medium')
+            .map((issue: { type: string; description?: string; descriptionZh?: string; severity: string; affectedPositions?: string[] }) => ({
+              type: issue.type,
+              description: issue.description || '',
+              descriptionZh: issue.descriptionZh || '',
+              severity: issue.severity,
+              affectedPositions: issue.affectedPositions || [],
+            }));
+
+          if (issuesToFix.length > 0) {
+            const modifyResult = await structureApi.mergeModifyApply(documentId, issuesToFix, {
+              userNotes: 'YOLO自动处理 - Step 1-1 结构问题修复',
+            });
+            addYoloLog('step1_1', 'success', `已修复 ${modifyResult.changesCount} 个结构问题`);
+          }
+        } catch (applyErr) {
+          addYoloLog('step1_1', 'warning', `结构修复部分失败: ${applyErr instanceof Error ? applyErr.message : 'Unknown'}`);
+        }
       } else {
         addYoloLog('step1_1', 'skip', '未发现结构问题 No structure issues found');
       }
@@ -607,19 +630,45 @@ export default function ThreeLevelFlow() {
       ));
       setCurrentLevel('step1_2');
 
-      // Step 1-2: Relationship Analysis
-      // Step 1-2: 关系分析
+      // Step 1-2: Relationship Analysis - Auto apply
+      // Step 1-2: 关系分析 - 自动应用
       addYoloLog('step1_2', 'start', '开始段落关系分析... Starting relationship analysis...');
 
       const step1_2Data = await structureApi.analyzeStep1_2(documentId);
       setStep1_2Result(step1_2Data);
 
-      if (step1_2Data.explicitConnectors && step1_2Data.explicitConnectors.length > 0) {
-        addYoloLog('step1_2', 'apply', `发现 ${step1_2Data.explicitConnectors.length} 个显性连接词`);
+      if (step1_2Data.relationshipIssues && step1_2Data.relationshipIssues.length > 0) {
+        addYoloLog('step1_2', 'apply', `发现 ${step1_2Data.relationshipIssues.length} 个关系问题，正在自动修复...`);
+
+        // Auto apply relationship fixes
+        // 自动应用关系修复
+        try {
+          const relationIssuesToFix = step1_2Data.relationshipIssues
+            .filter((issue: { severity: string }) => issue.severity === 'high' || issue.severity === 'medium')
+            .map((issue: { type: string; description?: string; descriptionZh?: string; severity: string; affectedPositions?: string[] }) => ({
+              type: issue.type,
+              description: issue.description || '',
+              descriptionZh: issue.descriptionZh || '',
+              severity: issue.severity,
+              affectedPositions: issue.affectedPositions || [],
+            }));
+
+          if (relationIssuesToFix.length > 0) {
+            const modifyResult = await structureApi.mergeModifyApply(documentId, relationIssuesToFix, {
+              userNotes: 'YOLO自动处理 - Step 1-2 段落关系修复（保持 Step 1-1 的改进）',
+            });
+            addYoloLog('step1_2', 'success', `已修复 ${modifyResult.changesCount} 个关系问题`);
+          }
+        } catch (applyErr) {
+          addYoloLog('step1_2', 'warning', `关系修复部分失败: ${applyErr instanceof Error ? applyErr.message : 'Unknown'}`);
+        }
+      } else {
+        if (step1_2Data.explicitConnectors && step1_2Data.explicitConnectors.length > 0) {
+          addYoloLog('step1_2', 'info', `发现 ${step1_2Data.explicitConnectors.length} 个显性连接词`);
+        }
+        addYoloLog('step1_2', 'skip', '未发现需要修复的关系问题');
       }
-      if (step1_2Data.logicBreaks && step1_2Data.logicBreaks.length > 0) {
-        addYoloLog('step1_2', 'apply', `发现 ${step1_2Data.logicBreaks.length} 个逻辑断层`);
-      }
+
       addYoloLog('step1_2', 'complete', '段落关系分析完成 Relationship analysis completed');
 
       // Update Step 1-2 status
@@ -641,12 +690,31 @@ export default function ThreeLevelFlow() {
       setTransitionAnalyses(transitionSummary.transitions || []);
 
       if (transitionSummary.transitions && transitionSummary.transitions.length > 0) {
-        for (let i = 0; i < transitionSummary.transitions.length; i++) {
-          const transition = transitionSummary.transitions[i];
-          if (transition.options && transition.options.length > 0) {
-            addYoloLog('level_2', 'apply', `衔接 ${i + 1}: 应用${transition.options[0].strategy}策略`);
+        addYoloLog('level_2', 'apply', `发现 ${transitionSummary.transitions.length} 个衔接点，正在应用修复...`);
+
+        // Collect transition issues and apply them
+        // 收集衔接问题并应用修复
+        const transitionIssues = transitionSummary.transitions
+          .filter((t: { riskLevel?: string }) => t.riskLevel === 'high' || t.riskLevel === 'medium')
+          .map((t: { fromParagraph?: number; toParagraph?: number; issue?: string; issueZh?: string }) => ({
+            type: 'transition_break',
+            description: t.issue || 'Transition issue',
+            descriptionZh: t.issueZh || '衔接问题',
+            severity: 'medium',
+            affectedPositions: [`§${t.fromParagraph || 0}`, `§${t.toParagraph || 0}`],
+          }));
+
+        if (transitionIssues.length > 0) {
+          try {
+            const modifyResult = await structureApi.mergeModifyApply(documentId, transitionIssues, {
+              userNotes: 'YOLO自动处理 - Step 2 衔接修复（保持 Step 1-1 和 Step 1-2 的改进）',
+            });
+            addYoloLog('level_2', 'success', `已修复 ${modifyResult.changesCount} 个衔接问题`);
+          } catch (applyErr) {
+            addYoloLog('level_2', 'warning', `衔接修复部分失败: ${applyErr instanceof Error ? applyErr.message : 'Unknown'}`);
           }
         }
+
         addYoloLog('level_2', 'complete', `完成 ${transitionSummary.transitions.length} 个衔接点处理`);
       } else {
         addYoloLog('level_2', 'skip', '文档段落少于2段，无需衔接分析');
@@ -663,9 +731,9 @@ export default function ThreeLevelFlow() {
       ));
       setCurrentLevel('level_3');
 
-      // Step 3: Navigate to YOLO page for sentence processing
-      // Step 3: 导航到YOLO页面进行句子处理
-      addYoloLog('level_3', 'start', '准备进入句子级自动处理... Preparing sentence-level processing...');
+      // Step 3: Navigate to YOLO page for sentence processing with real LLM
+      // Step 3: 导航到 YOLO 页面进行真实 LLM 句子处理
+      addYoloLog('level_3', 'start', '准备进入句子级自动处理（使用 LLM）... Preparing sentence-level LLM processing...');
 
       // Start flow for Step 3
       // 为 Step 3 启动流程

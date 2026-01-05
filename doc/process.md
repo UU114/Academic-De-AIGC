@@ -7,6 +7,35 @@
 
 ## 最近更新 | Recent Updates
 
+### 2026-01-04 - 用户中心页面 | User Center Page
+
+#### 需求 | Requirements
+添加用户管理页面入口，包含查看用户信息和查询订单历史功能。
+
+Add user management page with user profile and order history features.
+
+#### 新增文件 | New Files
+
+| 文件 File | 说明 Description |
+|----------|-----------------|
+| `frontend/src/pages/Profile.tsx` | 用户中心页面 User center page |
+
+#### 修改文件 | Modified Files
+
+| 文件 File | 修改 Modification |
+|----------|-------------------|
+| `src/api/routes/auth.py` | 添加 `/profile` 和 `/orders` API端点 Add profile and orders endpoints |
+| `frontend/src/App.tsx` | 添加 `/profile` 路由 Add profile route |
+| `frontend/src/components/common/Layout.tsx` | 用户下拉菜单添加"用户中心"入口；Settings按钮改为登录/用户信息按钮 Add user center link to dropdown; Replace Settings with login/user button |
+
+#### 实现功能 | Implemented Features
+1. 用户信息展示（昵称、手机号、注册时间、最后登录）Profile display
+2. 使用统计（总任务数、总消费）Usage statistics
+3. 订单历史分页查询 Paginated order history
+4. 右上角用户下拉菜单入口 User dropdown menu entry
+
+---
+
 ### 2026-01-04 - 双模式系统实现 | Dual-Mode System Implementation
 
 #### 需求 | Requirements
@@ -4697,3 +4726,151 @@ Step3 (LLMTrack/RuleTrack)
 - ✅ 学术锚点密度分析 - 检测14种锚点类型，识别幻觉风险段落
 - ✅ 动态诊疗提示词 - 9种问题类型的针对性Prompt策略
 - ✅ Auto-fix模板库 - 40+规则的确定性替换，支持预览确认
+
+---
+
+### 安全机制完善 | Security Mechanism Enhancement
+
+**Date**: 2026-01-04
+
+**用户需求 | User Request**:
+完善 `doc/用户及定价等.md` 中定义的安全机制，补充缺失的实现。
+Complete the security mechanisms defined in `doc/用户及定价等.md`, supplement missing implementations.
+
+**方法 | Method**:
+分析安全文档中的安全要求与现有代码的差距，补充以下四项安全实现：
+Analyzed security gaps between security document requirements and existing code, implemented four security features:
+
+#### 1. 文件大小与类型验证 | File Size & Type Validation
+
+**修改文件 | Modified File**: `src/api/routes/documents.py`
+
+```python
+# Security: Validate file type (防止恶意文件类型)
+allowed_extensions = ['.txt', '.docx']
+file_ext = os.path.splitext(file.filename)[1].lower()
+if file_ext not in allowed_extensions:
+    raise HTTPException(status_code=400, detail={
+        "error": "invalid_file_type",
+        "message": f"Only .txt and .docx files are allowed",
+        "message_zh": f"仅支持 .txt 和 .docx 文件"
+    })
+
+# Security: Validate file size (防止超大文件攻击)
+settings = get_settings()
+max_size_bytes = settings.max_file_size_mb * 1024 * 1024
+if len(content) > max_size_bytes:
+    raise HTTPException(status_code=413, detail={
+        "error": "file_too_large",
+        "message": f"File size exceeds maximum allowed ({settings.max_file_size_mb}MB)",
+        "message_zh": f"文件大小超过最大限制（{settings.max_file_size_mb}MB）"
+    })
+```
+
+#### 2. 内容哈希验证 | Content Hash Verification (偷梁换柱防御)
+
+**修改文件 | Modified File**: `src/services/task_service.py`
+
+```python
+async def verify_content_hash(self, task_id: str) -> Tuple[bool, str]:
+    """
+    Verify that document content hash matches the stored hash
+    验证文档内容哈希是否与存储的哈希匹配
+
+    This prevents "switcheroo" attacks where content is modified after payment.
+    这可以防止支付后修改内容的"偷梁换柱"攻击。
+    """
+    task = await self.get_task(task_id)
+    if not task or not task.content_hash:
+        return True, "No hash to verify"
+
+    # Get document and recalculate hash
+    document = await self.db.execute(
+        select(Document).where(Document.id == task.document_id)
+    )
+    current_count_result = self.word_counter.count(document.original_text, calculate_hash=True)
+
+    if current_count_result.content_hash != task.content_hash:
+        return False, "Content hash mismatch - document may have been tampered"
+    return True, "Hash verified"
+```
+
+在 `can_start_processing()` 方法中集成哈希验证：
+```python
+# Security: Verify content hash to prevent tampering (偷梁换柱防御)
+if verify_hash and task.content_hash:
+    hash_match, hash_reason = await self.verify_content_hash(task_id)
+    if not hash_match:
+        return False, hash_reason
+```
+
+#### 3. 文本清洗超时保护 | Text Cleaning Timeout Protection (格式炸弹防御)
+
+**修改文件 | Modified File**: `src/services/word_counter.py`
+
+```python
+class TextCleaningTimeoutError(Exception):
+    """
+    Exception raised when text cleaning exceeds timeout
+    文本清洗超时异常
+    """
+    pass
+
+class WordCounter:
+    def __init__(self, ..., cleaning_timeout: int = 5):
+        self.cleaning_timeout = cleaning_timeout
+        self._executor = ThreadPoolExecutor(max_workers=2)
+
+    def count_with_timeout(self, text: str, calculate_hash: bool = True) -> WordCountResult:
+        """
+        Count billable words with timeout protection (格式炸弹防御)
+        带超时保护的字数统计
+        """
+        try:
+            future = self._executor.submit(self._do_count, text, calculate_hash)
+            return future.result(timeout=self.cleaning_timeout)
+        except FuturesTimeoutError:
+            raise TextCleaningTimeoutError(
+                f"Text cleaning exceeded {self.cleaning_timeout}s timeout. "
+                f"File may be malformed or too complex."
+            )
+
+    def count_and_price_with_timeout(self, text: str) -> Tuple[WordCountResult, PriceResult]:
+        """
+        Count words and calculate price with timeout protection
+        带超时保护的字数统计和价格计算
+        """
+        count_result = self.count_with_timeout(text)
+        price_result = self.calculate_price(count_result)
+        return count_result, price_result
+```
+
+**修改文件 | Modified File**: `src/services/task_service.py`
+
+在任务创建时使用超时保护版本：
+```python
+from src.services.word_counter import ..., TextCleaningTimeoutError
+
+# Count words and calculate price with timeout protection (格式炸弹防御)
+try:
+    count_result, price_result = self.word_counter.count_and_price_with_timeout(document.original_text)
+except TextCleaningTimeoutError as e:
+    raise ValueError(f"Document processing timeout - file may be malformed: {str(e)}")
+```
+
+#### 安全机制总结 | Security Mechanism Summary
+
+| 安全威胁 Security Threat | 防御机制 Defense | 实现位置 Location |
+|--------------------------|------------------|-------------------|
+| 超大文件攻击 Oversized file | 文件大小验证 | documents.py |
+| 恶意文件类型 Malicious file type | 扩展名白名单 | documents.py |
+| 偷梁换柱 Content switcheroo | SHA-256 哈希验证 | task_service.py |
+| 格式炸弹 Format bomb | 文本处理超时 | word_counter.py |
+| 重复支付 Double payment | 状态机幂等检查 | task_service.py |
+
+#### 结果 | Result
+
+- ✅ 文件大小验证 - 上传时检查文件大小限制（配置项：max_file_size_mb）
+- ✅ 文件类型验证 - 仅允许 .txt 和 .docx 扩展名
+- ✅ 内容哈希验证 - 处理前验证 SHA-256 哈希，防止支付后篡改
+- ✅ 超时保护机制 - ThreadPoolExecutor 实现5秒超时，防止格式炸弹DoS

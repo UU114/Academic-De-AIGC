@@ -4,6 +4,7 @@ import Layout from './components/common/Layout'
 import Home from './pages/Home'
 import Upload from './pages/Upload'
 import History from './pages/History'
+import Profile from './pages/Profile'
 import Intervention from './pages/Intervention'
 import Yolo from './pages/Yolo'
 import Review from './pages/Review'
@@ -51,6 +52,7 @@ function App() {
           <Route index element={<Home />} />
           <Route path="upload" element={<Upload />} />
           <Route path="history" element={<History />} />
+          <Route path="profile" element={<Profile />} />
           {/* New 4-step flow routes */}
           {/* 新的4步流程路由 */}
           <Route path="flow/step1-1/:documentId" element={<Step1_1 />} />

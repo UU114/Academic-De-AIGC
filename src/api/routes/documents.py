@@ -16,11 +16,15 @@ from src.db.database import get_db
 from src.db.models import Document, Sentence as SentenceModel
 from src.api.schemas import DocumentInfo
 from src.core.preprocessor.segmenter import SentenceSegmenter
+from src.core.preprocessor.reference_handler import ReferenceHandler
+from src.core.preprocessor.paraphrase_detector import ParaphraseDetector
 from src.core.analyzer.scorer import RiskScorer, ParagraphContext, calculate_context_baseline
 from src.core.preprocessor.whitelist_extractor import WhitelistExtractor
 
 router = APIRouter()
 segmenter = SentenceSegmenter()
+ref_handler = ReferenceHandler()
+paraphrase_detector = ParaphraseDetector()
 scorer = RiskScorer()
 whitelist_extractor = WhitelistExtractor()
 
@@ -75,10 +79,46 @@ async def upload_document(
     上传文档进行处理
 
     CAASS v2.0 Phase 2: Uses paragraph context baseline and whitelist extraction
+
+    Security (安全措施):
+    - File size limit: max_file_size_mb (default 5MB)
+    - File type validation: .txt and .docx only
     """
+    from src.config import get_settings
+    settings = get_settings()
+
+    # Security: Validate file type
+    # 安全：验证文件类型
+    filename = file.filename or "unnamed.txt"
+    allowed_extensions = ['.txt', '.docx']
+    file_ext = '.' + filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+
+    if file_ext not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "invalid_file_type",
+                "message": f"Only {', '.join(allowed_extensions)} files are allowed",
+                "message_zh": f"仅支持 {', '.join(allowed_extensions)} 格式文件"
+            }
+        )
+
     # Read file content
     # 读取文件内容
     content = await file.read()
+
+    # Security: Validate file size (防止格式炸弹)
+    # 安全：验证文件大小
+    max_size_bytes = settings.max_file_size_mb * 1024 * 1024
+    if len(content) > max_size_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "error": "file_too_large",
+                "message": f"File size exceeds {settings.max_file_size_mb}MB limit",
+                "message_zh": f"文件大小超过 {settings.max_file_size_mb}MB 限制"
+            }
+        )
 
     # Try to decode as UTF-8, fallback to latin-1
     # 尝试UTF-8解码，回退到latin-1
@@ -99,16 +139,21 @@ async def upload_document(
     # 创建文档记录，状态为"analyzing"
     doc = Document(
         id=doc_id,
-        filename=file.filename or "unnamed.txt",
+        filename=filename,
         original_text=text,
         status="analyzing"
     )
     db.add(doc)
     await db.commit()
 
+    # Extract reference section
+    # 提取参考文献部分
+    body_text, ref_section = ref_handler.extract(text)
+
     # CAASS v2.0 Phase 2: Segment text with paragraph info
     # CAASS v2.0 第二阶段：带段落信息分割文本
-    sentences = segmenter.segment_with_paragraphs(text)
+    # Only segment the body text
+    sentences = segmenter.segment_with_paragraphs(body_text)
 
     # Build paragraph contexts for context baseline calculation
     # 构建段落上下文用于计算上下文基准
@@ -142,6 +187,11 @@ async def upload_document(
                 whitelist=whitelist_terms,
                 paragraph_context=para_ctx
             )
+            
+            # Detect paraphrase
+            # 检测释义
+            para_info = paraphrase_detector.detect(sent.text)
+            
             processable_count += 1
 
             # Create sentence record with analysis
@@ -167,7 +217,9 @@ async def upload_document(
                     "burstiness_value": getattr(analysis, 'burstiness_value', 0.0),
                     "burstiness_risk": getattr(analysis, 'burstiness_risk', 'unknown'),
                     "connector_count": getattr(analysis, 'connector_count', 0),
-                    "connector_word": getattr(analysis, 'connector_match', None).connector if getattr(analysis, 'connector_match', None) else None
+                    "connector_word": getattr(analysis, 'connector_match', None).connector if getattr(analysis, 'connector_match', None) else None,
+                    # Paraphrase info
+                    "is_paraphrase": para_info.is_paraphrase
                 }
             )
 
@@ -199,6 +251,27 @@ async def upload_document(
             )
 
         db.add(sentence_record)
+
+    # Add reference section as a special sentence if it exists
+    # 如果存在参考文献部分，将其作为特殊句子添加
+    if ref_section:
+        ref_sentence_id = str(uuid.uuid4())
+        ref_sentence = SentenceModel(
+            id=ref_sentence_id,
+            document_id=doc_id,
+            index=len(sentences),  # Append at the end
+            original_text=ref_section,
+            content_type="reference_section",
+            should_process=False,
+            risk_score=0,
+            risk_level="safe",
+            analysis_json={
+                "filtered": True,
+                "reason": "Reference Section",
+                "is_reference_blob": True
+            }
+        )
+        db.add(ref_sentence)
 
     # Update document status to "ready" and store whitelist
     # 更新文档状态为"ready"并存储白名单
@@ -341,9 +414,13 @@ async def upload_text(
     db.add(doc)
     await db.commit()
 
+    # Extract reference section
+    # 提取参考文献部分
+    body_text, ref_section = ref_handler.extract(text)
+
     # CAASS v2.0 Phase 2: Segment text with paragraph info
     # CAASS v2.0 第二阶段：带段落信息分割文本
-    sentences = segmenter.segment_with_paragraphs(text)
+    sentences = segmenter.segment_with_paragraphs(body_text)
 
     # Build paragraph contexts for context baseline calculation
     # 构建段落上下文用于计算上下文基准
@@ -369,6 +446,11 @@ async def upload_text(
                 whitelist=whitelist_terms,
                 paragraph_context=para_ctx
             )
+            
+            # Detect paraphrase
+            # 检测释义
+            para_info = paraphrase_detector.detect(sent.text)
+            
             sentence_record = SentenceModel(
                 id=sentence_id,
                 document_id=doc_id,
@@ -388,7 +470,9 @@ async def upload_text(
                     "burstiness_value": getattr(analysis, 'burstiness_value', 0.0),
                     "burstiness_risk": getattr(analysis, 'burstiness_risk', 'unknown'),
                     "connector_count": getattr(analysis, 'connector_count', 0),
-                    "connector_word": getattr(analysis, 'connector_match', None).connector if getattr(analysis, 'connector_match', None) else None
+                    "connector_word": getattr(analysis, 'connector_match', None).connector if getattr(analysis, 'connector_match', None) else None,
+                    # Paraphrase info
+                    "is_paraphrase": para_info.is_paraphrase
                 }
             )
 
@@ -416,6 +500,27 @@ async def upload_text(
             )
 
         db.add(sentence_record)
+
+    # Add reference section as a special sentence if it exists
+    # 如果存在参考文献部分，将其作为特殊句子添加
+    if ref_section:
+        ref_sentence_id = str(uuid.uuid4())
+        ref_sentence = SentenceModel(
+            id=ref_sentence_id,
+            document_id=doc_id,
+            index=len(sentences),
+            original_text=ref_section,
+            content_type="reference_section",
+            should_process=False,
+            risk_score=0,
+            risk_level="safe",
+            analysis_json={
+                "filtered": True,
+                "reason": "Reference Section",
+                "is_reference_blob": True
+            }
+        )
+        db.add(ref_sentence)
 
     # Update document status to "ready"
     # 更新文档状态为"ready"

@@ -1,0 +1,392 @@
+{
+  "_meta": {
+    "version": "1.0.0",
+    "description": "Safe replacement database for AIGC fingerprint words",
+    "description_zh": "AIGC指纹词安全替换数据库",
+    "last_updated": "2026-01-04",
+    "categories": {
+      "level_1": "Dead giveaways - always replace",
+      "level_2_high": "High-risk AI clichés - recommend replace",
+      "level_2_medium": "Medium-risk AI clichés - optional replace"
+    }
+  },
+
+  "level_1_words": {
+    "delve": {
+      "safe_replacements": ["explore", "examine", "investigate", "study", "analyze", "look into"],
+      "context_hints": {
+        "methodology": ["investigate", "analyze", "examine"],
+        "literature": ["explore", "examine", "review"],
+        "data": ["study", "analyze", "examine"]
+      },
+      "never_use": ["delve", "delves", "delving", "dive deep", "plunge into"],
+      "risk_level": "level_1",
+      "note": "Extremely AI-specific, avoid in all contexts"
+    },
+    "tapestry": {
+      "safe_replacements": ["mix", "combination", "blend", "collection", "array"],
+      "context_hints": {
+        "general": ["mix", "combination", "collection"]
+      },
+      "never_use": ["tapestry", "tapestries", "rich tapestry", "woven fabric"],
+      "risk_level": "level_1"
+    },
+    "realm": {
+      "safe_replacements": ["area", "field", "domain", "sphere", "space"],
+      "context_hints": {
+        "academic": ["field", "domain", "area"],
+        "abstract": ["sphere", "space", "domain"]
+      },
+      "never_use": ["realm", "realms", "in the realm of"],
+      "risk_level": "level_1"
+    },
+    "multifaceted": {
+      "safe_replacements": ["complex", "varied", "diverse", "many-sided", "multiple"],
+      "context_hints": {
+        "problem": ["complex", "complicated"],
+        "approach": ["varied", "diverse", "multiple"]
+      },
+      "never_use": ["multifaceted", "multi-faceted"],
+      "risk_level": "level_1"
+    },
+    "plethora": {
+      "safe_replacements": ["many", "numerous", "lots of", "plenty of", "various", "several"],
+      "context_hints": {
+        "formal": ["numerous", "various", "several"],
+        "informal": ["many", "lots of", "plenty of"]
+      },
+      "never_use": ["plethora", "a plethora of"],
+      "risk_level": "level_1"
+    },
+    "myriad": {
+      "safe_replacements": ["many", "numerous", "various", "countless", "several"],
+      "context_hints": {
+        "formal": ["numerous", "various"],
+        "informal": ["many", "several"]
+      },
+      "never_use": ["myriad", "a myriad of", "myriad of"],
+      "risk_level": "level_1"
+    },
+    "elucidate": {
+      "safe_replacements": ["explain", "clarify", "describe", "illustrate", "make clear"],
+      "context_hints": {
+        "academic": ["explain", "clarify", "describe"],
+        "technical": ["describe", "explain"]
+      },
+      "never_use": ["elucidate", "elucidates", "elucidating", "elucidation"],
+      "risk_level": "level_1"
+    },
+    "henceforth": {
+      "safe_replacements": ["from now on", "from this point", "going forward", "after this"],
+      "context_hints": {
+        "general": ["from now on", "going forward"]
+      },
+      "never_use": ["henceforth", "hence forth"],
+      "risk_level": "level_1"
+    },
+    "aforementioned": {
+      "safe_replacements": ["these", "this", "the above", "mentioned", "discussed earlier"],
+      "context_hints": {
+        "formal": ["the above", "previously mentioned"],
+        "informal": ["these", "this"]
+      },
+      "never_use": ["aforementioned", "afore-mentioned"],
+      "risk_level": "level_1"
+    },
+    "inextricably": {
+      "safe_replacements": ["closely", "tightly", "deeply", "inseparably", "strongly"],
+      "context_hints": {
+        "general": ["closely", "tightly", "deeply"]
+      },
+      "never_use": ["inextricably", "inextricable"],
+      "risk_level": "level_1"
+    },
+    "testament": {
+      "safe_replacements": ["evidence", "proof", "sign", "indication", "demonstration"],
+      "context_hints": {
+        "academic": ["evidence", "indication", "demonstration"],
+        "general": ["proof", "sign"]
+      },
+      "never_use": ["testament to", "a testament", "serves as a testament"],
+      "risk_level": "level_1"
+    },
+    "landscape": {
+      "safe_replacements": ["field", "area", "environment", "setting", "context"],
+      "context_hints": {
+        "academic": ["field", "area", "context"],
+        "business": ["environment", "setting"]
+      },
+      "never_use": ["landscape of", "the landscape", "evolving landscape"],
+      "risk_level": "level_1",
+      "note": "Only flagged when used metaphorically, not for actual geography"
+    }
+  },
+
+  "level_2_high": {
+    "pivotal": {
+      "safe_replacements": ["key", "central", "important", "critical", "essential"],
+      "context_hints": {
+        "academic": ["key", "central", "important"],
+        "emphasis": ["critical", "essential"]
+      },
+      "never_use": ["pivotal", "plays a pivotal role"],
+      "risk_level": "level_2_high"
+    },
+    "paramount": {
+      "safe_replacements": ["important", "key", "main", "central", "chief", "primary"],
+      "context_hints": {
+        "formal": ["primary", "principal", "main"],
+        "general": ["important", "key", "central"]
+      },
+      "never_use": ["paramount", "of paramount importance", "paramount importance"],
+      "risk_level": "level_2_high"
+    },
+    "crucial": {
+      "safe_replacements": ["important", "key", "essential", "critical", "vital"],
+      "context_hints": {
+        "academic": ["important", "key", "essential"],
+        "emphasis": ["critical", "vital"]
+      },
+      "never_use": ["crucial", "plays a crucial role", "it is crucial"],
+      "risk_level": "level_2_high"
+    },
+    "holistic": {
+      "safe_replacements": ["comprehensive", "complete", "overall", "total", "full"],
+      "context_hints": {
+        "approach": ["comprehensive", "complete", "overall"],
+        "view": ["complete", "full", "total"]
+      },
+      "never_use": ["holistic", "holistic approach", "holistic view"],
+      "risk_level": "level_2_high"
+    },
+    "comprehensive": {
+      "safe_replacements": ["full", "complete", "thorough", "detailed", "extensive"],
+      "context_hints": {
+        "analysis": ["thorough", "detailed", "full"],
+        "review": ["complete", "extensive", "full"]
+      },
+      "never_use": ["comprehensive", "comprehensive framework", "comprehensive analysis"],
+      "risk_level": "level_2_high"
+    },
+    "underscore": {
+      "safe_replacements": ["highlight", "emphasize", "stress", "show", "indicate"],
+      "context_hints": {
+        "academic": ["highlight", "emphasize", "indicate"],
+        "general": ["show", "stress"]
+      },
+      "never_use": ["underscore", "underscores", "underscoring", "underscores the importance"],
+      "risk_level": "level_2_high"
+    },
+    "foster": {
+      "safe_replacements": ["encourage", "promote", "support", "develop", "build"],
+      "context_hints": {
+        "growth": ["encourage", "promote", "develop"],
+        "relationship": ["build", "develop", "support"]
+      },
+      "never_use": ["foster", "fosters", "fostering", "foster a culture"],
+      "risk_level": "level_2_high"
+    },
+    "noteworthy": {
+      "safe_replacements": ["notable", "important", "significant", "worth noting", "remarkable"],
+      "context_hints": {
+        "academic": ["notable", "significant", "worth noting"],
+        "general": ["important", "remarkable"]
+      },
+      "never_use": ["noteworthy", "particularly noteworthy"],
+      "risk_level": "level_2_high"
+    },
+    "groundbreaking": {
+      "safe_replacements": ["innovative", "pioneering", "new", "novel", "original"],
+      "context_hints": {
+        "research": ["novel", "original", "innovative"],
+        "general": ["new", "pioneering"]
+      },
+      "never_use": ["groundbreaking", "ground-breaking"],
+      "risk_level": "level_2_high"
+    }
+  },
+
+  "level_2_medium": {
+    "utilize": {
+      "safe_replacements": ["use", "apply", "employ"],
+      "context_hints": {
+        "general": ["use"],
+        "technical": ["apply", "employ"]
+      },
+      "never_use": [],
+      "risk_level": "level_2_medium",
+      "note": "In academic tone 0-2, 'utilize' may be acceptable"
+    },
+    "facilitate": {
+      "safe_replacements": ["help", "enable", "support", "allow", "make easier"],
+      "context_hints": {
+        "process": ["enable", "allow"],
+        "general": ["help", "support"]
+      },
+      "never_use": [],
+      "risk_level": "level_2_medium"
+    },
+    "leverage": {
+      "safe_replacements": ["use", "apply", "exploit", "take advantage of"],
+      "context_hints": {
+        "business": ["use", "apply"],
+        "technical": ["exploit", "apply"]
+      },
+      "never_use": [],
+      "risk_level": "level_2_medium"
+    },
+    "robust": {
+      "safe_replacements": ["strong", "solid", "reliable", "sturdy"],
+      "context_hints": {
+        "technical": ["strong", "reliable"],
+        "general": ["solid", "sturdy"]
+      },
+      "never_use": [],
+      "risk_level": "level_2_medium"
+    },
+    "seamless": {
+      "safe_replacements": ["smooth", "easy", "simple", "effortless"],
+      "context_hints": {
+        "integration": ["smooth", "easy"],
+        "experience": ["smooth", "effortless"]
+      },
+      "never_use": [],
+      "risk_level": "level_2_medium"
+    },
+    "intricate": {
+      "safe_replacements": ["complex", "detailed", "elaborate", "complicated"],
+      "context_hints": {
+        "design": ["detailed", "elaborate"],
+        "problem": ["complex", "complicated"]
+      },
+      "never_use": [],
+      "risk_level": "level_2_medium"
+    },
+    "nuanced": {
+      "safe_replacements": ["subtle", "detailed", "complex", "refined"],
+      "context_hints": {
+        "analysis": ["detailed", "subtle"],
+        "understanding": ["refined", "subtle"]
+      },
+      "never_use": [],
+      "risk_level": "level_2_medium"
+    }
+  },
+
+  "phrase_replacements": {
+    "it is important to note that": {
+      "safe_replacements": ["note that", "importantly", "notably"],
+      "auto_fix": "delete_and_capitalize",
+      "risk_level": "level_1"
+    },
+    "it is worth noting that": {
+      "safe_replacements": ["notably", "note that", "it is notable that"],
+      "auto_fix": "delete_and_capitalize",
+      "risk_level": "level_1"
+    },
+    "it should be noted that": {
+      "safe_replacements": ["note that", "notably"],
+      "auto_fix": "delete_and_capitalize",
+      "risk_level": "level_1"
+    },
+    "plays a crucial role": {
+      "safe_replacements": ["is important", "matters", "is key", "is central"],
+      "risk_level": "level_2_high"
+    },
+    "plays a pivotal role": {
+      "safe_replacements": ["is important", "is central", "is key", "matters"],
+      "risk_level": "level_1"
+    },
+    "a plethora of": {
+      "safe_replacements": ["many", "lots of", "numerous", "several"],
+      "risk_level": "level_1"
+    },
+    "a myriad of": {
+      "safe_replacements": ["many", "numerous", "various", "several"],
+      "risk_level": "level_1"
+    },
+    "due to the fact that": {
+      "safe_replacements": ["because", "since", "as"],
+      "risk_level": "level_2_medium"
+    },
+    "in order to": {
+      "safe_replacements": ["to"],
+      "risk_level": "level_2_medium"
+    },
+    "in the context of": {
+      "safe_replacements": ["in", "for", "regarding", "with"],
+      "risk_level": "level_2_medium"
+    },
+    "in the realm of": {
+      "safe_replacements": ["in", "within", "in the field of"],
+      "risk_level": "level_1"
+    },
+    "serves as a testament to": {
+      "safe_replacements": ["shows", "demonstrates", "proves", "indicates"],
+      "risk_level": "level_1"
+    },
+    "is of paramount importance": {
+      "safe_replacements": ["is very important", "matters greatly", "is essential"],
+      "risk_level": "level_1"
+    },
+    "the advent of": {
+      "safe_replacements": ["the arrival of", "the introduction of", "the emergence of"],
+      "risk_level": "level_2_medium"
+    }
+  },
+
+  "connector_replacements": {
+    "furthermore": {
+      "safe_replacements": ["also", "besides", "in addition"],
+      "semantic_echo_hint": "Use key concept from previous sentence to transition naturally",
+      "risk_level": "level_2_high"
+    },
+    "moreover": {
+      "safe_replacements": ["also", "besides", "additionally"],
+      "semantic_echo_hint": "Reference previous finding to bridge paragraphs",
+      "risk_level": "level_2_high"
+    },
+    "additionally": {
+      "safe_replacements": ["also", "besides", "plus"],
+      "semantic_echo_hint": "Introduce with 'This pattern...' or 'Such effects...'",
+      "risk_level": "level_2_high"
+    },
+    "consequently": {
+      "safe_replacements": ["so", "as a result", "thus"],
+      "semantic_echo_hint": "Imply causation through sentence ordering",
+      "risk_level": "level_2_medium"
+    },
+    "nevertheless": {
+      "safe_replacements": ["but", "still", "yet"],
+      "semantic_echo_hint": "Juxtapose contrasting ideas without explicit marker",
+      "risk_level": "level_2_medium"
+    },
+    "henceforth": {
+      "safe_replacements": ["from now on", "from this point", "going forward"],
+      "risk_level": "level_1"
+    }
+  },
+
+  "p0_blocklist": [
+    "delve", "delves", "delving",
+    "tapestry", "tapestries",
+    "realm", "realms",
+    "multifaceted", "multi-faceted",
+    "plethora", "a plethora of",
+    "myriad", "a myriad of",
+    "elucidate", "elucidates", "elucidating",
+    "henceforth",
+    "aforementioned",
+    "inextricably", "inextricable",
+    "testament to", "a testament",
+    "landscape of", "evolving landscape",
+    "pivotal", "plays a pivotal role",
+    "paramount", "of paramount importance",
+    "crucial", "plays a crucial role",
+    "holistic", "holistic approach",
+    "comprehensive framework",
+    "underscore", "underscores the importance",
+    "foster a culture",
+    "groundbreaking"
+  ]
+}

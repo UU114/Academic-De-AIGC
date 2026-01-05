@@ -15,8 +15,11 @@ Billing Rules (计费规则):
 import re
 import math
 import hashlib
+import asyncio
+import signal
 from typing import Tuple, Optional
 from pydantic import BaseModel
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 
 class WordCountResult(BaseModel):
@@ -42,10 +45,22 @@ class PriceResult(BaseModel):
     billable_units: int          # Number of billing units (计费单元数)
 
 
+class TextCleaningTimeoutError(Exception):
+    """
+    Exception raised when text cleaning exceeds timeout
+    文本清洗超时异常
+    """
+    pass
+
+
 class WordCounter:
     """
     Word counter for academic text billing
     学术文本计费字数统计器
+
+    Security Features (安全特性):
+    - Timeout protection against format bombs (格式炸弹超时保护)
+    - Content hash for anti-tampering verification (防篡改内容哈希)
     """
 
     # Reference section markers (参考文献标记)
@@ -63,7 +78,8 @@ class WordCounter:
     def __init__(
         self,
         price_per_100_words: float = 2.0,
-        minimum_charge: float = 50.0
+        minimum_charge: float = 50.0,
+        cleaning_timeout: int = 5
     ):
         """
         Initialize word counter with pricing settings
@@ -72,9 +88,12 @@ class WordCounter:
         Args:
             price_per_100_words: Price per 100 words in RMB (每100词价格，单位人民币)
             minimum_charge: Minimum charge threshold (最低消费门槛)
+            cleaning_timeout: Timeout in seconds for text cleaning (文本清洗超时秒数)
         """
         self.price_per_100_words = price_per_100_words
         self.minimum_charge = minimum_charge
+        self.cleaning_timeout = cleaning_timeout
+        self._executor = ThreadPoolExecutor(max_workers=2)
 
     def _strip_references(self, text: str) -> Tuple[str, bool]:
         """
@@ -145,17 +164,10 @@ class WordCounter:
         """
         return hashlib.sha256(text.encode('utf-8')).hexdigest()
 
-    def count(self, text: str, calculate_hash: bool = True) -> WordCountResult:
+    def _do_count(self, text: str, calculate_hash: bool) -> WordCountResult:
         """
-        Count billable words in text
-        统计文本中的计费字数
-
-        Args:
-            text: Full document text
-            calculate_hash: Whether to calculate content hash (是否计算内容哈希)
-
-        Returns:
-            WordCountResult with all counting metrics
+        Internal method to count words (no timeout)
+        内部方法：统计字数（无超时）
         """
         # Count raw words
         # 统计原始字数
@@ -181,6 +193,48 @@ class WordCounter:
             has_references=has_refs,
             content_hash=content_hash
         )
+
+    def count(self, text: str, calculate_hash: bool = True) -> WordCountResult:
+        """
+        Count billable words in text
+        统计文本中的计费字数
+
+        Args:
+            text: Full document text
+            calculate_hash: Whether to calculate content hash (是否计算内容哈希)
+
+        Returns:
+            WordCountResult with all counting metrics
+        """
+        return self._do_count(text, calculate_hash)
+
+    def count_with_timeout(self, text: str, calculate_hash: bool = True) -> WordCountResult:
+        """
+        Count billable words with timeout protection (格式炸弹防御)
+        带超时保护的字数统计
+
+        This method protects against malicious files that could cause
+        infinite loops or excessive memory usage (format bombs).
+        此方法防止可能导致死循环或内存溢出的恶意文件（格式炸弹）。
+
+        Args:
+            text: Full document text
+            calculate_hash: Whether to calculate content hash
+
+        Returns:
+            WordCountResult with all counting metrics
+
+        Raises:
+            TextCleaningTimeoutError: If processing exceeds timeout
+        """
+        try:
+            future = self._executor.submit(self._do_count, text, calculate_hash)
+            return future.result(timeout=self.cleaning_timeout)
+        except FuturesTimeoutError:
+            raise TextCleaningTimeoutError(
+                f"Text cleaning exceeded {self.cleaning_timeout}s timeout. "
+                f"File may be malformed or too complex."
+            )
 
     def calculate_price(self, word_count_result: WordCountResult) -> PriceResult:
         """
@@ -224,6 +278,28 @@ class WordCounter:
         price_result = self.calculate_price(count_result)
         return count_result, price_result
 
+    def count_and_price_with_timeout(self, text: str) -> Tuple[WordCountResult, PriceResult]:
+        """
+        Count words and calculate price with timeout protection (格式炸弹防御)
+        带超时保护的字数统计和价格计算
+
+        This method protects against malicious files that could cause
+        infinite loops or excessive memory usage (format bombs).
+        此方法防止可能导致死循环或内存溢出的恶意文件（格式炸弹）。
+
+        Args:
+            text: Full document text
+
+        Returns:
+            Tuple of (WordCountResult, PriceResult)
+
+        Raises:
+            TextCleaningTimeoutError: If processing exceeds timeout
+        """
+        count_result = self.count_with_timeout(text)
+        price_result = self.calculate_price(count_result)
+        return count_result, price_result
+
 
 # Default instance with standard pricing
 # 使用标准定价的默认实例
@@ -237,5 +313,6 @@ def get_word_counter() -> WordCounter:
     settings = get_settings()
     return WordCounter(
         price_per_100_words=settings.price_per_100_words,
-        minimum_charge=settings.minimum_charge
+        minimum_charge=settings.minimum_charge,
+        cleaning_timeout=settings.text_cleaning_timeout
     )

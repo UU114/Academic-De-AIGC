@@ -1,5 +1,8 @@
+import { useState } from 'react';
 import { Outlet, Link, useLocation } from 'react-router-dom';
-import { FileText, Upload, Settings, Home, Clock, Wand2 } from 'lucide-react';
+import { FileText, Upload, Home, Clock, Wand2, User, LogOut, Settings } from 'lucide-react';
+import { useAuthStore } from '../../stores/authStore';
+import LoginModal from '../auth/LoginModal';
 
 /**
  * Main layout component with navigation
@@ -7,6 +10,9 @@ import { FileText, Upload, Settings, Home, Clock, Wand2 } from 'lucide-react';
  */
 export default function Layout() {
   const location = useLocation();
+  const { isLoggedIn, user, logout } = useAuthStore();
+  const [showLoginModal, setShowLoginModal] = useState(false);
+  const [showUserMenu, setShowUserMenu] = useState(false);
 
   // Check if on intervention page to show DE-AIGC tab
   // 检查是否在干预模式页面以显示DE-AIGC标签
@@ -70,13 +76,67 @@ export default function Layout() {
               )}
             </nav>
 
-            {/* Settings button */}
-            <button
-              className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors"
-              title="Settings"
-            >
-              <Settings className="w-5 h-5" />
-            </button>
+            {/* User button - login or user info */}
+            {/* 用户按钮 - 登录或用户信息 */}
+            {isLoggedIn ? (
+              <div className="relative">
+                <button
+                  onClick={() => setShowUserMenu(!showUserMenu)}
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg text-gray-600 hover:bg-gray-100 hover:text-gray-900 transition-colors"
+                  title={user?.nickname || user?.phone || 'User'}
+                >
+                  <User className="w-5 h-5" />
+                  <span className="text-sm font-medium max-w-[100px] truncate">
+                    {user?.nickname || user?.phone?.replace(/(\d{3})\d{4}(\d{4})/, '$1****$2') || 'User'}
+                  </span>
+                </button>
+                {/* User dropdown menu */}
+                {showUserMenu && (
+                  <>
+                    <div
+                      className="fixed inset-0 z-40"
+                      onClick={() => setShowUserMenu(false)}
+                    />
+                    <div className="absolute right-0 top-full mt-1 w-48 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-50">
+                      <div className="px-4 py-2 border-b border-gray-100">
+                        <p className="text-sm font-medium text-gray-900 truncate">
+                          {user?.nickname || 'User'}
+                        </p>
+                        <p className="text-xs text-gray-500 truncate">
+                          {user?.phone?.replace(/(\d{3})\d{4}(\d{4})/, '$1****$2')}
+                        </p>
+                      </div>
+                      <Link
+                        to="/profile"
+                        onClick={() => setShowUserMenu(false)}
+                        className="w-full flex items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                      >
+                        <Settings className="w-4 h-4" />
+                        <span>User Center 用户中心</span>
+                      </Link>
+                      <button
+                        onClick={() => {
+                          logout();
+                          setShowUserMenu(false);
+                        }}
+                        className="w-full flex items-center gap-2 px-4 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors"
+                      >
+                        <LogOut className="w-4 h-4" />
+                        <span>Logout 退出登录</span>
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            ) : (
+              <button
+                onClick={() => setShowLoginModal(true)}
+                className="flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+              >
+                <User className="w-4 h-4" />
+                <span className="text-sm font-medium">Login 登录</span>
+              </button>
+            )}
           </div>
         </div>
       </header>
@@ -94,6 +154,12 @@ export default function Layout() {
           </p>
         </div>
       </footer>
+
+      {/* Login Modal */}
+      <LoginModal
+        isOpen={showLoginModal}
+        onClose={() => setShowLoginModal(false)}
+      />
     </div>
   );
 }

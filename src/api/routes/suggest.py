@@ -78,14 +78,36 @@ async def get_suggestions(
     # Generate LLM suggestion (Track A)
     # 生成LLM建议（轨道A）
     llm_suggestion = None
+    quality_gate = QualityGate()
     try:
         llm_result = await llm_track.generate_suggestion(
             sentence=request.sentence,
             issues=request.issues,
             locked_terms=request.locked_terms,
-            target_lang=request.target_lang
+            target_lang=request.target_lang,
+            is_paraphrase=request.is_paraphrase
         )
         if llm_result:
+            # DEAI Engine 2.0: Verify suggestion doesn't contain P0 words or first-person pronouns
+            # DEAI Engine 2.0: 验证建议不包含P0词或第一人称代词
+            validation = quality_gate.verify_suggestion(
+                original=request.sentence,
+                suggestion=llm_result.rewritten,
+                colloquialism_level=request.colloquialism_level
+            )
+
+            if not validation.passed:
+                # Log validation failure but still use the suggestion (with warning)
+                # 记录验证失败但仍使用建议（带警告）
+                logger.warning(
+                    f"[LLM Validation] {validation.action}: {validation.message}"
+                )
+                # Add validation warning to explanation
+                # 将验证警告添加到解释中
+                warning_note = f" [Warning: {validation.message}]"
+                llm_result.explanation = (llm_result.explanation or "") + warning_note
+                llm_result.explanation_zh = (llm_result.explanation_zh or "") + f" [警告: {validation.message_zh}]"
+
             # Calculate actual risk score for rewritten text (CAASS v2.0 Phase 2)
             # 为改写文本计算实际风险分数（CAASS v2.0 第二阶段）
             llm_analysis = _scorer.analyze(
@@ -285,6 +307,11 @@ async def validate_custom(
 
     original_text = sentence.original_text
     locked_terms = sentence.locked_terms_json or []
+    
+    # Check if paraphrase
+    is_paraphrase = False
+    if sentence.analysis_json and sentence.analysis_json.get("is_paraphrase"):
+        is_paraphrase = True
 
     # Initialize validators
     # 初始化验证器
@@ -296,7 +323,8 @@ async def validate_custom(
         original=original_text,
         modified=request.custom_text,
         locked_terms=locked_terms,
-        target_risk=40
+        target_risk=40,
+        is_paraphrase=is_paraphrase
     )
 
     return ValidationResult(

@@ -64,6 +64,18 @@ class TermLocker:
         r'\d+\s*(?:nm|μm|mm|cm|m|km|mg|g|kg|mL|L|°C|K|Hz|kHz|MHz)',  # Units
     ]
 
+    # Quotation patterns
+    # 引用内容模式
+    QUOTATION_PATTERNS = [
+        r'"[^"]+?"',           # Straight double quotes
+        r'"[^"]+?"',           # Curly double quotes (standard regex usually handles unicode chars if passed correctly, but let's be explicit if needed)
+        r'[\u201C][^\u201D]+?[\u201D]', # Curly double quotes (Unicode)
+        r"'[^']+?'",           # Straight single quotes (non-apostrophe)
+        r'[\u2018][^\u2019]+?[\u2019]', # Curly single quotes (Unicode)
+        r'「[^」]+?」',        # Chinese brackets
+        r'『[^』]+?』',        # Chinese double brackets
+    ]
+
     def __init__(self, whitelist_path: Optional[str] = None):
         """
         Initialize term locker
@@ -192,6 +204,10 @@ class TermLocker:
         # 查找引用
         locked_terms.extend(self._find_citations(text))
 
+        # Find quotations
+        # 查找引用内容
+        locked_terms.extend(self._find_quotations(text))
+
         # Remove duplicates and sort by position
         # 去重并按位置排序
         locked_terms = self._deduplicate_terms(locked_terms)
@@ -265,6 +281,28 @@ class TermLocker:
                 end_pos=match.end(),
                 source="citation"
             ))
+
+        return terms
+
+    def _find_quotations(self, text: str) -> List[LockedTerm]:
+        """
+        Find quoted text
+        查找引用内容
+        """
+        terms = []
+        
+        for pattern_str in self.QUOTATION_PATTERNS:
+            try:
+                pattern = re.compile(pattern_str)
+                for match in pattern.finditer(text):
+                    terms.append(LockedTerm(
+                        term=match.group(0),
+                        start_pos=match.start(),
+                        end_pos=match.end(),
+                        source="quotation"
+                    ))
+            except re.error:
+                continue
 
         return terms
 

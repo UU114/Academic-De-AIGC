@@ -623,9 +623,9 @@ async def update_session_step(
     Update current step for a session
     更新会话的当前步骤
 
-    Valid steps: step1-1, step1-2, level2, level3, review
+    Valid steps: step1-1, step1-2, step2, step3, review
     """
-    valid_steps = ["step1-1", "step1-2", "level2", "level3", "review"]
+    valid_steps = ["step1-1", "step1-2", "step2", "step3", "review"]
     if step not in valid_steps:
         raise HTTPException(
             status_code=400,
@@ -644,6 +644,269 @@ async def update_session_step(
     await db.commit()
 
     return {"session_id": session_id, "current_step": step}
+
+
+@router.post("/{session_id}/yolo-process")
+async def yolo_auto_process(
+    session_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    YOLO auto-processing: Automatically process all sentences using LLM
+    YOLO 自动处理：使用 LLM 自动处理所有句子
+
+    This endpoint processes sentences one by one, calling LLM for each,
+    selecting the best suggestion, and applying it automatically.
+    此端点逐句处理，为每个句子调用 LLM，选择最佳建议并自动应用。
+
+    Returns a generator for streaming progress updates.
+    返回生成器用于流式进度更新。
+    """
+    from src.core.suggester.llm_track import LLMTrack
+    from src.core.suggester.rule_track import RuleTrack
+    from src.core.analyzer.scorer import RiskScorer
+    from src.core.validator.quality_gate import QualityGate
+    import json
+    import logging
+
+    logger = logging.getLogger(__name__)
+    quality_gate = QualityGate()
+
+    # Get session
+    # 获取会话
+    result = await db.execute(
+        select(Session).where(Session.id == session_id)
+    )
+    session = result.scalar_one_or_none()
+
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Get all sentences for processing
+    # 获取所有待处理的句子
+    sentence_ids = session.config_json.get("sentence_ids", [])
+    whitelist = session.config_json.get("whitelist", [])
+    tone_level = session.colloquialism_level or 4
+
+    sentences_result = await db.execute(
+        select(Sentence).where(Sentence.id.in_(sentence_ids)).order_by(Sentence.index)
+    )
+    sentences = sentences_result.scalars().all()
+
+    # Get existing modifications
+    # 获取已有的修改记录
+    mods_result = await db.execute(
+        select(Modification).where(Modification.session_id == session_id)
+    )
+    existing_mods = {m.sentence_id: m for m in mods_result.scalars().all()}
+
+    # Initialize components
+    # 初始化组件
+    llm_track = LLMTrack(colloquialism_level=tone_level)
+    rule_track = RuleTrack(colloquialism_level=tone_level)
+    scorer = RiskScorer()
+    whitelist_set = set(whitelist) if whitelist else None
+
+    # Process results
+    # 处理结果
+    processed_count = 0
+    skipped_count = 0
+    total_risk_reduction = 0
+    logs = []
+
+    for idx, sentence in enumerate(sentences):
+        # Skip if already processed
+        # 如果已处理则跳过
+        if sentence.id in existing_mods:
+            existing_mod = existing_mods[sentence.id]
+            if existing_mod.accepted:
+                skipped_count += 1
+                logs.append({
+                    "index": idx + 1,
+                    "action": "already_processed",
+                    "message": f"句子 {idx + 1} 已处理，跳过",
+                    "original_risk": sentence.risk_score or 0,
+                    "new_risk": existing_mod.new_risk_score or 0,
+                })
+                continue
+
+        # Calculate original risk
+        # 计算原始风险分数
+        original_analysis = scorer.analyze(
+            sentence.original_text,
+            tone_level=tone_level,
+            whitelist=whitelist_set
+        )
+        original_risk = original_analysis.risk_score
+
+        # Skip low risk sentences (score < 25)
+        # 跳过低风险句子 (分数 < 25)
+        if original_risk < 25:
+            # Record as skipped
+            # 记录为跳过
+            mod = Modification(
+                sentence_id=sentence.id,
+                session_id=session_id,
+                source="skip",
+                modified_text="",
+                accepted=False,
+                new_risk_score=original_risk
+            )
+            db.add(mod)
+            skipped_count += 1
+            logs.append({
+                "index": idx + 1,
+                "action": "skipped",
+                "message": f"句子 {idx + 1} 风险较低 ({original_risk})，已跳过",
+                "original_risk": original_risk,
+                "new_risk": original_risk,
+            })
+            continue
+
+        # Try LLM suggestion first
+        # 首先尝试 LLM 建议
+        best_text = None
+        best_risk = original_risk
+        best_source = "llm"
+
+        # Check if paraphrase
+        is_paraphrase = False
+        if sentence.analysis_json and sentence.analysis_json.get("is_paraphrase"):
+            is_paraphrase = True
+
+        try:
+            llm_result = await llm_track.generate_suggestion(
+                sentence=sentence.original_text,
+                issues=[],
+                locked_terms=sentence.locked_terms_json or [],
+                target_lang=session.target_lang or "zh",
+                is_paraphrase=is_paraphrase
+            )
+            if llm_result and llm_result.rewritten:
+                # DEAI Engine 2.0: Verify suggestion for P0 words and first-person pronouns
+                # DEAI Engine 2.0: 验证建议是否包含P0词或第一人称代词
+                validation = quality_gate.verify_suggestion(
+                    original=sentence.original_text,
+                    suggestion=llm_result.rewritten,
+                    colloquialism_level=tone_level
+                )
+
+                if not validation.passed:
+                    # Log validation failure and skip this LLM suggestion
+                    # 记录验证失败并跳过此LLM建议
+                    logger.warning(
+                        f"[YOLO] Sentence {idx + 1} LLM suggestion rejected: {validation.message}"
+                    )
+                    # Don't use this LLM suggestion, will try rule-based instead
+                    # 不使用此LLM建议，将尝试规则建议
+                else:
+                    llm_analysis = scorer.analyze(
+                        llm_result.rewritten,
+                        tone_level=tone_level,
+                        whitelist=whitelist_set
+                    )
+                    if llm_analysis.risk_score < best_risk:
+                        best_text = llm_result.rewritten
+                        best_risk = llm_analysis.risk_score
+                        best_source = "llm"
+        except Exception as e:
+            logger.error(f"LLM track error for sentence {idx + 1}: {e}")
+
+        # Also try rule-based suggestion
+        # 同时尝试规则建议
+        try:
+            rule_result = rule_track.generate_suggestion(
+                sentence=sentence.original_text,
+                issues=[],
+                locked_terms=sentence.locked_terms_json or []
+            )
+            if rule_result and rule_result.rewritten:
+                # DEAI Engine 2.0: Also validate rule-based suggestions
+                # DEAI Engine 2.0: 同样验证规则建议
+                rule_validation = quality_gate.verify_suggestion(
+                    original=sentence.original_text,
+                    suggestion=rule_result.rewritten,
+                    colloquialism_level=tone_level
+                )
+
+                if rule_validation.passed:
+                    rule_analysis = scorer.analyze(
+                        rule_result.rewritten,
+                        tone_level=tone_level,
+                        whitelist=whitelist_set
+                    )
+                    if rule_analysis.risk_score < best_risk:
+                        best_text = rule_result.rewritten
+                        best_risk = rule_analysis.risk_score
+                        best_source = "rule"
+        except Exception as e:
+            logger.error(f"Rule track error for sentence {idx + 1}: {e}")
+
+        # Apply the best suggestion
+        # 应用最佳建议
+        if best_text and best_risk < original_risk:
+            mod = Modification(
+                sentence_id=sentence.id,
+                session_id=session_id,
+                source=best_source,
+                modified_text=best_text,
+                accepted=True,
+                new_risk_score=best_risk
+            )
+            db.add(mod)
+            risk_reduction = original_risk - best_risk
+            total_risk_reduction += risk_reduction
+            processed_count += 1
+            logs.append({
+                "index": idx + 1,
+                "action": "modified",
+                "message": f"句子 {idx + 1} 已应用{best_source.upper()}建议修改",
+                "original_risk": original_risk,
+                "new_risk": best_risk,
+                "source": best_source,
+            })
+        else:
+            # No improvement possible, skip
+            # 无法改进，跳过
+            mod = Modification(
+                sentence_id=sentence.id,
+                session_id=session_id,
+                source="skip",
+                modified_text="",
+                accepted=False,
+                new_risk_score=original_risk
+            )
+            db.add(mod)
+            skipped_count += 1
+            logs.append({
+                "index": idx + 1,
+                "action": "no_improvement",
+                "message": f"句子 {idx + 1} 无法进一步降低风险，已跳过",
+                "original_risk": original_risk,
+                "new_risk": original_risk,
+            })
+
+        # Update session progress
+        # 更新会话进度
+        session.current_index = idx + 1
+
+    # Mark session as completed
+    # 标记会话为已完成
+    session.status = "completed"
+    session.current_step = "review"
+    session.completed_at = datetime.utcnow()
+
+    await db.commit()
+
+    return {
+        "status": "completed",
+        "session_id": session_id,
+        "total_sentences": len(sentences),
+        "processed": processed_count,
+        "skipped": skipped_count,
+        "avg_risk_reduction": round(total_risk_reduction / processed_count, 1) if processed_count > 0 else 0,
+        "logs": logs
+    }
 
 
 def _build_sentence_analysis(sentence: Sentence) -> SentenceAnalysis:

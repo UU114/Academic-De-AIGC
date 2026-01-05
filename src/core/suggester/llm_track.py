@@ -56,13 +56,15 @@ Style: Most Academic (Journal Paper Level)
 - Use passive voice where appropriate
 - Avoid contractions entirely (do not, cannot, will not)
 - Use hedging language (it appears that, evidence suggests)
-- Maintain impersonal tone (avoid "I/we" when possible)
+- STRICTLY FORBIDDEN: First-person pronouns (I, we, my, our, us, me)
+- USE INSTEAD: "this study", "the present research", "the analysis", "the findings", passive voice
 - Complex sentence structures with subordinate clauses
 """,
         "academic_moderate": """
 Style: Academic Moderate (Thesis Level)
 - Use formal academic vocabulary
-- First person plural acceptable (we found, our results)
+- STRICTLY FORBIDDEN: First-person pronouns (I, we, my, our, us, me)
+- USE INSTEAD: "this research", "the current study", "the investigation", passive constructions
 - Avoid contractions in main text
 - Balance passive and active voice
 - Clear but sophisticated sentence structures
@@ -75,7 +77,8 @@ Style: Semi-formal (Conference Paper Level)
 - Prefer active voice for clarity
 - Varied sentence length (short and medium)
 - Direct statements preferred over hedging
-- First person acceptable throughout
+- STRICTLY FORBIDDEN: First-person pronouns (I, we, my, our, us, me)
+- USE INSTEAD: "this paper", "the study", "the authors", passive voice
 """,
         "casual_professional": """
 Style: Casual Professional (Tech Blog Level)
@@ -96,6 +99,10 @@ Style: Casual Informal (Discussion Level)
 - Colloquialisms and mild slang okay
 """
     }
+
+    # Threshold for strict pronoun prohibition (levels 0-5)
+    # 严格禁止人称代词的阈值（0-5级）
+    ACADEMIC_LEVEL_THRESHOLD = 5
 
     # Word preferences by level
     # 按等级的词汇偏好
@@ -150,20 +157,12 @@ Style: Casual Informal (Discussion Level)
         sentence: str,
         issues: List[Dict[str, Any]],
         locked_terms: List[str],
-        target_lang: str
+        target_lang: str,
+        is_paraphrase: bool = False
     ) -> str:
         """
         Build the prompt for LLM
         构建LLM的提示词
-
-        Enhanced with 10 de-AIGC techniques including:
-        - Fingerprint word elimination
-        - Template breaking
-        - Implicit connector strategies
-        - Subject diversity
-        - ANI structure (Assertion-Nuance-Implication)
-        - Sentence rhythm variation
-        - Academic hedging/conviction balance
         """
         # Format issues
         # 格式化问题
@@ -178,6 +177,20 @@ Style: Casual Informal (Discussion Level)
             f"  • '{formal}' → '{preferred}'"
             for formal, preferred in self.word_preferences.items()
         ])
+
+        # Add paraphrase instruction if needed
+        paraphrase_instruction = ""
+        if is_paraphrase:
+            paraphrase_instruction = """
+## PARAPHRASE PROTECTION (CRITICAL):
+This sentence is a PARAPHRASE of cited work.
+1. You MUST preserve the exact meaning (Semantic Similarity >= 0.95).
+2. You MUST preserve the citation in its EXACT original format - NO format changes allowed.
+   - "(Smith, 2020)" must stay as "(Smith, 2020)" - NOT "Smith (2020)"
+   - "[1]" must stay as "[1]" - same position, same punctuation
+3. Only make minor stylistic changes to reduce AI detection, do not rewrite structure completely.
+4. If you cannot improve the sentence without changing the citation format, return the original sentence unchanged.
+"""
 
         prompt = f"""## TASK: REWRITE to pass AI detection (lower perplexity uniformity)
 
@@ -194,6 +207,14 @@ You are an expert at making AI-generated text appear human-written. REWRITE this
 
 ## Colloquialism Level: {self.level}/10
 {self.style_guide}
+{paraphrase_instruction}
+## FIRST-PERSON PRONOUN RULES (CRITICAL FOR LEVEL 0-5):
+If Colloquialism Level is 0-5 (academic writing):
+- STRICTLY FORBIDDEN: I, we, my, our, us, me (all forms)
+- USE INSTEAD: "this study", "this research", "the analysis", "the present investigation", "the findings"
+- USE passive voice: "It was found that...", "The results indicate...", "X was observed..."
+- USE impersonal subjects: "The data suggest...", "Evidence demonstrates...", "This approach enables..."
+VIOLATION of this rule will result in REJECTION. Check your output before returning.
 
 ## CRITICAL DE-AIGC TECHNIQUES (Apply ALL that fit):
 
@@ -202,7 +223,7 @@ Replace: delve→explore/examine, crucial/paramount/pivotal→important/key, uti
 
 ### 2. BREAK AI Sentence Templates
 - "Not only X but also Y" → "X. Also, Y." or "Beyond X, Y."
-- "It is crucial/important to" → "We must" or "The X requires"
+- "It is crucial/important to" → "This requires" or "The X necessitates" (avoid "We must" for Level 0-5)
 - "serves as a" → "acts as" or "is" or "forms"
 - "In conclusion/summary" → "Ultimately" or "Findings suggest"
 
@@ -213,7 +234,8 @@ USE INSTEAD: semantic flow (This X..., Such Y..., The result...)
 ### 4. ADD Human Writing Markers
 - Vary sentence length (mix short punchy + longer explanatory)
 - Use specific numbers when possible (e.g., "35% increase" not "significant increase")
-- Use direct voice over passive ("We found" not "It was found")
+- For Level 6+: Use direct voice ("We found...")
+- For Level 0-5: Use impersonal constructs ("This study found...", "The analysis reveals...", passive voice)
 - Add slight hedging ("appears to", "suggests") or conviction ("clearly shows")
 
 ### 5. AVOID Vague Academic Padding
@@ -229,8 +251,9 @@ Instead of explicit connectors, use semantic echo or embedded structure:
 ### 7. VARY SUBJECT ACROSS CONTEXT (主语多样性)
 Avoid repeating the same subject. Transform:
 - "The model... The model..." → "The model... This capability... Such precision..."
-- "We found... We observed..." → "We found... The data reveals... Evidence suggests..."
-- First-person overuse → Passive alternative: "I believe X" → "It appears that X" or "Evidence suggests X"
+- "The study... The study..." → "The study... This analysis... The findings..."
+- For Level 0-5: NEVER use first-person (I, we, my, our, us, me)
+- Use impersonal alternatives: "This research demonstrates...", "The results indicate...", "Evidence suggests..."
 
 ### 8. APPLY ANI STRUCTURE IF REWRITING MULTIPLE SENTENCES (断言-细微-深意)
 For complex rewrites, consider Assertion-Nuance-Implication:
@@ -261,19 +284,20 @@ Human writers are NOT perfect. Add these human-like markers:
 - Avoid textbook perfection - mix structures irregularly
 - Use sentence fragments for emphasis: "A significant finding. One that changes everything."
 
-### 12. CITATION ENTANGLEMENT (引用句法纠缠) - IF CITATIONS PRESENT
-Transform parenthetical citations into narrative form to break AI pattern:
+### 12. CITATION PRESERVATION (引用格式保护) - CRITICAL
+Citations MUST remain in their EXACT original format. DO NOT modify:
 
-AI PATTERN (robotic): "This phenomenon has been observed (Smith, 2023)."
-HUMAN PATTERN (varied):
-- "Smith (2023) observed this phenomenon..."
-- "As Smith (2023) noted, this phenomenon..."
-- "Following Smith's (2023) framework, we see..."
+- Parenthetical citations: "(Smith, 2023)", "(Johnson et al., 2019)" → KEEP AS-IS
+- Numeric citations: "[1]", "[2,3]", "[1-5]" → KEEP AS-IS
+- Citation position and punctuation → KEEP AS-IS
 
-RULES:
-- Transform ~30% of parenthetical citations to narrative form
-- Keep some parenthetical citations for natural mix
-- Use varied narrative forms: "According to X...", "X argues that...", "As X demonstrated..."
+FORBIDDEN:
+- Do NOT convert "(Smith, 2023)" to "Smith (2023)"
+- Do NOT move citations to different positions
+- Do NOT change citation punctuation or spacing
+- Do NOT merge or split citations
+
+ONLY rewrite the NON-CITATION parts of the sentence.
 
 ## Response (JSON ONLY, no markdown):
 {{
@@ -293,7 +317,8 @@ RULES:
         sentence: str,
         issues: List[Dict[str, Any]],
         locked_terms: List[str],
-        target_lang: str = "zh"
+        target_lang: str = "zh",
+        is_paraphrase: bool = False
     ) -> Optional[LLMSuggestionResult]:
         """
         Generate humanization suggestion using LLM
@@ -304,11 +329,12 @@ RULES:
             issues: Detected issues
             locked_terms: Terms to protect
             target_lang: Target language for explanations
+            is_paraphrase: Whether sentence is a paraphrase
 
         Returns:
             LLMSuggestionResult or None if failed
         """
-        prompt = self._build_prompt(sentence, issues, locked_terms, target_lang)
+        prompt = self._build_prompt(sentence, issues, locked_terms, target_lang, is_paraphrase)
 
         try:
             # Try to use configured LLM provider

@@ -23,7 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from src.db.models import Task, Document, User, TaskStatus, PaymentStatus
-from src.services.word_counter import WordCounter, WordCountResult, PriceResult, get_word_counter
+from src.services.word_counter import WordCounter, WordCountResult, PriceResult, get_word_counter, TextCleaningTimeoutError
 from src.services.payment_service import get_payment_provider, OrderCreateResult
 
 
@@ -73,9 +73,12 @@ class TaskService:
         if not document:
             raise ValueError(f"Document not found: {document_id}")
 
-        # Count words and calculate price
-        # 统计字数并计算价格
-        count_result, price_result = self.word_counter.count_and_price(document.original_text)
+        # Count words and calculate price with timeout protection (格式炸弹防御)
+        # 带超时保护的字数统计和价格计算
+        try:
+            count_result, price_result = self.word_counter.count_and_price_with_timeout(document.original_text)
+        except TextCleaningTimeoutError as e:
+            raise ValueError(f"Document processing timeout - file may be malformed: {str(e)}")
 
         # Create task
         # 创建任务
@@ -272,7 +275,7 @@ class TaskService:
 
         return task.payment_status != PaymentStatus.PAID.value
 
-    async def can_start_processing(self, task_id: str) -> Tuple[bool, str]:
+    async def can_start_processing(self, task_id: str, verify_hash: bool = True) -> Tuple[bool, str]:
         """
         Check if task can start processing
         检查任务是否可以开始处理
@@ -282,9 +285,11 @@ class TaskService:
         - Task not expired
         - Payment confirmed (in operational mode)
         - Task not already processing/completed
+        - Content hash matches (anti-tampering)
 
         Args:
             task_id: Task ID
+            verify_hash: Whether to verify content hash (default True)
 
         Returns:
             Tuple of (can_start, reason)
@@ -312,7 +317,57 @@ class TaskService:
             if task.payment_status != PaymentStatus.PAID.value:
                 return False, "Payment required"
 
+        # Security: Verify content hash to prevent tampering (偷梁换柱防御)
+        # 安全：验证内容哈希以防止篡改
+        if verify_hash and task.content_hash:
+            hash_match, hash_reason = await self.verify_content_hash(task_id)
+            if not hash_match:
+                return False, hash_reason
+
         return True, "OK"
+
+    async def verify_content_hash(self, task_id: str) -> Tuple[bool, str]:
+        """
+        Verify that document content hash matches the stored hash
+        验证文档内容哈希是否与存储的哈希匹配
+
+        This prevents "switcheroo" attacks where content is modified after payment.
+        这可以防止支付后修改内容的"偷梁换柱"攻击。
+
+        Args:
+            task_id: Task ID
+
+        Returns:
+            Tuple of (is_valid, reason)
+        """
+        task = await self.get_task(task_id)
+
+        if not task:
+            return False, "Task not found"
+
+        if not task.content_hash:
+            # No hash stored, skip verification (legacy tasks)
+            # 没有存储哈希，跳过验证（旧任务）
+            return True, "No hash to verify"
+
+        # Get the document
+        # 获取文档
+        result = await self.db.execute(
+            select(Document).where(Document.id == task.document_id)
+        )
+        document = result.scalar_one_or_none()
+
+        if not document:
+            return False, "Document not found"
+
+        # Recalculate hash from current document content
+        # 从当前文档内容重新计算哈希
+        current_count_result = self.word_counter.count(document.original_text, calculate_hash=True)
+
+        if current_count_result.content_hash != task.content_hash:
+            return False, "Content hash mismatch - document may have been tampered"
+
+        return True, "Hash verified"
 
     async def expire_old_tasks(self) -> int:
         """

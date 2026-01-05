@@ -8,7 +8,7 @@ This module provides authentication endpoints.
 
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, List
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import datetime
@@ -263,3 +263,195 @@ async def logout(user: dict = Depends(get_current_user)):
         "message": "Logged out successfully",
         "message_zh": "登出成功"
     }
+
+
+# ==========================================
+# User Profile Endpoints
+# 用户资料端点
+# ==========================================
+
+class UserProfileResponse(BaseModel):
+    """User profile response 用户资料响应"""
+    user_id: str
+    platform_user_id: Optional[str] = None
+    nickname: Optional[str] = None
+    phone: Optional[str] = None
+    created_at: Optional[str] = None
+    last_login_at: Optional[str] = None
+    is_debug: bool
+    total_tasks: int = 0
+    total_spent: float = 0.0
+
+
+class OrderItem(BaseModel):
+    """Order item in list 订单列表项"""
+    task_id: str
+    document_name: Optional[str] = None
+    word_count: int = 0
+    price: float = 0.0
+    status: str
+    payment_status: str
+    created_at: str
+    paid_at: Optional[str] = None
+
+
+class OrderListResponse(BaseModel):
+    """Order list response 订单列表响应"""
+    orders: List[OrderItem]
+    total: int
+    page: int
+    page_size: int
+
+
+@router.get("/profile", response_model=UserProfileResponse)
+async def get_user_profile(
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(get_current_user)
+):
+    """
+    Get detailed user profile
+    获取详细用户资料
+    """
+    from src.db.models import Task
+    from sqlalchemy import func as sql_func
+
+    if user.get("is_debug"):
+        return UserProfileResponse(
+            user_id="debug_user",
+            platform_user_id="debug_platform_user",
+            nickname="Debug User",
+            phone=None,
+            created_at=None,
+            last_login_at=None,
+            is_debug=True,
+            total_tasks=0,
+            total_spent=0.0
+        )
+
+    result = await db.execute(
+        select(User).where(User.id == user["user_id"])
+    )
+    db_user = result.scalar_one_or_none()
+
+    if not db_user:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "user_not_found",
+                "message": "User not found",
+                "message_zh": "用户未找到"
+            }
+        )
+
+    # Get task statistics
+    # 获取任务统计
+    stats_result = await db.execute(
+        select(
+            sql_func.count(Task.task_id).label("total_tasks"),
+            sql_func.coalesce(sql_func.sum(Task.price_final), 0).label("total_spent")
+        ).where(
+            Task.user_id == db_user.id,
+            Task.payment_status == "paid"
+        )
+    )
+    stats = stats_result.first()
+
+    # Mask phone number for privacy
+    # 隐藏手机号以保护隐私
+    masked_phone = None
+    if db_user.phone:
+        masked_phone = db_user.phone[:3] + "****" + db_user.phone[-4:]
+
+    return UserProfileResponse(
+        user_id=db_user.id,
+        platform_user_id=db_user.platform_user_id,
+        nickname=db_user.nickname,
+        phone=masked_phone,
+        created_at=db_user.created_at.isoformat() if db_user.created_at else None,
+        last_login_at=db_user.last_login_at.isoformat() if db_user.last_login_at else None,
+        is_debug=False,
+        total_tasks=stats.total_tasks or 0,
+        total_spent=float(stats.total_spent or 0)
+    )
+
+
+@router.get("/orders", response_model=OrderListResponse)
+async def get_user_orders(
+    page: int = 1,
+    page_size: int = 10,
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(get_current_user)
+):
+    """
+    Get user's order history
+    获取用户订单历史
+
+    Returns paginated list of orders sorted by creation time (newest first).
+    返回按创建时间排序的分页订单列表（最新在前）。
+    """
+    from src.db.models import Task, Document
+    from sqlalchemy import func as sql_func, desc
+
+    if user.get("is_debug"):
+        return OrderListResponse(
+            orders=[],
+            total=0,
+            page=page,
+            page_size=page_size
+        )
+
+    # Get user record
+    # 获取用户记录
+    result = await db.execute(
+        select(User).where(User.id == user["user_id"])
+    )
+    db_user = result.scalar_one_or_none()
+
+    if not db_user:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "user_not_found",
+                "message": "User not found",
+                "message_zh": "用户未找到"
+            }
+        )
+
+    # Count total orders
+    # 统计总订单数
+    count_result = await db.execute(
+        select(sql_func.count(Task.task_id)).where(Task.user_id == db_user.id)
+    )
+    total = count_result.scalar() or 0
+
+    # Get paginated orders with document info
+    # 获取分页订单及文档信息
+    offset = (page - 1) * page_size
+    orders_result = await db.execute(
+        select(Task, Document.filename)
+        .outerjoin(Document, Task.document_id == Document.id)
+        .where(Task.user_id == db_user.id)
+        .order_by(desc(Task.created_at))
+        .offset(offset)
+        .limit(page_size)
+    )
+
+    orders = []
+    for task, filename in orders_result:
+        orders.append(OrderItem(
+            task_id=task.task_id,
+            document_name=filename,
+            word_count=task.word_count_billable or 0,
+            price=task.price_final or 0.0,
+            status=task.status,
+            payment_status=task.payment_status,
+            created_at=task.created_at.isoformat() if task.created_at else "",
+            paid_at=task.paid_at.isoformat() if task.paid_at else None
+        ))
+
+    return OrderListResponse(
+        orders=orders,
+        total=total,
+        page=page,
+        page_size=page_size
+    )

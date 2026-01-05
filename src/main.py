@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from src.config import get_settings
 from src.db.database import init_db
 from src.api.routes import documents, analyze, suggest, session, export, transition, structure, flow, paragraph, structure_guidance
-from src.api.routes import auth, payment, task
+from src.api.routes import auth, payment, task, feedback
 from src.middleware.mode_checker import ModeCheckerMiddleware
 
 
@@ -75,6 +75,7 @@ app.include_router(structure_guidance.router, prefix="/api/v1/structure-guidance
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["Authentication"])
 app.include_router(payment.router, prefix="/api/v1/payment", tags=["Payment"])
 app.include_router(task.router, prefix="/api/v1/task", tags=["Task"])
+app.include_router(feedback.router, prefix="/api/v1/feedback", tags=["Feedback"])
 
 
 @app.get("/")

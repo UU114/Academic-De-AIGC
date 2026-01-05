@@ -7,6 +7,38 @@
 
 ## 最近更新 | Recent Updates
 
+### 2026-01-04 - 问题反馈功能 | Feedback Feature
+
+#### 需求 | Requirements
+新增问题反馈功能，收集记录问题及联系方式，保存在后台，只支持文本输入。
+
+Add feedback feature to collect user issues and contact info, stored in backend, text-only input.
+
+#### 新增文件 | New Files
+
+| 文件 File | 说明 Description |
+|----------|-----------------|
+| `src/api/routes/feedback.py` | 反馈API路由 Feedback API routes |
+| `frontend/src/pages/Feedback.tsx` | 反馈页面组件 Feedback page component |
+
+#### 修改文件 | Modified Files
+
+| 文件 File | 修改 Modification |
+|----------|-------------------|
+| `src/db/models.py` | 添加 Feedback 模型 Add Feedback model |
+| `src/main.py` | 注册 feedback 路由 Register feedback router |
+| `frontend/src/App.tsx` | 添加 `/feedback` 路由 Add feedback route |
+| `frontend/src/components/common/Layout.tsx` | Footer添加反馈入口 Add feedback link to footer |
+
+#### 实现功能 | Implemented Features
+1. 反馈提交API (`POST /api/v1/feedback/submit`) Feedback submission endpoint
+2. 反馈列表API (`GET /api/v1/feedback/list`) - 管理员端点 Admin endpoint
+3. 反馈状态更新API (`PATCH /api/v1/feedback/{id}/status`) Status update
+4. 前端反馈表单（联系方式选填，内容必填5-2000字） Frontend form
+5. 客户端IP和UA记录用于防垃圾 IP/UA tracking for spam prevention
+
+---
+
 ### 2026-01-04 - 用户中心页面 | User Center Page
 
 #### 需求 | Requirements

@@ -248,3 +248,27 @@ class TermWhitelist(Base):
     domain = Column(String(50), nullable=True)  # cs, biology, physics, etc.
     user_defined = Column(Boolean, default=False)
     created_at = Column(DateTime, server_default=func.now())
+
+
+# ==========================================
+# Feedback Model (user feedback collection)
+# 反馈模型（用户反馈收集）
+# ==========================================
+
+class Feedback(Base):
+    """
+    Feedback model - stores user feedback and issue reports
+    反馈模型 - 存储用户反馈和问题报告
+    """
+    __tablename__ = "feedbacks"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    contact = Column(String(200), nullable=True)  # Contact info (email/phone/wechat)
+    content = Column(Text, nullable=False)  # Feedback content
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=True)  # Optional logged-in user
+    ip_address = Column(String(50), nullable=True)  # Client IP for spam prevention
+    user_agent = Column(String(500), nullable=True)  # Browser info
+    status = Column(String(20), default="pending")  # pending, reviewed, resolved, spam
+    admin_notes = Column(Text, nullable=True)  # Admin notes for internal use
+    created_at = Column(DateTime, server_default=func.now())
+    reviewed_at = Column(DateTime, nullable=True)

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Outlet, Link, useLocation } from 'react-router-dom';
-import { FileText, Upload, Home, Clock, Wand2, User, LogOut, Settings } from 'lucide-react';
+import { FileText, Upload, Home, Clock, Wand2, User, LogOut, Settings, MessageSquare } from 'lucide-react';
 import { useAuthStore } from '../../stores/authStore';
 import LoginModal from '../auth/LoginModal';
 
@@ -149,9 +149,18 @@ export default function Layout() {
       {/* Footer */}
       <footer className="bg-white border-t border-gray-200 mt-auto">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
-          <p className="text-center text-sm text-gray-500">
-            AcademicGuard - AIGC Detection & Human-AI Collaborative Humanization Engine
-          </p>
+          <div className="flex items-center justify-center gap-4">
+            <p className="text-sm text-gray-500">
+              AcademicGuard - AIGC Detection & Human-AI Collaborative Humanization Engine
+            </p>
+            <Link
+              to="/feedback"
+              className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-primary-600 transition-colors"
+            >
+              <MessageSquare className="w-4 h-4" />
+              <span>问题反馈</span>
+            </Link>
+          </div>
         </div>
       </footer>
 

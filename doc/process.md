@@ -7,6 +7,59 @@
 
 ## 最近更新 | Recent Updates
 
+### 2026-01-04 - 后台统计功能 | Admin Dashboard Feature ✅ 已完成
+
+#### 需求 | Requirements
+新增后台统计功能，包含营收统计、任务统计、用户统计等核心数据，需要管理员权限访问，使用仪表板+图表展示。
+
+Add admin dashboard feature with revenue, task, and user statistics. Requires admin authentication. Display with dashboard and charts.
+
+#### 测试结果 | Test Results
+- 后端API测试通过：管理员登录、统计数据获取正常
+- 前端页面测试通过：登录页面、仪表板展示正常
+- 访问路径：`/admin/login` → 登录 → `/admin` 仪表板
+- 截图保存：`.playwright-mcp/admin-dashboard-test.png`
+
+#### 新增文件 | New Files
+
+| 文件 File | 说明 Description |
+|----------|-----------------|
+| `src/middleware/admin_middleware.py` | 管理员认证中间件 Admin auth middleware |
+| `src/api/routes/admin.py` | 管理员统计API路由 Admin stats API routes |
+| `frontend/src/stores/adminStore.ts` | 前端管理员状态管理 Frontend admin state |
+| `frontend/src/pages/admin/AdminLogin.tsx` | 管理员登录页面 Admin login page |
+| `frontend/src/pages/admin/AdminDashboard.tsx` | 管理员仪表板页面 Admin dashboard page |
+
+#### 修改文件 | Modified Files
+
+| 文件 File | 修改 Modification |
+|----------|-------------------|
+| `src/config.py` | 添加 admin_secret_key 配置 Add admin config |
+| `src/main.py` | 注册 admin 路由 Register admin router |
+| `frontend/src/services/api.ts` | 添加 adminApi Add adminApi |
+| `frontend/src/App.tsx` | 添加 `/admin` 和 `/admin/login` 路由 Add admin routes |
+| `frontend/package.json` | 添加 recharts 依赖 Add recharts dependency |
+
+#### 实现功能 | Implemented Features
+1. 管理员密钥认证 (`POST /api/v1/admin/login`) Admin secret key auth
+2. 概览统计 (`GET /api/v1/admin/stats/overview`) Overview stats
+3. 营收统计 (`GET /api/v1/admin/stats/revenue`) Revenue stats with time series
+4. 任务统计 (`GET /api/v1/admin/stats/tasks`) Task stats with distribution
+5. 用户统计 (`GET /api/v1/admin/stats/users`) User stats
+6. 反馈统计 (`GET /api/v1/admin/stats/feedback`) Feedback stats
+7. 前端仪表板（统计卡片 + Recharts图表）Dashboard with cards and charts
+
+#### 环境变量 | Environment Variables
+```bash
+ADMIN_SECRET_KEY=your-admin-secret-key
+```
+
+#### 访问方式 | Access
+- 登录页面 Login: `/admin/login`
+- 仪表板 Dashboard: `/admin`
+
+---
+
 ### 2026-01-04 - 问题反馈功能 | Feedback Feature
 
 #### 需求 | Requirements
@@ -4906,3 +4959,104 @@ except TextCleaningTimeoutError as e:
 - ✅ 文件类型验证 - 仅允许 .txt 和 .docx 扩展名
 - ✅ 内容哈希验证 - 处理前验证 SHA-256 哈希，防止支付后篡改
 - ✅ 超时保护机制 - ThreadPoolExecutor 实现5秒超时，防止格式炸弹DoS
+
+---
+
+## 2026-01-04: 订单异常检测功能 | Order Anomaly Detection Feature
+
+### 用户需求 | User Requirement
+
+监控订单金额与API调用次数的关系，通过标准差方法（mean + 2σ/3σ）检测异常订单，可按金额区间筛选，展示分布图和异常订单详情。
+
+Monitor the relationship between order amount and API call count, detect anomalous orders using standard deviation method (mean + 2σ/3σ), filter by price range, display distribution charts and anomaly order details.
+
+### 实现方法 | Implementation Method
+
+1. **数据库模型更新**: Task模型新增 `api_call_count` 字段追踪API调用次数
+2. **统计算法**: 使用Python statistics模块计算均值和标准差，兼容SQLite/MySQL
+3. **可视化方案**: 散点图(价格vs调用次数)、直方图(调用次数分布)、异常订单表格
+
+### 新增/修改的文件 | Modified/Added Files
+
+| 文件 File | 操作 Action | 说明 Description |
+|-----------|-------------|------------------|
+| `src/db/models.py` | 修改 | Task模型新增 `api_call_count` 字段 |
+| `src/api/routes/admin.py` | 修改 | 添加3个异常检测API端点 |
+| `frontend/src/services/api.ts` | 修改 | 添加异常检测API方法 |
+| `frontend/src/pages/admin/AnomalyDetection.tsx` | 新增 | 异常检测页面组件 |
+| `frontend/src/pages/admin/AdminDashboard.tsx` | 修改 | 添加异常检测导航按钮 |
+| `frontend/src/App.tsx` | 修改 | 添加异常检测路由 |
+
+### API端点 | API Endpoints
+
+- `GET /api/v1/admin/anomaly/overview` - 异常检测概览统计
+- `GET /api/v1/admin/anomaly/distribution` - 订单分布数据(散点图、直方图)
+- `GET /api/v1/admin/anomaly/orders` - 异常订单列表(分页)
+
+### 结果 | Result
+
+- ✅ Task模型支持API调用计数追踪
+- ✅ 标准差异常检测算法(支持1.5σ/2.0σ/2.5σ/3.0σ阈值)
+- ✅ 管理员仪表板异常检测入口
+- ✅ 异常检测页面(统计卡片、筛选控件、散点图、直方图、异常订单表)
+- ✅ 兼容SQLite(开发)和MySQL(生产)数据库
+
+---
+
+## 2026-01-04: 注册方式修改 | Registration Method Change
+
+### 用户需求 | User Requirement
+
+修改注册方式：手机号+2次密码注册，再加上输入邮箱（用于找回密码），不再使用短信验证码。
+
+Change registration method: phone number + password (entered twice) + optional email (for password recovery), no longer using SMS verification code.
+
+### 实现方法 | Implementation Method
+
+1. **数据库模型更新**: User模型新增 `email` 和 `password_hash` 字段
+2. **密码安全**: 使用 SHA-256 + salt 哈希存储密码
+3. **后端API重构**: 移除发送验证码接口，新增注册接口，修改登录接口为密码验证
+4. **前端重构**: LoginModal支持登录/注册模式切换，authStore添加注册功能
+
+### 新增/修改的文件 | Modified/Added Files
+
+| 文件 File | 操作 Action | 说明 Description |
+|-----------|-------------|------------------|
+| `src/db/models.py` | 修改 | User模型新增 `email`(可选), `password_hash` 字段，`phone` 改为唯一非空 |
+| `src/api/routes/auth.py` | 修改 | 新增 `hash_password`/`verify_password` 函数，新增 `/register` 端点，修改 `/login` 为密码验证，移除 `/send-code` |
+| `frontend/src/stores/authStore.ts` | 修改 | 添加 `RegisterData` 接口和 `register` 方法，修改 `login` 参数为密码 |
+| `frontend/src/components/auth/LoginModal.tsx` | 重写 | 支持登录/注册模式切换，密码显示/隐藏，表单验证，邮箱可选输入 |
+
+### API变更 | API Changes
+
+**移除 Removed**:
+- `POST /api/v1/auth/send-code` - 发送短信验证码
+
+**新增 Added**:
+- `POST /api/v1/auth/register` - 用户注册
+  - 请求: `{ phone, password, password_confirm, email? }`
+  - 响应: `{ success, message, message_zh, user_id? }`
+
+**修改 Modified**:
+- `POST /api/v1/auth/login` - 用户登录
+  - 请求: 从 `{ phone, code }` 改为 `{ phone, password }`
+  - 响应: 保持不变
+
+### 前端界面变更 | Frontend UI Changes
+
+- 登录弹窗支持登录/注册模式切换
+- 注册模式：手机号 + 密码 + 确认密码 + 邮箱(可选)
+- 密码输入框支持显示/隐藏切换
+- 实时表单验证（手机号格式、密码长度6-32位、两次密码一致、邮箱格式）
+- 注册成功后自动切换到登录模式
+
+### 结果 | Result
+
+- ✅ User模型支持密码存储和邮箱字段
+- ✅ 密码使用 SHA-256 + salt 安全哈希
+- ✅ 注册API支持手机号唯一性检查
+- ✅ 登录API验证密码正确性
+- ✅ 前端LoginModal支持登录/注册切换
+- ✅ 表单验证完整（手机号、密码、邮箱格式）
+- ✅ API测试通过：注册成功、登录成功、错误密码拒绝、重复注册拒绝
+

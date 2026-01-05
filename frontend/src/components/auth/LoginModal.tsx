@@ -1,12 +1,14 @@
 /**
- * Login Modal Component
- * 登录弹窗组件
+ * Login/Register Modal Component
+ * 登录/注册弹窗组件
+ *
+ * Supports login with phone + password and registration with phone + password + email
+ * 支持手机号+密码登录，以及手机号+密码+邮箱注册
  */
 
 import React, { useState, useEffect } from 'react';
-import { X, Phone, Lock, AlertCircle, Loader2 } from 'lucide-react';
+import { X, Phone, Lock, Mail, AlertCircle, Loader2, Eye, EyeOff, CheckCircle } from 'lucide-react';
 import { useAuthStore } from '../../stores/authStore';
-import { useModeStore } from '../../stores/modeStore';
 
 interface LoginModalProps {
   isOpen: boolean;
@@ -14,65 +16,105 @@ interface LoginModalProps {
   onSuccess?: () => void;
 }
 
+type ModalMode = 'login' | 'register';
+
 export default function LoginModal({ isOpen, onClose, onSuccess }: LoginModalProps) {
-  const { login, sendCode, isLoading, error, clearError } = useAuthStore();
-  const { isDebug } = useModeStore();
+  const { login, register, isLoading, error, clearError } = useAuthStore();
 
+  const [mode, setMode] = useState<ModalMode>('login');
   const [phone, setPhone] = useState('');
-  const [code, setCode] = useState('');
-  const [codeSent, setCodeSent] = useState(false);
-  const [countdown, setCountdown] = useState(0);
-  const [debugHint, setDebugHint] = useState<string | null>(null);
+  const [password, setPassword] = useState('');
+  const [passwordConfirm, setPasswordConfirm] = useState('');
+  const [email, setEmail] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [showPasswordConfirm, setShowPasswordConfirm] = useState(false);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
-  // Countdown timer for resend
-  // 重发倒计时
-  useEffect(() => {
-    if (countdown > 0) {
-      const timer = setTimeout(() => setCountdown(countdown - 1), 1000);
-      return () => clearTimeout(timer);
-    }
-  }, [countdown]);
-
-  // Clear error when modal opens/closes
-  // 弹窗打开/关闭时清除错误
+  // Clear state when modal opens/closes
+  // 弹窗打开/关闭时清除状态
   useEffect(() => {
     if (isOpen) {
       clearError();
       setPhone('');
-      setCode('');
-      setCodeSent(false);
-      setDebugHint(null);
+      setPassword('');
+      setPasswordConfirm('');
+      setEmail('');
+      setSuccessMessage(null);
+      setShowPassword(false);
+      setShowPasswordConfirm(false);
     }
   }, [isOpen, clearError]);
+
+  // Clear error when switching modes
+  // 切换模式时清除错误
+  useEffect(() => {
+    clearError();
+    setSuccessMessage(null);
+  }, [mode, clearError]);
 
   // Validate phone number format
   // 验证手机号格式
   const isPhoneValid = /^1[3-9]\d{9}$/.test(phone);
 
-  // Handle send code
-  // 处理发送验证码
-  const handleSendCode = async () => {
-    if (!isPhoneValid) return;
+  // Validate email format (optional)
+  // 验证邮箱格式（可选）
+  const isEmailValid = !email || /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(email);
 
-    const result = await sendCode(phone);
-    if (result.success) {
-      setCodeSent(true);
-      setCountdown(60);
-      if (result.debugHint) {
-        setDebugHint(result.debugHint);
-      }
-    }
-  };
+  // Validate password
+  // 验证密码
+  const isPasswordValid = password.length >= 6 && password.length <= 32;
+  const isPasswordMatch = password === passwordConfirm;
+
+  // Check if form is valid
+  // 检查表单是否有效
+  const isLoginValid = isPhoneValid && password.length > 0;
+  const isRegisterValid = isPhoneValid && isPasswordValid && isPasswordMatch && isEmailValid;
 
   // Handle login
   // 处理登录
   const handleLogin = async () => {
-    if (!isPhoneValid || code.length < 4) return;
+    if (!isLoginValid) return;
 
-    const success = await login(phone, code);
+    const success = await login(phone, password);
     if (success) {
       onSuccess?.();
       onClose();
+    }
+  };
+
+  // Handle registration
+  // 处理注册
+  const handleRegister = async () => {
+    if (!isRegisterValid) return;
+
+    const result = await register({
+      phone,
+      password,
+      passwordConfirm,
+      email: email || undefined,
+    });
+
+    if (result.success) {
+      setSuccessMessage('注册成功！请登录');
+      // Switch to login mode after successful registration
+      // 注册成功后切换到登录模式
+      setTimeout(() => {
+        setMode('login');
+        setPassword('');
+        setPasswordConfirm('');
+        setEmail('');
+        setSuccessMessage(null);
+      }, 1500);
+    }
+  };
+
+  // Handle form submit
+  // 处理表单提交
+  const handleSubmit = () => {
+    if (mode === 'login') {
+      handleLogin();
+    } else {
+      handleRegister();
     }
   };
 
@@ -80,11 +122,7 @@ export default function LoginModal({ isOpen, onClose, onSuccess }: LoginModalPro
   // 处理按键
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
-      if (!codeSent) {
-        handleSendCode();
-      } else {
-        handleLogin();
-      }
+      handleSubmit();
     }
   };
 
@@ -104,10 +142,10 @@ export default function LoginModal({ isOpen, onClose, onSuccess }: LoginModalPro
         <div className="flex items-center justify-between p-6 border-b">
           <div>
             <h2 className="text-xl font-semibold text-gray-900">
-              {isDebug ? 'Debug Login' : 'Login'}
+              {mode === 'login' ? 'Login 登录' : 'Register 注册'}
             </h2>
             <p className="text-sm text-gray-500 mt-1">
-              {isDebug ? '调试模式登录' : '使用手机号登录'}
+              {mode === 'login' ? '使用手机号和密码登录' : '创建新账号'}
             </p>
           </div>
           <button
@@ -119,18 +157,13 @@ export default function LoginModal({ isOpen, onClose, onSuccess }: LoginModalPro
         </div>
 
         {/* Content */}
-        <div className="p-6 space-y-6">
-          {/* Debug mode notice */}
-          {isDebug && (
-            <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
-              <div className="flex items-start gap-3">
-                <AlertCircle className="w-5 h-5 text-amber-500 mt-0.5" />
-                <div className="text-sm">
-                  <p className="font-medium text-amber-800">Debug Mode</p>
-                  <p className="text-amber-700 mt-1">
-                    调试模式下，任意验证码都可以通过。建议使用: 123456
-                  </p>
-                </div>
+        <div className="p-6 space-y-4">
+          {/* Success message */}
+          {successMessage && (
+            <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+              <div className="flex items-center gap-2 text-green-700">
+                <CheckCircle className="w-5 h-5" />
+                <span className="text-sm">{successMessage}</span>
               </div>
             </div>
           )}
@@ -162,55 +195,138 @@ export default function LoginModal({ isOpen, onClose, onSuccess }: LoginModalPro
                 disabled={isLoading}
               />
             </div>
+            {phone && !isPhoneValid && (
+              <p className="mt-1 text-sm text-red-500">请输入有效的手机号</p>
+            )}
           </div>
 
-          {/* Code input */}
+          {/* Password input */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              Verification Code 验证码
+              Password 密码
             </label>
-            <div className="flex gap-3">
-              <div className="relative flex-1">
+            <div className="relative">
+              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+              <input
+                type={showPassword ? 'text' : 'password'}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                onKeyPress={handleKeyPress}
+                placeholder={mode === 'register' ? '6-32位密码' : '请输入密码'}
+                className="w-full pl-10 pr-12 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                disabled={isLoading}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+              >
+                {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+              </button>
+            </div>
+            {mode === 'register' && password && !isPasswordValid && (
+              <p className="mt-1 text-sm text-red-500">密码长度需要6-32位</p>
+            )}
+          </div>
+
+          {/* Password confirm (register only) */}
+          {mode === 'register' && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Confirm Password 确认密码
+              </label>
+              <div className="relative">
                 <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
                 <input
-                  type="text"
-                  value={code}
-                  onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  type={showPasswordConfirm ? 'text' : 'password'}
+                  value={passwordConfirm}
+                  onChange={(e) => setPasswordConfirm(e.target.value)}
                   onKeyPress={handleKeyPress}
-                  placeholder={debugHint || '123456'}
+                  placeholder="再次输入密码"
+                  className="w-full pl-10 pr-12 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                  disabled={isLoading}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPasswordConfirm(!showPasswordConfirm)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                >
+                  {showPasswordConfirm ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                </button>
+              </div>
+              {passwordConfirm && !isPasswordMatch && (
+                <p className="mt-1 text-sm text-red-500">两次输入的密码不一致</p>
+              )}
+            </div>
+          )}
+
+          {/* Email input (register only, optional) */}
+          {mode === 'register' && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Email 邮箱 <span className="text-gray-400 font-normal">(可选，用于找回密码)</span>
+              </label>
+              <div className="relative">
+                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  onKeyPress={handleKeyPress}
+                  placeholder="your@email.com"
                   className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
                   disabled={isLoading}
                 />
               </div>
-              <button
-                onClick={handleSendCode}
-                disabled={!isPhoneValid || countdown > 0 || isLoading}
-                className="px-4 py-3 bg-gray-100 text-gray-700 rounded-lg font-medium hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
-              >
-                {countdown > 0 ? `${countdown}s` : codeSent ? 'Resend' : 'Get Code'}
-              </button>
+              {email && !isEmailValid && (
+                <p className="mt-1 text-sm text-red-500">请输入有效的邮箱地址</p>
+              )}
             </div>
-            {debugHint && (
-              <p className="mt-2 text-sm text-amber-600">
-                Debug hint: {debugHint}
-              </p>
-            )}
-          </div>
+          )}
         </div>
 
         {/* Footer */}
         <div className="p-6 bg-gray-50 border-t">
           <button
-            onClick={handleLogin}
-            disabled={!isPhoneValid || code.length < 4 || isLoading}
+            onClick={handleSubmit}
+            disabled={(mode === 'login' ? !isLoginValid : !isRegisterValid) || isLoading}
             className="w-full py-3 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
           >
             {isLoading && <Loader2 className="w-5 h-5 animate-spin" />}
-            {isLoading ? 'Logging in...' : 'Login 登录'}
+            {isLoading
+              ? (mode === 'login' ? 'Logging in...' : 'Registering...')
+              : (mode === 'login' ? 'Login 登录' : 'Register 注册')}
           </button>
 
-          <p className="mt-4 text-center text-sm text-gray-500">
-            By logging in, you agree to our Terms of Service
+          {/* Mode switch */}
+          <div className="mt-4 text-center">
+            {mode === 'login' ? (
+              <p className="text-sm text-gray-600">
+                没有账号？{' '}
+                <button
+                  onClick={() => setMode('register')}
+                  className="text-blue-600 hover:text-blue-700 font-medium"
+                  disabled={isLoading}
+                >
+                  立即注册
+                </button>
+              </p>
+            ) : (
+              <p className="text-sm text-gray-600">
+                已有账号？{' '}
+                <button
+                  onClick={() => setMode('login')}
+                  className="text-blue-600 hover:text-blue-700 font-medium"
+                  disabled={isLoading}
+                >
+                  立即登录
+                </button>
+              </p>
+            )}
+          </div>
+
+          <p className="mt-4 text-center text-xs text-gray-400">
+            By continuing, you agree to our Terms of Service
           </p>
         </div>
       </div>

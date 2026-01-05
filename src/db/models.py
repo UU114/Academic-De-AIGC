@@ -55,14 +55,16 @@ class PaymentStatus(str, Enum):
 
 class User(Base):
     """
-    User model - Local cache of platform user info
-    用户模型 - 平台用户信息的本地缓存
+    User model - Local user info storage
+    用户模型 - 本地用户信息存储
     """
     __tablename__ = "users"
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     platform_user_id = Column(String(64), unique=True, nullable=False)  # Central platform user ID
-    phone = Column(String(20), nullable=True)  # Phone number (masked for storage)
+    phone = Column(String(20), unique=True, nullable=False)  # Phone number (used for login)
+    email = Column(String(200), nullable=True)  # Email (for password recovery)
+    password_hash = Column(String(256), nullable=True)  # Hashed password
     nickname = Column(String(100), nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     last_login_at = Column(DateTime, nullable=True)
@@ -108,6 +110,10 @@ class Task(Base):
     status = Column(String(20), default=TaskStatus.CREATED.value)
     payment_status = Column(String(20), default=PaymentStatus.UNPAID.value)
     platform_order_id = Column(String(64), nullable=True)   # Central platform order ID
+
+    # API call tracking for anomaly detection
+    # API调用追踪（用于异常检测）
+    api_call_count = Column(Integer, default=0, nullable=False)  # Number of LLM API calls
 
     # Timestamps
     # 时间戳

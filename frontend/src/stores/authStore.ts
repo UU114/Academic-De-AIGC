@@ -1,6 +1,9 @@
 /**
  * Auth Store - Authentication state management
  * 认证存储 - 认证状态管理
+ *
+ * Supports registration with phone + password + email
+ * 支持手机号 + 密码 + 邮箱注册
  */
 
 import { create } from 'zustand';
@@ -19,6 +22,13 @@ export interface UserInfo {
   isDebug: boolean;
 }
 
+export interface RegisterData {
+  phone: string;
+  password: string;
+  passwordConfirm: string;
+  email?: string;
+}
+
 export interface AuthState {
   // State
   token: string | null;
@@ -28,9 +38,9 @@ export interface AuthState {
   error: string | null;
 
   // Actions
-  login: (phone: string, code: string) => Promise<boolean>;
+  login: (phone: string, password: string) => Promise<boolean>;
+  register: (data: RegisterData) => Promise<{ success: boolean; message?: string }>;
   logout: () => void;
-  sendCode: (phone: string) => Promise<{ success: boolean; debugHint?: string }>;
   checkAuth: () => Promise<void>;
   setToken: (token: string, user: UserInfo) => void;
   clearError: () => void;
@@ -59,47 +69,52 @@ export const useAuthStore = create<AuthState>()(
       isLoading: false,
       error: null,
 
-      // Send verification code
-      // 发送验证码
-      sendCode: async (phone: string) => {
+      // Register new user
+      // 注册新用户
+      register: async (data: RegisterData) => {
         set({ isLoading: true, error: null });
 
         try {
-          const response = await fetch(`${API_BASE}/send-code`, {
+          const response = await fetch(`${API_BASE}/register`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ phone }),
+            body: JSON.stringify({
+              phone: data.phone,
+              password: data.password,
+              password_confirm: data.passwordConfirm,
+              email: data.email || null,
+            }),
           });
 
-          const data = await response.json();
+          const result = await response.json();
 
           if (!response.ok) {
-            throw new Error(data.detail?.message_zh || data.detail?.message || 'Failed to send code');
+            throw new Error(result.detail?.message_zh || result.detail?.message || 'Registration failed');
           }
 
           set({ isLoading: false });
 
           return {
             success: true,
-            debugHint: data.debug_hint,
+            message: result.message_zh || result.message,
           };
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Unknown error';
           set({ isLoading: false, error: message });
-          return { success: false };
+          return { success: false, message };
         }
       },
 
-      // Login with phone and code
-      // 使用手机号和验证码登录
-      login: async (phone: string, code: string) => {
+      // Login with phone and password
+      // 使用手机号和密码登录
+      login: async (phone: string, password: string) => {
         set({ isLoading: true, error: null });
 
         try {
           const response = await fetch(`${API_BASE}/login`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ phone, code }),
+            body: JSON.stringify({ phone, password }),
           });
 
           const data = await response.json();

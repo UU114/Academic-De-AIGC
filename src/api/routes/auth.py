@@ -4,14 +4,20 @@ AcademicGuard 认证API路由
 
 This module provides authentication endpoints.
 此模块提供认证端点。
+
+Registration uses phone + password + email (optional).
+注册使用手机号 + 密码 + 邮箱（可选）。
 """
 
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import datetime
+import hashlib
+import secrets
+import re
 
 from src.db.database import get_db
 from src.db.models import User
@@ -24,27 +30,81 @@ router = APIRouter()
 
 
 # ==========================================
+# Password Utility Functions
+# 密码工具函数
+# ==========================================
+
+def hash_password(password: str) -> str:
+    """
+    Hash password using SHA-256 with salt
+    使用SHA-256加盐哈希密码
+    """
+    salt = secrets.token_hex(16)
+    hashed = hashlib.sha256((password + salt).encode()).hexdigest()
+    return f"{salt}${hashed}"
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    """
+    Verify password against stored hash
+    验证密码是否与存储的哈希匹配
+    """
+    try:
+        salt, hashed = password_hash.split("$")
+        return hashlib.sha256((password + salt).encode()).hexdigest() == hashed
+    except (ValueError, AttributeError):
+        return False
+
+
+# ==========================================
 # Request/Response Models
 # 请求/响应模型
 # ==========================================
 
-class SendCodeRequest(BaseModel):
-    """Request to send SMS verification code 发送验证码请求"""
+class RegisterRequest(BaseModel):
+    """
+    Request for user registration
+    用户注册请求
+    """
     phone: str = Field(..., pattern=r"^1[3-9]\d{9}$", description="Phone number (手机号)")
+    password: str = Field(..., min_length=6, max_length=32, description="Password (密码)")
+    password_confirm: str = Field(..., min_length=6, max_length=32, description="Password confirmation (确认密码)")
+    email: Optional[str] = Field(None, description="Email for password recovery (邮箱，用于找回密码)")
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, v):
+        """Validate email format 验证邮箱格式"""
+        if v is not None and v != "":
+            email_pattern = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
+            if not re.match(email_pattern, v):
+                raise ValueError("Invalid email format / 邮箱格式无效")
+        return v
+
+    @field_validator("password_confirm")
+    @classmethod
+    def passwords_match(cls, v, info):
+        """Validate passwords match 验证两次密码一致"""
+        if "password" in info.data and v != info.data["password"]:
+            raise ValueError("Passwords do not match / 两次密码不一致")
+        return v
 
 
-class SendCodeResponse(BaseModel):
-    """Response for send code request 发送验证码响应"""
+class RegisterResponse(BaseModel):
+    """Response for registration 注册响应"""
     success: bool
     message: str
     message_zh: str
-    debug_hint: Optional[str] = None  # Only in debug mode
+    user_id: Optional[str] = None
 
 
-class VerifyCodeRequest(BaseModel):
-    """Request to verify SMS code and login 验证码登录请求"""
+class LoginRequest(BaseModel):
+    """
+    Request for user login with phone and password
+    用户登录请求（手机号+密码）
+    """
     phone: str = Field(..., pattern=r"^1[3-9]\d{9}$", description="Phone number (手机号)")
-    code: str = Field(..., min_length=4, max_length=6, description="Verification code (验证码)")
+    password: str = Field(..., min_length=1, description="Password (密码)")
 
 
 class LoginResponse(BaseModel):
@@ -80,95 +140,117 @@ class SystemModeResponse(BaseModel):
 # API端点
 # ==========================================
 
-@router.post("/send-code", response_model=SendCodeResponse)
-async def send_verification_code(request: SendCodeRequest):
+@router.post("/register", response_model=RegisterResponse)
+async def register(
+    request: RegisterRequest,
+    db: AsyncSession = Depends(get_db)
+):
     """
-    Send SMS verification code
-    发送短信验证码
+    Register new user with phone, password and optional email
+    使用手机号、密码和可选邮箱注册新用户
 
-    DEBUG mode: Returns success immediately, use any code (e.g., 123456)
-    调试模式：立即返回成功，使用任意验证码（如 123456）
-
-    OPERATIONAL mode: Sends real SMS via central platform
-    运营模式：通过中央平台发送真实短信
+    - Phone must be unique 手机号必须唯一
+    - Password must be 6-32 characters 密码必须6-32位
+    - Email is optional (for password recovery) 邮箱可选（用于找回密码）
     """
-    settings = get_settings()
-    auth_provider = get_auth_provider()
+    # Check if phone already exists
+    # 检查手机号是否已存在
+    result = await db.execute(
+        select(User).where(User.phone == request.phone)
+    )
+    existing_user = result.scalar_one_or_none()
 
-    success = await auth_provider.send_sms_code(request.phone)
-
-    if not success:
+    if existing_user:
         raise HTTPException(
-            status_code=500,
+            status_code=400,
             detail={
-                "error": "sms_send_failed",
-                "message": "Failed to send verification code",
-                "message_zh": "发送验证码失败"
+                "error": "phone_exists",
+                "message": "Phone number already registered",
+                "message_zh": "该手机号已注册"
             }
         )
 
-    return SendCodeResponse(
+    # Create new user
+    # 创建新用户
+    password_hashed = hash_password(request.password)
+    platform_user_id = f"local_{request.phone}"
+
+    new_user = User(
+        platform_user_id=platform_user_id,
+        phone=request.phone,
+        email=request.email if request.email else None,
+        password_hash=password_hashed,
+        nickname=f"User_{request.phone[-4:]}"
+    )
+
+    db.add(new_user)
+    await db.commit()
+    await db.refresh(new_user)
+
+    return RegisterResponse(
         success=True,
-        message="Verification code sent" if settings.is_operational_mode() else "Debug mode: use any code",
-        message_zh="验证码已发送" if settings.is_operational_mode() else "调试模式：使用任意验证码",
-        debug_hint="123456" if settings.is_debug_mode() else None
+        message="Registration successful",
+        message_zh="注册成功",
+        user_id=new_user.id
     )
 
 
 @router.post("/login", response_model=LoginResponse)
 async def login(
-    request: VerifyCodeRequest,
+    request: LoginRequest,
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Login with phone and verification code
-    使用手机号和验证码登录
-
-    DEBUG mode: Any code is accepted
-    调试模式：接受任意验证码
-
-    OPERATIONAL mode: Validates with central platform
-    运营模式：通过中央平台验证
+    Login with phone and password
+    使用手机号和密码登录
     """
     settings = get_settings()
-    auth_provider = get_auth_provider()
 
-    # Verify code with provider
-    # 使用提供者验证验证码
-    user_info = await auth_provider.verify_phone_code(request.phone, request.code)
-
-    if not user_info:
-        raise HTTPException(
-            status_code=401,
-            detail={
-                "error": "invalid_code",
-                "message": "Invalid verification code",
-                "message_zh": "验证码无效"
-            }
-        )
-
-    # Get or create local user record
-    # 获取或创建本地用户记录
+    # Find user by phone
+    # 通过手机号查找用户
     result = await db.execute(
-        select(User).where(User.platform_user_id == user_info.platform_user_id)
+        select(User).where(User.phone == request.phone)
     )
     user = result.scalar_one_or_none()
 
     if not user:
-        user = User(
-            platform_user_id=user_info.platform_user_id,
-            phone=user_info.phone,
-            nickname=user_info.nickname
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": "invalid_credentials",
+                "message": "Invalid phone number or password",
+                "message_zh": "手机号或密码错误"
+            }
         )
-        db.add(user)
-        await db.flush()
 
+    # Verify password
+    # 验证密码
+    if not user.password_hash or not verify_password(request.password, user.password_hash):
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": "invalid_credentials",
+                "message": "Invalid phone number or password",
+                "message_zh": "手机号或密码错误"
+            }
+        )
+
+    # Update last login time
+    # 更新最后登录时间
     user.last_login_at = datetime.utcnow()
     await db.commit()
 
     # Generate JWT token
     # 生成JWT令牌
     access_token = create_access_token(user.id, user.platform_user_id)
+
+    # Build user info response
+    # 构建用户信息响应
+    user_info = UserInfo(
+        platform_user_id=user.platform_user_id,
+        phone=user.phone,
+        nickname=user.nickname
+    )
 
     return LoginResponse(
         access_token=access_token,

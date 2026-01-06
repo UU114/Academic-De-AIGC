@@ -839,33 +839,12 @@ def _get_fallback_analysis(sentence: str, colloquialism_level: int) -> SentenceA
                 example=None
             ))
 
-    # Only suggest splitting for VERY long sentences (>40 words) that don't appear to have tight logic
-    # 仅对非常长的句子（>40词）且没有紧密逻辑的句子建议拆分
-    # Tight logic indicators: nested clauses (which, that, where, whereby), conditional chains
-    # 紧密逻辑标志：嵌套从句、条件链
-    word_count = len(sentence.split())
-    tight_logic_markers = ["which ", "that ", "where ", "whereby ", "provided that",
-                           "given that", "assuming that", "while ", "whereas "]
-    has_tight_logic = any(marker in sentence_lower for marker in tight_logic_markers)
-
-    if word_count > 40 and not has_tight_logic:
-        # Only suggest for very long sentences without tight logic
-        # 仅对没有紧密逻辑的超长句子建议
+    if len(sentence.split()) > 25:
         rewrite_suggestions.append(RewriteSuggestion(
             type="split_sentence",
             type_zh="拆分长句",
-            description="This very long sentence (>40 words) without nested clauses may benefit from restructuring",
-            description_zh="这个超长句（>40词）没有嵌套从句，可能需要重构",
-            example=None
-        ))
-    elif word_count > 25 and word_count <= 40 and not has_tight_logic:
-        # For moderately long sentences, suggest adding complexity instead of splitting
-        # 对于中等长度的句子，建议增加复杂性而不是拆分
-        rewrite_suggestions.append(RewriteSuggestion(
-            type="add_complexity",
-            type_zh="增加句式复杂度",
-            description="Consider adding nested clauses (which/that/where) for human-like complexity instead of splitting",
-            description_zh="考虑添加嵌套从句（which/that/where）增加人类化复杂度，而非拆分",
+            description="Consider breaking this long sentence into shorter ones",
+            description_zh="考虑将这个长句拆分成较短的句子",
             example=None
         ))
 

@@ -375,8 +375,8 @@ class ParagraphLogicAnalyzer:
                 description_zh=f"句子长度过于均匀 (变异系数={cv:.2f}). 长度: {lengths}",
                 severity="high",
                 position=(0, len(sentences) - 1),
-                suggestion="Create rhythm: KEEP long sentences (20-30 words) with nested clauses for complexity, ADD short sentences (8-12 words) for emphasis. DO NOT split tight-logic sentences.",
-                suggestion_zh="创造节奏感：保留长句(20-30词)并使用嵌套从句增加复杂度，添加短句(8-12词)用于强调。禁止拆分逻辑紧密的句子。",
+                suggestion="Create rhythm: mix short (8-12 words) for punch with long (20-30 words) for context",
+                suggestion_zh="创造节奏感：短句(8-12词)用于论断，长句(20-30词)用于背景铺陈",
                 details={"lengths": lengths, "mean": mean_len, "cv": cv}
             ))
         elif cv < 0.30:  # Somewhat uniform
@@ -386,8 +386,8 @@ class ParagraphLogicAnalyzer:
                 description_zh=f"句子长度较为均匀 (变异系数={cv:.2f}). 长度: {lengths}",
                 severity="medium",
                 position=(0, len(sentences) - 1),
-                suggestion="Add variation by: 1) Adding nested clauses (which/where/whereby) to medium sentences for complexity, 2) Adding short emphatic sentences. AVOID splitting tight-logic sentences.",
-                suggestion_zh="通过以下方式增加变化：1) 对中等句子添加嵌套从句(which/where/whereby)增加复杂度，2) 添加短句用于强调。避免拆分逻辑紧密的句子。",
+                suggestion="Add more length variation: try splitting long sentences or combining short ones",
+                suggestion_zh="增加长度变化：尝试拆分长句或合并短句",
                 details={"lengths": lengths, "mean": mean_len, "cv": cv}
             ))
 

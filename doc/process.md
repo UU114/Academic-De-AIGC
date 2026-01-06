@@ -1,11 +1,364 @@
 # AcademicGuard 开发进度
 # AcademicGuard Development Progress
 
-> 最后更新 Last Updated: 2026-01-04
+> 最后更新 Last Updated: 2026-01-05
 
 ---
 
 ## 最近更新 | Recent Updates
+
+### 2026-01-05 - 添加 Burstiness 指示器到界面 | Add Burstiness Indicator to UI
+
+#### 需求 | Requirements
+在句子卡片界面展示 Burstiness（节奏变化度）评价。
+
+Display Burstiness (rhythm variation) indicator on sentence cards in the UI.
+
+#### 修改内容 | Changes
+
+| 文件 File | 修改 Modification |
+|-----------|-------------------|
+| `frontend/src/components/editor/SentenceCard.tsx` | 1. 新增 `BurstinessIndicator` 组件<br>2. 在指标显示区添加节奏变化度显示<br>3. 根据风险等级显示不同颜色和emoji |
+
+#### BurstinessIndicator 组件说明
+
+| 风险等级 | 颜色 | Emoji | 说明 |
+|----------|------|-------|------|
+| low (低风险) | 绿色 | 👍 | 句子长度变化自然，符合人类写作特征 |
+| medium (中等风险) | 橙色 | ⚠️ | 句子长度变化适中，有一定AI特征 |
+| high (高风险) | 红色 | 🤖 | 句子长度过于均匀，强烈AI特征 |
+
+#### 结果 | Result
+用户现在可以在句子卡片底部看到"节奏: XX%"指示器，鼠标悬停显示详细说明。
+
+Users can now see "节奏: XX%" indicator at the bottom of sentence cards, with detailed tooltip on hover.
+
+---
+
+### 2026-01-05 - 更新 README 文档 | Update README Documentation
+
+#### 需求 | Requirements
+根据 Step3 句子层面改进，更新 README.md 文档。
+
+Update README.md documentation based on Step3 sentence-level improvements.
+
+#### 修改内容 | Changes
+
+| 文件 File | 修改 Modification |
+|-----------|-------------------|
+| `README.md` | 1. 硬核技术表新增: 18点LLM改写技术、Step2-Step3联动<br>2. Level 3 详情新增: 7个分析点 + 18点改写技术表<br>3. 架构图更新: Analyzer + Suggester 组件扩展<br>4. 已完成功能新增: Step2-Step3联动、18点技术、句式多样性、句子结构分析器 |
+
+#### 结果 | Result
+README 文档已更新，反映最新的 Step3 单句层面改进功能。
+
+README documentation updated to reflect latest Step3 sentence-level improvements.
+
+---
+
+### 2026-01-05 - 添加重新选择改写方案功能 | Add Reselect Suggestion Feature
+
+#### 需求 | Requirements
+在句子已处理/跳过/标记后，添加"重新选择改写方案"按钮，允许用户重新选择不同的改写方案。
+
+Add "Reselect Suggestion" button after sentence is processed/skipped/flagged, allowing users to choose a different rewrite option.
+
+#### 解决方案 | Solution
+1. 在SuggestionPanel组件的"已处理"状态显示中添加"重新选择改写方案"按钮
+2. 在Intervention页面中实现handleReselect回调，重置句子状态并重新加载建议
+
+1. Add "Reselect Suggestion" button to the "processed" state display in SuggestionPanel
+2. Implement handleReselect callback in Intervention page to reset sentence status and reload suggestions
+
+#### 修改内容 | Changes
+
+| 文件 File | 修改 Modification |
+|-----------|-------------------|
+| `frontend/src/components/editor/SuggestionPanel.tsx` | 1. 添加 `onReselect` prop<br>2. 添加 `RotateCcw` 图标<br>3. 在已处理状态下显示重新选择按钮 |
+| `frontend/src/pages/Intervention.tsx` | 1. 添加 `handleReselect` 回调函数<br>2. 将 `onReselect` 传递给 SuggestionPanel |
+
+#### 结果 | Result
+用户现在可以在句子已处理、跳过或标记后重新选择改写方案。
+
+Users can now reselect a different suggestion after a sentence has been processed, skipped, or flagged.
+
+---
+
+### 2026-01-05 - 修复LLM轨道A不显示问题 | Fix Track A (LLM) Not Showing
+
+#### 需求 | Requirements
+修复长句子改写时轨道A（LLM建议）不显示的问题。
+
+Fix Track A (LLM suggestion) not showing for long sentence rewriting.
+
+#### 问题根因 | Root Cause
+1. `llm_max_tokens` 设置为 1024，对较长句子改写不够，导致LLM输出被截断
+2. 截断的JSON无法解析，导致LLM建议丢失
+
+1. `llm_max_tokens` was set to 1024, insufficient for longer sentence rewrites, causing LLM output truncation
+2. Truncated JSON failed to parse, causing LLM suggestion to be lost
+
+#### 解决方案 | Solution
+1. 增加 `llm_max_tokens` 从 1024 到 2048
+2. 添加JSON解析容错处理：尝试修复截断的JSON，或使用正则提取改写文本
+
+1. Increased `llm_max_tokens` from 1024 to 2048
+2. Added JSON parsing error recovery: try to fix truncated JSON, or extract rewritten text via regex
+
+#### 修改内容 | Changes
+
+| 文件 File | 修改 Modification |
+|-----------|-------------------|
+| `src/config.py:75` | 增加 `llm_max_tokens` 从 1024 到 2048 |
+| `src/core/suggester/llm_track.py:589-625` | 添加JSON截断修复逻辑和正则表达式提取备用方案 |
+
+#### 结果 | Result
+长句子改写现在可以正常显示轨道A（LLM建议）。
+
+Long sentence rewrites now properly show Track A (LLM suggestion).
+
+---
+
+### 2026-01-05 - 修复HTTP 431错误 | Fix HTTP 431 Error (Request Header Fields Too Large)
+
+#### 需求 | Requirements
+修复step1-2点击"确认修改并继续"时报错431 (Request Header Fields Too Large)。
+
+Fix 431 error when clicking "Confirm and Continue" in step1-2.
+
+#### 问题根因 | Root Cause
+多个API端点使用URL查询参数(`params`)传递长文本数据，当文本较长时导致URL超出服务器限制。
+
+Multiple API endpoints used URL query parameters (`params`) to send long text data, causing URL to exceed server limits when text is long.
+
+#### 解决方案 | Solution
+将所有可能传递长文本的API改为使用请求体(request body)传递数据。
+
+Changed all APIs that may send long text to use request body instead of URL parameters.
+
+#### 修改内容 | Changes
+
+| 文件 File | 修改 Modification |
+|-----------|-------------------|
+| `src/api/routes/documents.py` | 1. 添加 `TextUploadRequest` schema<br>2. 修改 `upload_text` 端点从请求体接收 `text` |
+| `src/api/routes/suggest.py` | 1. 添加 `ApplySuggestionRequest` 和 `HintsRequest` schema<br>2. 修改 `apply_suggestion` 端点从请求体接收参数<br>3. 修改 `get_writing_hints` 端点从请求体接收 `sentence` |
+| `frontend/src/services/api.ts` | 1. 修改 `uploadText` 使用请求体发送 `text`<br>2. 修改 `applySuggestion` 使用请求体发送参数<br>3. 修改 `getWritingHints` 使用请求体发送 `sentence` |
+
+#### 结果 | Result
+修复了3个API端点的431错误问题，长文本现在可以正常提交。
+
+Fixed 431 error for 3 API endpoints. Long text can now be submitted properly.
+
+---
+
+### 2026-01-05 - 配置DashScope (阿里云灵积) API | Configure DashScope API ✅ 已完成
+
+#### 需求 | Requirements
+配置DashScope（阿里云灵积）作为LLM提供商，使用qwen-plus模型。
+
+Configure DashScope (Aliyun Lingji) as LLM provider using qwen-plus model.
+
+#### 问题根因 | Root Cause
+1. 项目中多个文件的LLM调用代码缺少DashScope支持
+2. Prompt模板中的Unicode字符（⚠️）在Windows GBK编码环境下导致`UnicodeEncodeError`
+3. print调试语句尝试输出包含emoji的字符串时崩溃
+
+1. Multiple files in the project lacked DashScope support in LLM calling code
+2. Unicode characters (⚠️) in prompt templates caused `UnicodeEncodeError` in Windows GBK encoding
+3. Print debug statements crashed when trying to output strings containing emoji
+
+#### 解决方案 | Solution
+1. 在所有LLM调用点添加DashScope支持
+2. 将prompt模板中的⚠️替换为ASCII字符`[CRITICAL]`和`[IMPORTANT]`
+
+1. Added DashScope support in all LLM calling points
+2. Replaced ⚠️ in prompt templates with ASCII characters `[CRITICAL]` and `[IMPORTANT]`
+
+#### 修改内容 | Changes
+
+| 文件 File | 修改 Modification |
+|-----------|-------------------|
+| `src/config.py` | 添加 `dashscope_api_key`, `dashscope_base_url`, `dashscope_model` 配置字段 |
+| `src/api/routes/structure.py` | 1. 添加DashScope调用到 `_call_llm_for_merge_modify`, `_call_llm_for_suggestion` 等函数 |
+| | 2. 将`⚠️`替换为`[CRITICAL]`/`[IMPORTANT]` 避免Unicode编码错误 |
+| `src/api/routes/paragraph.py` | 添加DashScope支持到 `_call_llm_for_restructure` |
+| `src/api/routes/structure_guidance.py` | 添加DashScope支持到 `_call_llm_for_guidance` |
+| `src/api/routes/suggest.py` | 添加DashScope支持到LLM调用 |
+| `src/core/analyzer/smart_structure.py` | 添加 `_call_dashscope` 方法和相关支持 |
+| `src/core/suggester/llm_track.py` | 添加 `_call_dashscope` 方法 |
+| `.env` | 配置DashScope凭据: `LLM_PROVIDER=dashscope`, `DASHSCOPE_API_KEY`, `DASHSCOPE_BASE_URL`, `DASHSCOPE_MODEL` |
+
+#### 配置示例 | Configuration Example
+```env
+LLM_PROVIDER=dashscope
+DASHSCOPE_API_KEY=sk-xxxxx
+DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+DASHSCOPE_MODEL=qwen-plus
+```
+
+---
+
+### 2026-01-05 - Step 1-1 AI修改输出不完整修复 | Step 1-1 AI Modification Incomplete Output Fix ✅ 已完成
+
+#### 需求 | Requirements
+修复 Step 1-1 "AI直接修改"功能中，AI修改后的结果没有输出全部论文文本的问题。支持 25000 单词以内的论文主体。
+
+Fix the issue where "AI Direct Modification" in Step 1-1 does not output the complete paper text. Support papers up to 25000 words.
+
+#### 问题根因 | Root Cause
+1. `src/api/routes/structure.py` 中 `document_text` 被截断到 15000 字符
+2. `max_tokens` 输出限制为 8192 tokens
+3. DeepSeek 输出限制不足以输出完整的 25k 单词论文
+
+1. `document_text` was truncated to 15000 characters in `structure.py`
+2. `max_tokens` output was limited to 8192 tokens
+3. DeepSeek output limit insufficient for complete 25k word papers
+
+#### 解决方案 | Solution
+**采用 Diff 模式**：不再要求 LLM 输出完整文档，而是只输出修改的部分（差异）。后端接收差异后，应用到原文档生成完整修改版。
+
+**Use Diff Mode**: Instead of requiring LLM to output the complete document, only output the modified parts (diff). Backend receives diff and applies to original document to generate complete modified version.
+
+#### 修改内容 | Changes
+
+| 文件 File | 修改 Modification |
+|-----------|-------------------|
+| `src/api/routes/structure.py` | 1. 修改 `MERGE_MODIFY_APPLY_TEMPLATE`，改为输出 `modifications` 数组而非全文 |
+| | 2. 新增 diff 应用逻辑：遍历 modifications，用 `modified` 替换 `original` |
+| | 3. 支持精确匹配和模糊匹配（处理空白差异） |
+| | 4. `max_tokens` 可保持在 8192（只输出修改部分） |
+
+#### 新输出格式 | New Output Format
+```json
+{
+  "modifications": [
+    {
+      "original": "原文中的精确句子...",
+      "modified": "修改后的句子...",
+      "reason": "修改原因"
+    }
+  ],
+  "changes_summary_zh": "修改摘要",
+  "changes_count": 5
+}
+```
+
+#### 后端处理逻辑 | Backend Processing Logic
+```python
+# Apply each modification to original document
+# 将每个修改应用到原文档
+for mod in modifications:
+    original = mod.get("original", "")
+    modified = mod.get("modified", "")
+    if original in modified_text:
+        modified_text = modified_text.replace(original, modified, 1)
+    else:
+        # Fuzzy match with normalized whitespace
+        # 使用标准化空白进行模糊匹配
+```
+
+#### 结果 | Result
+- 支持任意长度的论文（只受输入 token 限制，约 30k 单词）
+- LLM 只需输出修改部分，大幅降低 token 消耗
+- 后端自动应用差异生成完整修改版
+
+- Support papers of any length (limited only by input tokens, ~30k words)
+- LLM only needs to output modified parts, significantly reducing token consumption
+- Backend automatically applies diff to generate complete modified version
+
+---
+
+### 2026-01-05 - Step 1-2 问题描述优化 | Step 1-2 Issue Description Improvement ✅ 已完成
+
+#### 需求 | Requirements
+1. 逻辑断层的摘要描述听起来是正面的（"章节转换清晰"），应该指出这是典型的 AI "完美线性过渡"模式
+2. 检测到的问题有重复，因为同一段落可能出现在多个分析类别中（连接词、逻辑断层、高风险段落、关系问题）
+
+1. Logic break summary sounded positive ("clear chapter transition"), should highlight AI "perfect linear transition" pattern
+2. Detected issues were duplicated as the same paragraph could appear in multiple analysis categories
+
+#### 修改文件 | Modified Files
+
+| 文件 File | 修改 Modification |
+|----------|-------------------|
+| `src/core/analyzer/smart_structure.py` | 修改 `RELATIONSHIP_ANALYSIS_PROMPT`，强调 `issue_zh` 必须描述问题而非优点，添加好/坏示例，新增 `ai_perfect_linear` 过渡类型 |
+| `src/api/routes/structure.py` | 修改 `MERGE_MODIFY_APPLY_TEMPLATE` 和 `MERGE_MODIFY_PROMPT_TEMPLATE`，添加重复问题合并指引 |
+
+#### 解决方案 | Solution
+- 问题1：修改 prompt 明确要求 `issue_zh` 描述AI模式问题，而非内容流程
+  - BAD: "从阐明综述目标，自然过渡到具体分类阐述..." (正面描述)
+  - GOOD: "具有典型AI生成的'完美线性过渡'特征，缺乏人类写作自然的思维跳跃"
+- 问题2：在合并修改 prompt 中添加说明，告知 LLM 多个问题可能指向同一段落，应合并处理而非重复修改
+
+---
+
+### 2026-01-05 - Step 1-2 语言一致性修复 | Step 1-2 Language Consistency Fix ✅ 已完成
+
+#### 需求 | Requirements
+修复 Step 1-2 AI合并修改功能输出中英文混搭的问题。确保所有预设 prompt 使用英文，翻译知识库，并完全排除中文缓存内容影响。
+
+Fix the mixed Chinese/English output issue in Step 1-2 AI merge modification feature. Ensure all preset prompts use English, translate knowledge base, and completely exclude Chinese cached content.
+
+#### 问题根因 | Root Cause
+1. 缓存的 `semantic_echo_replacement` 内容为中文
+2. 这些中文内容被直接包含在发给 LLM 的 prompt 中
+3. 即使添加 "MUST TRANSLATE" 指令，LLM 有时仍会复制中文文本
+
+1. Cached `semantic_echo_replacement` content was in Chinese
+2. This Chinese content was included directly in the prompt sent to LLM
+3. Even with "MUST TRANSLATE" instructions, LLM sometimes copied the Chinese text
+
+#### 修改文件 | Modified Files
+
+| 文件 File | 修改 Modification |
+|----------|-------------------|
+| `src/api/routes/structure.py` | 修改 `_build_semantic_echo_context()` 函数，当文档为英文但缓存替换为中文时，完全排除中文文本，只提供关键概念让LLM生成新的英文替换 |
+| `src/api/routes/structure.py` | 修改 `MERGE_MODIFY_PROMPT_TEMPLATE` 添加英文 prompt 生成要求 |
+| `src/api/routes/structure.py` | 添加 `_detect_document_language()` 函数检测文档语言 |
+| `src/prompts/structure_deaigc.py` | 将 `STRUCTURE_DEAIGC_KNOWLEDGE` 知识库完整翻译为英文 |
+| `src/prompts/structure_deaigc.py` | 修改 `QUICK_ISSUE_SUGGESTION_PROMPT` 要求输出英文 prompt_snippet |
+
+#### 解决方案 | Solution
+- Step 1-2 缓存处理：当 `doc_language == "en"` 但 `replacement_is_chinese` 时，不包含中文文本，只提供：
+  - 原始文本
+  - 要删除的连接词
+  - 前段关键概念
+  - 让 LLM 生成英文替换的任务指令
+- Step 1-1 缓存处理：同样逻辑，检测常见连接词模式，提供任务指令而非中文内容
+- 完全重启服务器（非热重载）以确保更改生效
+
+---
+
+### 2026-01-04 - README 文档重构 | README Documentation Restructure ✅ 已完成
+
+#### 需求 | Requirements
+重新生成README文档，需要包含：项目背景、解决的痛点、项目特点、工作逻辑、效果展示、部署方法、需下载的模型、预留接口信息等。
+
+Regenerate README documentation with: project background, problems solved, features, work logic, demo, deployment, required models, reserved interfaces, etc.
+
+#### 修改文件 | Modified Files
+
+| 文件 File | 修改 Modification |
+|----------|-------------------|
+| `README.md` | 完全重构，新增目录、项目背景、痛点分析、工作流程图、效果展示、模型下载指南、完整API列表等 |
+
+#### 新增内容 | New Content
+1. **项目背景** - 中英双语说明 AIGC 检测挑战及项目定位
+2. **痛点对比表** - 传统方案 vs AcademicGuard 方案
+3. **三阶分析架构图** - Level 1/2/3 详细说明
+4. **硬核技术表** - CAASS、PPL、突发性分析、语义回声等
+5. **工作流程图** - ASCII 流程图展示完整处理链路
+6. **效果展示** - 结构分析界面、句子精修界面、PPL 可视化模拟
+7. **系统架构图** - 前端/API/核心层/基础设施层
+8. **技术栈详表** - 后端/前端技术版本列表
+9. **部署方法** - 开发环境/Docker/生产部署三种方式
+10. **模型下载** - 必需模型和可选模型列表及下载命令
+11. **API 接口清单** - 核心分析/建议/流程/文档/认证/管理员接口
+12. **预留接口规范** - 中央平台认证和支付接口完整说明
+13. **配置说明** - 环境变量完整列表和说明
+14. **开发路线** - 已完成/进行中/计划中功能列表
+15. **免责声明** - 中英双语学术诚信提醒
+
+---
 
 ### 2026-01-04 - 后台统计功能 | Admin Dashboard Feature ✅ 已完成
 
@@ -5059,4 +5412,597 @@ Change registration method: phone number + password (entered twice) + optional e
 - ✅ 前端LoginModal支持登录/注册切换
 - ✅ 表单验证完整（手机号、密码、邮箱格式）
 - ✅ API测试通过：注册成功、登录成功、错误密码拒绝、重复注册拒绝
+
+---
+
+## 2026-01-05: 修复Step 1-2 AI合并修改中英文混搭问题
+
+### 用户需求 | User Request
+
+Step 1-2的AI合并修改功能输出中出现中英文混搭的情况，当文档是英文时，修改后的文本中插入了中文内容。
+
+### 问题分析 | Problem Analysis
+
+1. **prompt模板是英文的**，但`issues_list`使用的是中文(`description_zh`)
+2. **上下文构建函数输出是中英双语的** - `_build_previous_improvements_context`和`_build_semantic_echo_context`都输出中英双语内容
+3. **用户文档是英文**，但issues描述、上下文说明都是中文的
+4. **LLM收到混合语言prompt后，输出也变成了混合语言**
+
+### 解决方法 | Solution
+
+1. 添加文档语言检测函数 `_detect_document_language()`，通过统计中文字符比例判断文档语言
+2. 修改上下文构建函数，根据文档语言输出对应语言的内容
+3. 修改issues列表构建逻辑，根据文档语言选择description或description_zh
+4. 增强`MERGE_MODIFY_APPLY_TEMPLATE`模板，添加严格的语言一致性要求
+
+### 修改的文件 | Modified Files
+
+| 文件 File | 操作 Action | 说明 Description |
+|-----------|-------------|------------------|
+| `src/api/routes/structure.py` | 修改 | 添加语言检测函数，修改上下文构建函数签名和内部逻辑，修改API函数使用语言检测，增强prompt模板语言一致性要求 |
+
+### 代码变更详情 | Code Changes
+
+1. **新增函数** `_detect_document_language(text: str) -> str`:
+   - 统计文本中中文字符与字母字符的比例
+   - 如果中文字符超过10%，返回"zh"，否则返回"en"
+
+2. **修改函数** `_build_previous_improvements_context(document, doc_language)`:
+   - 添加`doc_language`参数
+   - 根据语言选择description或description_zh
+   - 根据语言返回对应语言的模板文字
+
+3. **修改函数** `_build_semantic_echo_context(document, doc_language)`:
+   - 添加`doc_language`参数
+   - 根据语言选择替换说明和标题
+
+4. **修改API** `apply_merge_modify()`:
+   - 检测文档语言
+   - 传递语言参数给上下文构建函数
+   - 根据语言选择issues描述和标签
+   - 传递语言指令给prompt模板
+
+5. **修改API** `generate_merge_modify_prompt()`:
+   - 添加语言检测和上下文语言参数传递
+
+6. **增强模板** `MERGE_MODIFY_APPLY_TEMPLATE`:
+   - 添加`{doc_language}`占位符
+   - 在模板开头添加醒目的语言一致性要求
+   - 在多处强调输出必须完全使用文档语言
+
+### 结果 | Result
+
+- ✅ 添加文档语言检测函数
+- ✅ 上下文构建函数根据文档语言输出对应语言内容
+- ✅ issues列表根据文档语言选择描述语言
+- ✅ prompt模板强调语言一致性要求
+- ✅ 英文文档的修改输出将完全使用英文，中文文档将完全使用中文
+
+---
+
+## 2026-01-05: 统一Prompt语言为英文
+
+### 用户需求 | User Request
+
+检查项目所有的预设prompt，确保都一致使用英文。检查要求AI生成prompt的地方有没有规定生成英文prompt的要求。
+
+### 检查结果 | Check Results
+
+1. **大部分prompt已使用英文** - `src/prompts/structure.py`, `structure_guidance.py`, `transition.py`, `paragraph_logic.py` 的prompt主体都是英文
+2. **发现的问题**:
+   - `MERGE_MODIFY_PROMPT_TEMPLATE`: 未明确要求生成英文prompt
+   - `QUICK_ISSUE_SUGGESTION_PROMPT`: 明确要求"All output in Chinese"
+   - `STRUCTURE_DEAIGC_KNOWLEDGE`: 知识库是中文的
+
+### 修改内容 | Changes Made
+
+#### 1. `src/api/routes/structure.py`
+- 修改 `MERGE_MODIFY_PROMPT_TEMPLATE` 第5条
+- 从 "Be written in the SAME LANGUAGE as the document"
+- 改为 "**CRITICAL: The generated prompt MUST be written in English, regardless of document language**"
+
+#### 2. `src/prompts/structure_deaigc.py`
+- 修改 `QUICK_ISSUE_SUGGESTION_PROMPT`:
+  - 将描述字段从 `issue_description_zh` 改为 `issue_description`
+  - 添加英文输出字段 (`diagnosis`, `quick_fix`, `detailed_strategy`)
+  - 将 "All output in Chinese" 改为 "Provide output in both English and Chinese where applicable"
+  - 明确要求 "The prompt_snippet MUST be in English"
+
+- 翻译 `STRUCTURE_DEAIGC_KNOWLEDGE` 知识库为英文:
+  - 6大章节完整翻译（宏观结构、段落层面、衔接层面、开头结尾、跨段落、特定问题解决方案）
+  - 保留所有示例和最佳实践
+  - 保持学术术语的准确性
+
+### 修改的文件 | Modified Files
+
+| 文件 File | 操作 Action | 说明 Description |
+|-----------|-------------|------------------|
+| `src/api/routes/structure.py` | 修改 | 要求生成prompt模板输出英文 |
+| `src/prompts/structure_deaigc.py` | 修改 | 翻译知识库为英文，修改QUICK_ISSUE_SUGGESTION_PROMPT支持双语输出 |
+
+### 结果 | Result
+
+- ✅ `MERGE_MODIFY_PROMPT_TEMPLATE` 现在明确要求生成英文prompt
+- ✅ `QUICK_ISSUE_SUGGESTION_PROMPT` 现在支持双语输出，prompt_snippet必须为英文
+- ✅ `STRUCTURE_DEAIGC_KNOWLEDGE` 知识库已翻译为英文（约240行）
+- ✅ 所有预设prompt现在统一使用英文作为主体语言
+
+---
+
+## 2025-01-05 - DashScope (阿里云灵积) API 配置 | DashScope API Configuration
+
+### 用户需求 | User Request
+配置 DashScope (阿里云灵积) API 调用，使用 qwen-plus 模型
+
+### 方法 | Method
+使用 OpenAI 兼容模式接口 (`/compatible-mode/v1`) 集成 DashScope API，与现有 LLM provider 架构保持一致
+
+### 修改内容 | Changes Made
+
+| 文件 File | 操作 Action | 说明 Description |
+|-----------|-------------|------------------|
+| `src/config.py:67-71` | 新增 | 添加 DashScope 配置项 (api_key, base_url, model) |
+| `src/config.py:73` | 修改 | llm_provider 选项新增 dashscope |
+| `src/core/suggester/llm_track.py:342-345` | 新增 | DashScope 作为首选 LLM provider 判断 |
+| `src/core/suggester/llm_track.py:358-361` | 新增 | DashScope 作为 fallback provider |
+| `src/core/suggester/llm_track.py:435-468` | 新增 | `_call_dashscope` 方法实现 |
+| `.env:8-18` | 修改 | 更新 LLM_PROVIDER 为 dashscope，添加 DashScope 配置 |
+| `.env.example:16-27` | 修改 | 添加 DashScope 配置模板 |
+
+### 配置参数 | Configuration Parameters
+
+```
+DASHSCOPE_API_KEY=sk-e7d2081841744801aafb1fc0ee7253bd
+DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+DASHSCOPE_MODEL=qwen-plus
+LLM_PROVIDER=dashscope
+```
+
+### 补充修改 | Additional Changes (修复500错误)
+
+发现初次配置后，部分 LLM 调用函数未添加 DashScope 支持，导致 500 错误。补充添加：
+
+| 文件 File | 函数/位置 Function/Location | 说明 Description |
+|-----------|-------------|------------------|
+| `src/api/routes/structure.py` | `_call_llm_for_suggestion` | 段落建议 LLM 调用 |
+| `src/api/routes/structure.py` | 内联 LLM 调用 (step1-2) | 快速问题检测 |
+| `src/api/routes/structure.py` | `_call_llm_for_merge_modify` | 合并修改 LLM 调用 |
+| `src/api/routes/paragraph.py` | `_call_llm_for_restructure` | 段落重组 LLM 调用 |
+| `src/api/routes/structure_guidance.py` | `_call_llm_for_guidance` | 指引生成 LLM 调用 |
+| `src/api/routes/suggest.py` | 两处内联调用 | 分析和翻译 LLM 调用 |
+| `src/core/analyzer/smart_structure.py` | `_call_llm` + `_call_dashscope` | 结构分析 LLM 调用 |
+
+### 结果 | Result
+
+- ✅ DashScope API 配置已添加到 config.py
+- ✅ `_call_dashscope` 方法已在所有相关文件中实现
+- ✅ DashScope 已设为默认 LLM provider
+- ✅ 所有 LLM 调用点都已支持 DashScope
+- ✅ 服务器已重启，配置生效
+
+---
+
+## 2026-01-05: Step1-2/Step2 段落逻辑分析改进 | Paragraph Logic Analysis Improvement
+
+### 用户需求 | User Request
+
+基于 `doc/段落逻辑分析改进.md` 的分析，改进 Step1-2 和 Step2 的功能：
+
+1. **Step1-2 改进**：从全篇文章考虑，对每一段进行差异化的逻辑框架改写
+   - 要求有变化、多样性，符合人类学术写作的统计学特征
+   - Prompt 里明确说明具体需要什么变化和特征，不让 AI 自己判断
+
+2. **Step2 改进**：对整段所有句子做长短句规划
+   - 逻辑紧密（定义/限定条件/机制解释）→ 使用嵌套从句等超长句（30-50词）
+   - 逻辑简单（思维跳跃/事实陈述/强调）→ 使用单句的超短句（8-14词）
+   - 符合人类学术写作长句更多、长短句穿插的统计学特征
+
+3. **Step3 分析**：分析句子改写倾向于拆分的问题（下次改进）
+
+### 方法 | Method
+
+1. **P0: 逻辑关系驱动的句长规划** - 修改 `get_rhythm_variation_prompt()` 函数
+2. **P1: 全篇感知重组** - 新增 `document_aware` 策略和相关函数
+
+### 修改内容 | Changes Made
+
+#### 1. `src/prompts/paragraph_logic.py`
+
+| 操作 Action | 内容 Content | 说明 Description |
+|-------------|--------------|------------------|
+| 新增 | `STRUCTURE_MODES` 常量 | 结构模式池，定义 opening/method_body/result_body/closing 四种段落位置的结构模式 |
+| 新增 | `BODY_TYPE_KEYWORDS` 常量 | 用于检测正文段落子类型的关键词 |
+| 新增 | `_determine_position_type()` 函数 | 自动检测段落在全篇中的位置类型 |
+| 新增 | `_get_structure_mode_for_position()` 函数 | 根据位置类型获取结构模式配置 |
+| 新增 | `get_document_aware_restructure_prompt()` 函数 | 生成全篇感知重组的 Prompt |
+| 新增 | `_get_position_instructions()` 等辅助函数 | 构建位置特定的详细指令 |
+| 修改 | `get_rhythm_variation_prompt()` 函数 | 从简单的 LONG→SHORT→MEDIUM 模式改为逻辑关系驱动模式 |
+| 修改 | `STRATEGY_DESCRIPTIONS` | 新增 `document_aware` 策略描述 |
+| 修改 | `STRATEGY_PROMPTS` | 新增 `document_aware` 策略映射 |
+| 修改 | `get_paragraph_logic_prompt()` | 新增 `document_aware` 策略处理分支 |
+
+#### 2. `src/api/routes/paragraph.py`
+
+| 操作 Action | 内容 Content | 说明 Description |
+|-------------|--------------|------------------|
+| 修改 | `ParagraphRestructureRequest` 类 | 新增 `paragraph_index`, `total_paragraphs` 字段；strategy 枚举新增 `document_aware` |
+| 修改 | `restructure_paragraph()` 端点 | 新增 `document_aware` 策略处理逻辑；更新文档字符串 |
+
+### 核心改进详情 | Core Improvement Details
+
+#### P0: 逻辑关系驱动的句长规划
+
+新的 `get_rhythm_variation_prompt()` 采用三步骤方法：
+
+1. **Step 1: 逻辑关系分析** - 对每句话进行逻辑关系分类
+   - `QUALIFICATION_CHAIN` (限定条件链) → 30-50词
+   - `NESTED_CAUSATION` (嵌套因果) → 30-50词
+   - `DEFINITION_WITH_BOUNDARY` (定义+边界) → 30-50词
+   - `CONTRAST_SYNTHESIS` (对比+综合) → 30-45词
+   - `EVIDENCE_EXPLANATION` (证据+解释) → 20-30词
+   - `TRANSITION_ELABORATION` (过渡/细化) → 15-20词
+   - `CORE_ASSERTION` (核心断言) → 8-14词
+   - `THOUGHT_LEAP` (思维跳跃) → 4-10词
+
+2. **Step 2: 逻辑-句长映射** - 根据逻辑关系类型应用句长规则
+
+3. **Step 3: 统计学验证** - 确保满足：
+   - CV > 0.30 (理想 0.35-0.45)
+   - 长句占比 30-40%，超长句占比 10-15%
+   - 禁止连续3句相近长度（差异<5词）
+   - 每4-5句至少1次剧烈跳跃（差异>15词）
+
+**关键约束**：
+- 禁止拆分逻辑紧密句子（保留超长句）
+- 优先通过"保留长句+添加短句"实现 CV，而非"拆分长句"
+
+#### P1: 全篇感知重组 (document_aware 策略)
+
+根据段落在全篇中的位置应用不同的结构模式：
+
+| 位置类型 | 推荐模式 | 句长特征 | 禁止/要求 |
+|----------|----------|----------|-----------|
+| **opening** | CPA/HBT | 平均20词，CV 0.25 | 禁止ANI结构，要求hook句 |
+| **method_body** | DEE/CME | 平均25词，CV 0.30 | 要求至少2句>30词 |
+| **result_body** | ANI/FCS | 平均20词，CV 0.38 | 要求至少1句强调短句 |
+| **closing** | SLF/IBC | 平均22词，CV 0.30 | 禁止以短句结尾 |
+
+段落位置自动检测规则：
+- 第1段 → opening
+- 最后1段 → closing
+- 中间段 → 根据关键词判断 method_body/result_body
+
+### Step3 拆分倾向问题分析 | Step3 Split Tendency Analysis
+
+**问题位置**：
+- `paragraph_logic.py:375-377` - "Sentence Splitting" 作为推荐技巧
+- `llm_track.py:264-269` - 没有保护长句的约束
+
+**问题根因**：
+- Prompt 鼓励拆分
+- CV 目标导向（LLM 倾向于拆分长句创造变化）
+- 合并难度更高（合并短句比拆分长句在语法上更困难）
+- LLM 默认倾向（大多数 LLM 被训练为输出清晰、简短的句子）
+
+**改进方向（下次实现）**：
+- 移除或弱化拆分建议
+- 强化合并建议
+- 添加长句保护
+- 约束 CV 实现方式
+
+### 修改的文件 | Modified Files
+
+| 文件 File | 操作 Action | 说明 Description |
+|-----------|-------------|------------------|
+| `src/prompts/paragraph_logic.py` | 新增/修改 | 新增全篇感知重组功能，修改节奏变化为逻辑驱动模式 |
+| `src/api/routes/paragraph.py` | 修改 | 新增 document_aware 策略支持和相关参数 |
+
+### 结果 | Result
+
+- ✅ `get_rhythm_variation_prompt()` 已改为逻辑关系驱动模式
+- ✅ 新增 `STRUCTURE_MODES` 结构模式池常量
+- ✅ 新增 `_determine_position_type()` 段落位置自动检测函数
+- ✅ 新增 `get_document_aware_restructure_prompt()` 全篇感知重组函数
+- ✅ API 端点已支持 `document_aware` 策略
+- ✅ Step3 拆分问题已分析并记录改进方向
+
+---
+
+## 2026-01-05: Step3 单句层面改进（P0阶段） | Step3 Sentence-Level Improvement (P0 Phase)
+
+### 需求 | Requirements
+
+基于 `doc/单句逻辑分析改进.md` 的分析，改进 Step3 的单句改写功能：
+
+1. **修复拆分倾向问题**：当前实现倾向于拆分长句以达到 CV 目标，需要改为"保留长句+添加短句"
+2. **Step2-Step3 联动**：Step3 需要接收 Step2 的句长规划，遵守逻辑类型约束
+3. **句式多样性约束**：保证句型分布的合理性，避免结构模板化
+
+Based on analysis from `doc/单句逻辑分析改进.md`, improve Step3 sentence rewriting:
+
+1. **Fix splitting tendency**: Current implementation tends to split long sentences for CV target, should use "keep long + add short" instead
+2. **Step2-Step3 coordination**: Step3 should receive Step2's sentence plan and follow logic type constraints
+3. **Sentence structure diversity**: Ensure reasonable sentence type distribution, avoid structural templating
+
+### 改进内容 | Improvements
+
+#### 1. 修复拆分倾向 | Fix Splitting Tendency
+
+**修改位置与内容**:
+
+| 文件 File | 行号 Lines | 修改内容 Changes |
+|-----------|------------|------------------|
+| `src/core/suggester/llm_track.py` | 新增 | 添加 `### 14. LONG SENTENCE PROTECTION` 约束，明确禁止拆分紧密逻辑句子 |
+| `src/api/routes/suggest.py` | 842-870 | 修改拆分建议逻辑：仅对>40词且无紧密逻辑的句子建议拆分；25-40词建议增加复杂度而非拆分 |
+| `src/core/analyzer/paragraph_logic.py` | 378-391 | 修改建议文案：从"拆分长句或合并短句"改为"保留长句+添加短句，禁止拆分逻辑紧密句子" |
+
+**紧密逻辑标志（禁止拆分）**:
+- `which `, `that `, `where `, `whereby `
+- `provided that`, `given that`, `assuming that`
+- `while `, `whereas `
+
+#### 2. Step2-Step3 联动 | Step2-Step3 Coordination
+
+**新增参数** `sentence_plan`:
+```python
+sentence_plan = {
+    "logic_type": "NESTED_CAUSATION",      # 逻辑类型
+    "target_length": "30-50",               # 目标句长范围
+    "allow_split": False                    # 是否允许拆分
+}
+```
+
+**紧密逻辑类型（自动禁止拆分）**:
+- `QUALIFICATION_CHAIN` - 限定条件链
+- `NESTED_CAUSATION` - 嵌套因果
+- `DEFINITION_WITH_BOUNDARY` - 定义+边界
+- `CONTRAST_SYNTHESIS` - 对比+综合
+
+**修改文件**:
+| 文件 File | 修改内容 Changes |
+|-----------|------------------|
+| `src/core/suggester/llm_track.py:_build_prompt()` | 新增 `sentence_plan` 参数，构建 Step2 约束段落 |
+| `src/core/suggester/llm_track.py:generate_suggestion()` | 新增 `sentence_plan` 参数，传递给 `_build_prompt()` |
+
+#### 3. 句式多样性约束 | Sentence Structure Diversity
+
+**新增 `### 13. SENTENCE STRUCTURE DIVERSITY` 约束**:
+
+句型分布目标（人类学术写作）:
+- 简单句 (Simple): 15-25%
+- 并列句 (Compound): 20-30%
+- 复杂句 (Complex): 35-45%
+- 并列复合句 (Compound-Complex): 10-20%
+
+从句嵌套深度目标:
+- 至少部分句子有 2+ 层嵌套
+- 避免全部浅嵌套（AI特征）
+
+禁止模式:
+- 连续3+句同一句型
+- 全被动或全主动语态
+- 嵌套深度始终 < 2
+
+### 修改的文件 | Modified Files
+
+| 文件 File | 操作 Action | 说明 Description |
+|-----------|-------------|------------------|
+| `src/core/suggester/llm_track.py` | 修改 | 新增 `sentence_plan` 参数、Step2约束段落、句式多样性约束、长句保护约束 |
+| `src/api/routes/suggest.py` | 修改 | 修改拆分建议逻辑，新增紧密逻辑检测 |
+| `src/core/analyzer/paragraph_logic.py` | 修改 | 修改建议文案，避免鼓励拆分 |
+
+### 结果 | Result
+
+- ✅ `llm_track.py` 已添加 `sentence_plan` 参数支持 Step2-Step3 联动
+- ✅ `llm_track.py` 已添加 `### 13. SENTENCE STRUCTURE DIVERSITY` 句式多样性约束
+- ✅ `llm_track.py` 已添加 `### 14. LONG SENTENCE PROTECTION` 长句保护约束
+- ✅ `suggest.py` 已修改拆分建议逻辑（>40词无紧密逻辑才建议拆分）
+- ✅ `paragraph_logic.py` 已修改建议文案（避免鼓励拆分）
+
+### 后续改进 (P1/P2) | Future Improvements
+
+**P1 已实现** (见下方):
+- ✅ 新建 `src/core/analyzer/sentence_structure.py` 句型检测器
+- ✅ 单句内逻辑框架重排（"描述→机制→结果" 重排为 "结果→机制→描述" 等）
+- ✅ 句内嵌套从句生成指导
+
+**P2 已实现** (见下方):
+- ✅ 功能词比例优化（代词、助动词、介词）
+- ✅ Perplexity 提升策略（领域特定词汇、意外转折）
+- ✅ 从句嵌套深度分析（已在 P1 的 sentence_structure.py 中实现）
+
+---
+
+## 2026-01-05: Step3 单句层面改进（P1阶段） | Step3 Sentence-Level Improvement (P1 Phase)
+
+### 需求 | Requirements
+
+继续基于 `doc/单句逻辑分析改进.md` 的分析，实现 P1 阶段的改进：
+
+1. **句型检测器**：检测句型（简单句/并列句/复杂句/并列复合句）、从句嵌套深度、语态分布
+2. **逻辑框架重排**：打破 AI 固定因果链模式（描述→机制→结果）
+3. **嵌套从句生成**：提供具体的嵌套从句构建指导
+
+### 改进内容 | Improvements
+
+#### 1. 句型检测器 | Sentence Structure Analyzer
+
+**新建文件**: `src/core/analyzer/sentence_structure.py`
+
+**核心类和函数**:
+
+| 类/函数 | 说明 |
+|---------|------|
+| `SentenceType` | 枚举：SIMPLE/COMPOUND/COMPLEX/COMPOUND_COMPLEX |
+| `VoiceType` | 枚举：ACTIVE/PASSIVE/MIXED |
+| `SentenceAnalysis` | 单句分析结果数据类 |
+| `StructureDistribution` | 段落结构分布统计数据类 |
+| `SentenceStructureAnalyzer` | 主分析器类 |
+| `analyze_sentence()` | 分析单句结构 |
+| `analyze_paragraph()` | 分析段落结构分布 |
+| `get_improvement_suggestions()` | 获取改进建议 |
+
+**检测功能**:
+- 句型类型检测（基于从属从句和并列标志词）
+- 从句嵌套深度计算
+- 主动/被动语态检测
+- 连续相同句型检测（AI模式）
+- 分布合理性验证
+
+**人类化分布目标**:
+| 句型 | 目标占比 |
+|------|----------|
+| 简单句 (Simple) | 15-25% |
+| 并列句 (Compound) | 20-30% |
+| 复杂句 (Complex) | 35-45% |
+| 并列复合句 (Compound-Complex) | 10-20% |
+
+**嵌套深度目标**:
+| 深度 | 目标占比 |
+|------|----------|
+| 0层 | 15-25% |
+| 1层 | 40-50% |
+| 2层 | 20-30% |
+| 3+层 | 5-15% |
+
+#### 2. 逻辑框架重排 | Logic Framework Reordering
+
+**新增到 `llm_track.py`**: `### 15. SENTENCE LOGIC FRAMEWORK REORDERING`
+
+**AI典型模式（需避免）**:
+- 描述→机制→益处: "X binds to Y, forming aggregates, which protects Z."
+- 原因→过程→结果: "A triggers B through C, resulting in D."
+- 定义→应用→含义: "X is defined as Y. It is applied to Z. This implies W."
+
+**人类化重排选项**:
+| 重排方式 | 说明 | 示例 |
+|----------|------|------|
+| 结果先行 | 先说结果再解释机制 | "Benefit W emerges when X causes Y—a process mediated by Z." |
+| 机制嵌入 | 用嵌套从句嵌入机制 | "A, through its activation of B via mechanism C, drives D." |
+| 转折前置 | 以对比/例外开头 | "Despite limitations under Y, X proves remarkably effective." |
+| 含义引子 | 以更广含义开头 | "The implications for the field are significant: X, as the data reveals." |
+
+#### 3. 嵌套从句生成 | Nested Clause Generation
+
+**新增到 `llm_track.py`**: `### 16. NESTED CLAUSE GENERATION`
+
+**嵌套深度示例**:
+```
+Depth 0: "X causes Y."
+Depth 1: "X, which triggers Z, causes Y."
+Depth 2: "X, which triggers Z that activates W, causes Y."
+Depth 3: "X, which triggers Z that activates W through mechanism M, causes Y."
+```
+
+**语法工具**:
+
+| 类型 | 语法结构 |
+|------|----------|
+| 关系从句 | which/that/where/whereby + 动作 |
+| 分词嵌入 | involving/characterized by/resulting from + 从句 |
+| 条件链 | Under/Given that/Provided that + 条件从句 |
+| 对比嵌入 | while/though + 对比从句 |
+
+**目标**: 至少20%的句子嵌套深度 >= 2
+
+### 修改的文件 | Modified Files
+
+| 文件 File | 操作 Action | 说明 Description |
+|-----------|-------------|------------------|
+| `src/core/analyzer/sentence_structure.py` | 新建 | 句型检测器：类型检测、嵌套深度、语态分布、分布验证 |
+| `src/core/suggester/llm_track.py` | 修改 | 新增 `### 15. LOGIC FRAMEWORK REORDERING` 和 `### 16. NESTED CLAUSE GENERATION` |
+
+### 结果 | Result
+
+- ✅ 新建 `sentence_structure.py` 句型检测器
+- ✅ 支持句型类型检测（simple/compound/complex/compound-complex）
+- ✅ 支持从句嵌套深度计算（0-3+层）
+- ✅ 支持主动/被动语态检测
+- ✅ 支持分布合理性验证和问题检测
+- ✅ `llm_track.py` 新增逻辑框架重排指导（4种重排方式）
+- ✅ `llm_track.py` 新增嵌套从句生成指导（4类语法工具）
+
+---
+
+## 2026-01-05: Step3 单句层面改进（P2阶段） | Step3 Sentence-Level Improvement (P2 Phase)
+
+### 需求 | Requirements
+
+继续基于 `doc/单句逻辑分析改进.md` 的分析，实现 P2 阶段的改进：
+
+1. **功能词比例优化**：增加代词、助动词、介词的使用，提高功能词密度
+2. **Perplexity 提升策略**：通过领域特定词汇、意外转折、非常规同义词等降低文本可预测性
+
+### 改进内容 | Improvements
+
+#### 1. 功能词丰富化 | Function Word Enrichment
+
+**新增到 `llm_track.py`**: `### 17. FUNCTION WORD ENRICHMENT`
+
+**功能词类别与示例**:
+
+| 类别 | 词汇 | 示例转换 |
+|------|------|----------|
+| **代词 (Pronouns)** | which, that, this, these, such | "The model improves" → "This approach, which builds on prior work, improves" |
+| **助动词 (Auxiliaries)** | may, might, could, should, would | "X causes Y" → "X may cause Y" |
+| **介词 (Prepositions)** | within, through, across, beyond, amid | "in the experiment" → "within the experimental framework" |
+
+**目标密度**:
+- 人类学术写作: ~45-55% 功能词
+- AI学术写作: ~35-40% 功能词
+- 目标: 增加 10-15% 功能词密度
+
+#### 2. Perplexity 提升 | Perplexity Enhancement
+
+**新增到 `llm_track.py`**: `### 18. PERPLEXITY ENHANCEMENT`
+
+**5种提升策略**:
+
+| 策略 | 说明 | 示例 |
+|------|------|------|
+| **领域特定词汇** | 用专业术语替换通用词 | "ion exchange" → "soil colloid displacement" |
+| **意外转折** | 添加打破预测的转折 | "Surprisingly, this mechanism fails in alkaline soils." |
+| **非常规同义词** | 使用不常见但准确的替代词 | "significantly reduced" → "markedly curtailed" |
+| **词汇密度变化** | 句间密度不均匀 | Dense→Sparse→Dense 模式 |
+| **多样化语气词** | 避免重复使用相同hedging | "may" → "might/could/appears to/seems to" |
+
+### 修改的文件 | Modified Files
+
+| 文件 File | 操作 Action | 说明 Description |
+|-----------|-------------|------------------|
+| `src/core/suggester/llm_track.py` | 修改 | 新增 `### 17. FUNCTION WORD ENRICHMENT` 和 `### 18. PERPLEXITY ENHANCEMENT` |
+
+### 结果 | Result
+
+- ✅ `llm_track.py` 新增功能词丰富化指导（3类功能词 + 目标密度）
+- ✅ `llm_track.py` 新增 Perplexity 提升策略（5种策略）
+- ✅ 所有 P0/P1/P2 改进已完成
+
+### Step3 改进完成总结 | Step3 Improvement Summary
+
+| 阶段 | 新增技术点 | Prompt 编号 |
+|------|-----------|-------------|
+| **P0** | Step2联动约束、句式多样性、长句保护 | #13, #14 |
+| **P1** | 逻辑框架重排、嵌套从句生成 | #15, #16 |
+| **P2** | 功能词丰富化、Perplexity提升 | #17, #18 |
+
+**llm_track.py 现包含 18 个 DE-AIGC 技术点**:
+1. AI指纹词消除
+2. AI句式模板打破
+3. 连接词过度使用移除
+4. 人类写作标记添加
+5. 模糊学术填充避免
+6. 隐性逻辑连接
+7. 主语多样性
+8. ANI结构应用
+9. 句长节奏变化
+10. Hedging/Conviction平衡
+11. 有意不完美
+12. 引用格式保护
+13. 句式多样性 (P0)
+14. 长句保护 (P0)
+15. 逻辑框架重排 (P1)
+16. 嵌套从句生成 (P1)
+17. 功能词丰富化 (P2)
+18. Perplexity提升 (P2)
 

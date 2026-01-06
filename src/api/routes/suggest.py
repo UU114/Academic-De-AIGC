@@ -10,6 +10,9 @@ logger = logging.getLogger(__name__)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.database import get_db
+from pydantic import BaseModel
+from typing import Optional
+
 from src.api.schemas import (
     SuggestRequest,
     SuggestResponse,
@@ -28,6 +31,25 @@ from src.api.schemas import (
     AIWordSuggestion,
     RewriteSuggestion,
 )
+
+
+class ApplySuggestionRequest(BaseModel):
+    """
+    Request body for applying a suggestion
+    应用建议的请求体
+    """
+    session_id: str
+    sentence_id: str
+    source: SuggestionSource
+    modified_text: Optional[str] = None
+
+
+class HintsRequest(BaseModel):
+    """
+    Request body for getting writing hints
+    获取写作提示的请求体
+    """
+    sentence: str
 from src.core.suggester.llm_track import LLMTrack
 from src.core.suggester.rule_track import RuleTrack
 from src.core.validator.semantic import SemanticValidator
@@ -195,18 +217,25 @@ async def get_suggestions(
 
 @router.post("/apply")
 async def apply_suggestion(
-    session_id: str,
-    sentence_id: str,
-    source: SuggestionSource,
-    modified_text: str = None,
+    request: ApplySuggestionRequest,
     db: AsyncSession = Depends(get_db)
 ):
     """
     Apply a suggestion to a sentence (does NOT advance to next sentence)
     将建议应用到句子（不自动跳转到下一句）
+
+    Note: Parameters are received in request body to avoid URL length limits (431 error)
+    注意：参数通过请求体接收以避免URL长度限制（431错误）
     """
     from src.db.models import Modification, Sentence, Session
     from sqlalchemy import select
+
+    # Extract parameters from request body
+    # 从请求体提取参数
+    session_id = request.session_id
+    sentence_id = request.sentence_id
+    source = request.source
+    modified_text = request.modified_text
 
     # Get session to retrieve colloquialism_level
     # 获取会话以获取口语化级别
@@ -340,13 +369,17 @@ async def validate_custom(
 
 @router.post("/hints")
 async def get_writing_hints(
-    sentence: str,
+    request: HintsRequest,
     db: AsyncSession = Depends(get_db)
 ):
     """
     Get 3 writing hints for custom modification based on suggestions.md
     根据suggestions.md获取自定义修改的3个写作提示
+
+    Note: Sentence is received in request body to avoid URL length limits (431 error)
+    注意：句子通过请求体接收以避免URL长度限制（431错误）
     """
+    sentence = request.sentence
     hints = []
     sentence_lower = sentence.lower()
 
@@ -572,7 +605,28 @@ Return ONLY the JSON object, no other text."""
 
     try:
         content = None
-        if settings.llm_provider == "volcengine" and settings.volcengine_api_key:
+        if settings.llm_provider == "dashscope" and settings.dashscope_api_key:
+            # Call DashScope (阿里云灵积) API - Qwen models
+            # 调用阿里云灵积 API - 通义千问模型
+            async with httpx.AsyncClient(
+                base_url=settings.dashscope_base_url,
+                headers={
+                    "Authorization": f"Bearer {settings.dashscope_api_key}",
+                    "Content-Type": "application/json"
+                },
+                timeout=90.0,
+                trust_env=False
+            ) as client:
+                response = await client.post("/chat/completions", json={
+                    "model": settings.dashscope_model,
+                    "messages": [{"role": "user", "content": analysis_prompt}],
+                    "max_tokens": 2000,
+                    "temperature": 0.3
+                })
+                response.raise_for_status()
+                data = response.json()
+                content = data["choices"][0]["message"]["content"].strip()
+        elif settings.llm_provider == "volcengine" and settings.volcengine_api_key:
             # Call Volcengine (火山引擎) DeepSeek API - faster
             # 调用火山引擎 DeepSeek API - 更快
             async with httpx.AsyncClient(
@@ -785,12 +839,33 @@ def _get_fallback_analysis(sentence: str, colloquialism_level: int) -> SentenceA
                 example=None
             ))
 
-    if len(sentence.split()) > 25:
+    # Only suggest splitting for VERY long sentences (>40 words) that don't appear to have tight logic
+    # 仅对非常长的句子（>40词）且没有紧密逻辑的句子建议拆分
+    # Tight logic indicators: nested clauses (which, that, where, whereby), conditional chains
+    # 紧密逻辑标志：嵌套从句、条件链
+    word_count = len(sentence.split())
+    tight_logic_markers = ["which ", "that ", "where ", "whereby ", "provided that",
+                           "given that", "assuming that", "while ", "whereas "]
+    has_tight_logic = any(marker in sentence_lower for marker in tight_logic_markers)
+
+    if word_count > 40 and not has_tight_logic:
+        # Only suggest for very long sentences without tight logic
+        # 仅对没有紧密逻辑的超长句子建议
         rewrite_suggestions.append(RewriteSuggestion(
             type="split_sentence",
             type_zh="拆分长句",
-            description="Consider breaking this long sentence into shorter ones",
-            description_zh="考虑将这个长句拆分成较短的句子",
+            description="This very long sentence (>40 words) without nested clauses may benefit from restructuring",
+            description_zh="这个超长句（>40词）没有嵌套从句，可能需要重构",
+            example=None
+        ))
+    elif word_count > 25 and word_count <= 40 and not has_tight_logic:
+        # For moderately long sentences, suggest adding complexity instead of splitting
+        # 对于中等长度的句子，建议增加复杂性而不是拆分
+        rewrite_suggestions.append(RewriteSuggestion(
+            type="add_complexity",
+            type_zh="增加句式复杂度",
+            description="Consider adding nested clauses (which/that/where) for human-like complexity instead of splitting",
+            description_zh="考虑添加嵌套从句（which/that/where）增加人类化复杂度，而非拆分",
             example=None
         ))
 
@@ -863,7 +938,29 @@ Sentence: {sentence}
 Translation:"""
 
     try:
-        if settings.llm_provider == "volcengine" and settings.volcengine_api_key:
+        if settings.llm_provider == "dashscope" and settings.dashscope_api_key:
+            # Call DashScope (阿里云灵积) API for translation - Qwen models
+            # 使用阿里云灵积 API 翻译 - 通义千问模型
+            async with httpx.AsyncClient(
+                base_url=settings.dashscope_base_url,
+                headers={
+                    "Authorization": f"Bearer {settings.dashscope_api_key}",
+                    "Content-Type": "application/json"
+                },
+                timeout=60.0,
+                trust_env=False
+            ) as client:
+                response = await client.post("/chat/completions", json={
+                    "model": settings.dashscope_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 500,
+                    "temperature": 0.3
+                })
+                response.raise_for_status()
+                data = response.json()
+                translation = data["choices"][0]["message"]["content"].strip()
+                return translation
+        elif settings.llm_provider == "volcengine" and settings.volcengine_api_key:
             # Call Volcengine (火山引擎) DeepSeek API for translation - faster
             # 使用火山引擎 DeepSeek API 翻译 - 更快
             async with httpx.AsyncClient(

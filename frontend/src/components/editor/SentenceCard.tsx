@@ -185,10 +185,14 @@ export default function SentenceCard({
         </div>
       )}
 
-      {/* PPL, fingerprint, and connector indicators */}
+      {/* PPL, fingerprint, burstiness, and connector indicators */}
+      {/* PPL、指纹词、突发性和连接词指示器 */}
       <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-gray-100 text-sm">
         <PPLIndicator ppl={sentence.ppl} pplRisk={sentence.pplRisk} />
         <FingerprintIndicator count={sentence.fingerprints.length} />
+        {sentence.burstinessValue !== undefined && sentence.burstinessRisk && sentence.burstinessRisk !== 'unknown' && (
+          <BurstinessIndicator value={sentence.burstinessValue} risk={sentence.burstinessRisk} />
+        )}
         {sentence.connectorWord && (
           <ConnectorIndicator word={sentence.connectorWord} />
         )}
@@ -272,6 +276,44 @@ function ConnectorIndicator({ word }: { word: string }) {
     <div className="flex items-center text-amber-600" title={`检测到显性连接词 "${word}"，建议移除或替换`}>
       <span className="mr-1">连接词: {word}</span>
       <span className="text-base">⚠️</span>
+    </div>
+  );
+}
+
+// Burstiness indicator (Phase 2)
+// 突发性/节奏变化度指示器（第二阶段）
+// Higher burstiness = more human-like (sentence length variation)
+// 突发性越高 = 越像人类（句子长度变化大）
+function BurstinessIndicator({ value, risk }: { value: number; risk: string }) {
+  // Emoji based on risk: low risk = 👍 (good variation), high risk = 🤖 (too uniform)
+  // 基于风险的emoji：低风险 = 👍（变化好），高风险 = 🤖（太均匀）
+  const getEmoji = () => {
+    if (risk === 'low') return '👍';
+    if (risk === 'medium') return '⚠️';
+    return '🤖';
+  };
+
+  const getColorClass = () => {
+    if (risk === 'low') return 'text-green-600';
+    if (risk === 'medium') return 'text-amber-600';
+    return 'text-red-600';
+  };
+
+  const getTooltip = () => {
+    const valuePercent = (value * 100).toFixed(0);
+    if (risk === 'low') {
+      return `节奏变化度=${valuePercent}%：句子长度变化自然，符合人类写作特征`;
+    }
+    if (risk === 'medium') {
+      return `节奏变化度=${valuePercent}%：句子长度变化适中，有一定AI特征`;
+    }
+    return `节奏变化度=${valuePercent}%：句子长度过于均匀，强烈AI特征，建议增加长短句变化`;
+  };
+
+  return (
+    <div className={`flex items-center ${getColorClass()}`} title={getTooltip()}>
+      <span className="mr-1">节奏: {(value * 100).toFixed(0)}%</span>
+      <span className="text-base">{getEmoji()}</span>
     </div>
   );
 }

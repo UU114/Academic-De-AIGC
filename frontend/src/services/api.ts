@@ -86,11 +86,12 @@ export const documentApi = {
   /**
    * Upload text directly
    * 直接上传文本
+   *
+   * Note: Text is sent in request body to avoid URL length limits (431 error)
+   * 注意：文本通过请求体发送以避免URL长度限制（431错误）
    */
   uploadText: async (text: string): Promise<{ id: string; status: string }> => {
-    const response = await api.post('/documents/new/text', null, {
-      params: { text },
-    });
+    const response = await api.post('/documents/new/text', { text });
     return transformKeys(response.data);
   },
 
@@ -238,6 +239,9 @@ export const suggestApi = {
   /**
    * Get writing hints for custom modification
    * 获取自定义修改的写作提示
+   *
+   * Note: Sentence is sent in request body to avoid URL length limits (431 error)
+   * 注意：句子通过请求体发送以避免URL长度限制（431错误）
    */
   getWritingHints: async (sentence: string): Promise<{
     hints: Array<{
@@ -248,9 +252,7 @@ export const suggestApi = {
       descriptionZh: string;
     }>;
   }> => {
-    const response = await api.post('/suggest/hints', null, {
-      params: { sentence }
-    });
+    const response = await api.post('/suggest/hints', { sentence });
     return transformKeys(response.data);
   },
 
@@ -395,6 +397,9 @@ export const sessionApi = {
   /**
    * Apply suggestion
    * 应用建议
+   *
+   * Note: Parameters are sent in request body to avoid URL length limits (431 error)
+   * 注意：参数通过请求体发送以避免URL长度限制（431错误）
    */
   applySuggestion: async (
     sessionId: string,
@@ -402,13 +407,11 @@ export const sessionApi = {
     source: SuggestionSource,
     modifiedText?: string
   ): Promise<{ status: string }> => {
-    const response = await api.post('/suggest/apply', null, {
-      params: {
-        session_id: sessionId,
-        sentence_id: sentenceId,
-        source,
-        modified_text: modifiedText,
-      },
+    const response = await api.post('/suggest/apply', {
+      session_id: sessionId,
+      sentence_id: sentenceId,
+      source,
+      modified_text: modifiedText,
     });
     return transformKeys(response.data);
   },
@@ -474,6 +477,37 @@ export const sessionApi = {
   }> => {
     const response = await api.post(`/session/${sessionId}/yolo-process`, null, {
       timeout: 600000,  // 10 minutes timeout for processing many sentences
+    });
+    return transformKeys(response.data);
+  },
+
+  /**
+   * YOLO Full Auto Process: Process all levels automatically from Step 1-1 to Step 3
+   * YOLO 全自动处理：从 Step 1-1 到 Step 3 自动处理所有层级
+   *
+   * This method automatically:
+   * 1. Step 1-1: Analyze structure → Auto-select all issues → AI modify
+   * 2. Step 1-2: Analyze paragraphs → Auto-select all issues → AI modify
+   * 3. Step 2: Analyze transitions → Auto-select all issues → AI modify
+   * 4. Step 3: Process all medium/high risk sentences
+   */
+  yoloFullAuto: async (sessionId: string): Promise<{
+    status: string;
+    sessionId: string;
+    finalDocumentId: string;
+    logs: Array<{
+      step: string;
+      action: string;
+      message: string;
+      issuesCount?: number;
+      changesCount?: number;
+      processed?: number;
+      skipped?: number;
+      avgRiskReduction?: number;
+    }>;
+  }> => {
+    const response = await api.post(`/session/${sessionId}/yolo-full-auto`, null, {
+      timeout: 900000,  // 15 minutes timeout for full automation processing
     });
     return transformKeys(response.data);
   },
@@ -1010,6 +1044,77 @@ export const structureApi = {
     });
     return transformKeys(response.data);
   },
+
+  /**
+   * Phase 1: Analyze paragraph length distribution
+   * 第一阶段：分析段落长度分布
+   */
+  analyzeParagraphLength: async (
+    documentId: string
+  ): Promise<{
+    paragraphLengths: Array<{
+      position: string;
+      wordCount: number;
+      section: string;
+      summary: string;
+      summaryZh: string;
+    }>;
+    meanLength: number;
+    stdDev: number;
+    cv: number;
+    isUniform: boolean;
+    humanLikeCvTarget: number;
+    strategies: Array<{
+      strategyType: string;
+      targetPositions: string[];
+      description: string;
+      descriptionZh: string;
+      reason: string;
+      reasonZh: string;
+      priority: number;
+      expandSuggestion?: string;
+      expandSuggestionZh?: string;
+    }>;
+    summary: string;
+    summaryZh: string;
+  }> => {
+    const response = await api.post('/structure/paragraph-length/analyze', {
+      documentId,
+    });
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Phase 2: Apply selected paragraph length strategies
+   * 第二阶段：应用选中的段落长度策略
+   */
+  applyParagraphStrategies: async (
+    documentId: string,
+    selectedStrategies: Array<{
+      strategyType: string;
+      targetPositions: string[];
+      expandText?: string;
+    }>,
+    options?: {
+      sessionId?: string;
+    }
+  ): Promise<{
+    modifiedText: string;
+    changesSummaryZh: string;
+    strategiesApplied: number;
+    newCv?: number;
+  }> => {
+    const response = await api.post('/structure/paragraph-length/apply', {
+      documentId,
+      sessionId: options?.sessionId,
+      selectedStrategies: selectedStrategies.map(s => ({
+        strategyType: s.strategyType,
+        targetPositions: s.targetPositions,
+        expandText: s.expandText,
+      })),
+    });
+    return transformKeys(response.data);
+  },
 };
 
 // Flow APIs (Phase 5: Full Flow Integration)
@@ -1292,6 +1397,76 @@ export const paragraphApi = {
       connectors_found: options?.connectorsFound,
       lengths: options?.lengths,
       cv: options?.cv,
+    });
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Analyze paragraph logic framework (Step 2 Enhancement)
+   * 分析段落逻辑框架（Step 2 增强）
+   *
+   * Provides:
+   * - Sentence role analysis (论点/证据/分析/批判/让步/综合等)
+   * - Logic framework pattern detection (linear/dynamic)
+   * - Burstiness analysis (sentence length variation)
+   * - Missing element identification
+   * - Improvement suggestions
+   */
+  analyzeLogicFramework: async (
+    paragraph: string,
+    paragraphPosition?: string
+  ): Promise<{
+    sentenceRoles: Array<{
+      index: number;
+      role: string;
+      roleZh: string;
+      confidence: number;
+      brief: string;
+    }>;
+    roleDistribution: Record<string, number>;
+    logicFramework: {
+      pattern: string;
+      patternZh: string;
+      isAiLike: boolean;
+      riskLevel: string;
+      description: string;
+      descriptionZh: string;
+    };
+    burstinessAnalysis: {
+      sentenceLengths: number[];
+      meanLength: number;
+      stdDev: number;
+      cv: number;
+      burstinessLevel: string;
+      burstinessZh: string;
+      hasDramaticVariation: boolean;
+      longestSentence: { index: number; length: number };
+      shortestSentence: { index: number; length: number };
+    };
+    missingElements: {
+      roles: string[];
+      description: string;
+      descriptionZh: string;
+    };
+    improvementSuggestions: Array<{
+      type: string;
+      suggestion: string;
+      suggestionZh: string;
+      priority: number;
+      example?: string;
+    }>;
+    overallAssessment: {
+      aiRiskScore: number;
+      mainIssues: string[];
+      summary: string;
+      summaryZh: string;
+    };
+    basicAnalysis: Record<string, unknown>;
+    sentences: string[];
+  }> => {
+    const response = await api.post('/paragraph/analyze-logic-framework', {
+      paragraph,
+      paragraphPosition,
     });
     return transformKeys(response.data);
   },
@@ -1585,6 +1760,359 @@ export const paymentApi = {
     canProcess: boolean;
   }> => {
     const response = await api.get(`/payment/status/${taskId}`);
+    return transformKeys(response.data);
+  },
+};
+
+// Admin APIs (Statistics Dashboard)
+// 管理员 API（统计仪表板）
+export const adminApi = {
+  /**
+   * Admin login with secret key
+   * 使用密钥登录管理员
+   */
+  login: async (secretKey: string): Promise<{
+    accessToken: string;
+    tokenType: string;
+    expiresIn: number;
+    adminId: string;
+  }> => {
+    const response = await api.post('/admin/login', {
+      secret_key: secretKey,
+    });
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Get overview statistics
+   * 获取概览统计
+   */
+  getOverview: async (): Promise<{
+    totalRevenue: number;
+    todayRevenue: number;
+    thisWeekRevenue: number;
+    thisMonthRevenue: number;
+    totalTasks: number;
+    paidTasks: number;
+    pendingTasks: number;
+    completedTasks: number;
+    failedTasks: number;
+    totalUsers: number;
+    activeUsersToday: number;
+    activeUsersWeek: number;
+    newUsersToday: number;
+    totalWordsProcessed: number;
+    totalDocuments: number;
+    dataFrom: string;
+    dataTo: string;
+  }> => {
+    const adminToken = localStorage.getItem('academicguard-admin');
+    let token = '';
+    try {
+      if (adminToken) {
+        const parsed = JSON.parse(adminToken);
+        token = parsed.state?.adminToken || '';
+      }
+    } catch (e) { /* ignore */ }
+
+    const response = await api.get('/admin/stats/overview', {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Get revenue statistics
+   * 获取营收统计
+   */
+  getRevenue: async (params?: {
+    period?: 'daily' | 'weekly' | 'monthly';
+    days?: number;
+  }): Promise<{
+    period: string;
+    data: Array<{
+      date: string;
+      revenue: number;
+      taskCount: number;
+      avgPrice: number;
+    }>;
+    totalRevenue: number;
+    totalTasks: number;
+    averageOrderValue: number;
+    growthRate: number | null;
+  }> => {
+    const adminToken = localStorage.getItem('academicguard-admin');
+    let token = '';
+    try {
+      if (adminToken) {
+        const parsed = JSON.parse(adminToken);
+        token = parsed.state?.adminToken || '';
+      }
+    } catch (e) { /* ignore */ }
+
+    const response = await api.get('/admin/stats/revenue', {
+      params: {
+        period: params?.period || 'daily',
+        days: params?.days || 30,
+      },
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Get task statistics
+   * 获取任务统计
+   */
+  getTasks: async (params?: {
+    days?: number;
+  }): Promise<{
+    statusDistribution: Array<{
+      status: string;
+      count: number;
+      percentage: number;
+    }>;
+    paymentDistribution: Array<{
+      status: string;
+      count: number;
+      percentage: number;
+    }>;
+    avgWordCount: number;
+    avgPrice: number;
+    minPrice: number;
+    maxPrice: number;
+    minimumChargeCount: number;
+    minimumChargeRatio: number;
+    tasksByDate: Array<{
+      date: string;
+      count: number;
+    }>;
+  }> => {
+    const adminToken = localStorage.getItem('academicguard-admin');
+    let token = '';
+    try {
+      if (adminToken) {
+        const parsed = JSON.parse(adminToken);
+        token = parsed.state?.adminToken || '';
+      }
+    } catch (e) { /* ignore */ }
+
+    const response = await api.get('/admin/stats/tasks', {
+      params: { days: params?.days || 30 },
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Get user statistics
+   * 获取用户统计
+   */
+  getUsers: async (params?: {
+    days?: number;
+  }): Promise<{
+    registrationsByDate: Array<{
+      date: string;
+      count: number;
+    }>;
+    totalNewUsers: number;
+    topUsers: Array<{
+      userId: string;
+      phone: string;
+      nickname: string;
+      taskCount: number;
+      totalSpent: number;
+    }>;
+    periodDays: number;
+  }> => {
+    const adminToken = localStorage.getItem('academicguard-admin');
+    let token = '';
+    try {
+      if (adminToken) {
+        const parsed = JSON.parse(adminToken);
+        token = parsed.state?.adminToken || '';
+      }
+    } catch (e) { /* ignore */ }
+
+    const response = await api.get('/admin/stats/users', {
+      params: { days: params?.days || 30 },
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Get feedback statistics
+   * 获取反馈统计
+   */
+  getFeedback: async (): Promise<{
+    totalFeedbacks: number;
+    statusDistribution: Record<string, { count: number; percentage: number }>;
+    pendingCount: number;
+    recentFeedbacks: Array<{
+      id: string;
+      contact: string;
+      content: string;
+      status: string;
+      createdAt: string;
+    }>;
+  }> => {
+    const adminToken = localStorage.getItem('academicguard-admin');
+    let token = '';
+    try {
+      if (adminToken) {
+        const parsed = JSON.parse(adminToken);
+        token = parsed.state?.adminToken || '';
+      }
+    } catch (e) { /* ignore */ }
+
+    const response = await api.get('/admin/stats/feedback', {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    return transformKeys(response.data);
+  },
+
+  // Anomaly Detection APIs
+  // 异常检测 API
+
+  /**
+   * Get anomaly detection overview
+   * 获取异常检测概览
+   */
+  getAnomalyOverview: async (sigma: number = 2.0): Promise<{
+    totalTasks: number;
+    anomalyCount: number;
+    anomalyRate: number;
+    sigma: number;
+    priceRanges: Array<{
+      rangeLabel: string;
+      minPrice: number;
+      maxPrice: number;
+      taskCount: number;
+      meanCalls: number;
+      stdCalls: number;
+      threshold: number;
+      anomalyCount: number;
+    }>;
+  }> => {
+    const adminToken = localStorage.getItem('academicguard-admin');
+    let token = '';
+    try {
+      if (adminToken) {
+        const parsed = JSON.parse(adminToken);
+        token = parsed.state?.adminToken || '';
+      }
+    } catch (e) { /* ignore */ }
+
+    const response = await api.get('/admin/anomaly/overview', {
+      params: { sigma },
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Get anomaly distribution data for charts
+   * 获取异常分布数据（用于图表）
+   */
+  getAnomalyDistribution: async (params?: {
+    minPrice?: number;
+    maxPrice?: number;
+    sigma?: number;
+  }): Promise<{
+    scatterData: Array<{
+      taskId: string;
+      price: number;
+      calls: number;
+      isAnomaly: boolean;
+      wordCount?: number;
+    }>;
+    histogramData: Array<{
+      rangeLabel: string;
+      rangeMin: number;
+      rangeMax: number;
+      count: number;
+      isAboveThreshold: boolean;
+    }>;
+    stats: {
+      mean: number;
+      std: number;
+      threshold: number;
+      sigma: number;
+      totalCount: number;
+    } | null;
+  }> => {
+    const adminToken = localStorage.getItem('academicguard-admin');
+    let token = '';
+    try {
+      if (adminToken) {
+        const parsed = JSON.parse(adminToken);
+        token = parsed.state?.adminToken || '';
+      }
+    } catch (e) { /* ignore */ }
+
+    const response = await api.get('/admin/anomaly/distribution', {
+      params: {
+        min_price: params?.minPrice,
+        max_price: params?.maxPrice,
+        sigma: params?.sigma || 2.0,
+      },
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Get anomaly orders list
+   * 获取异常订单列表
+   */
+  getAnomalyOrders: async (params?: {
+    minPrice?: number;
+    maxPrice?: number;
+    sigma?: number;
+    page?: number;
+    pageSize?: number;
+  }): Promise<{
+    orders: Array<{
+      taskId: string;
+      userId: string | null;
+      priceFinal: number;
+      apiCallCount: number;
+      expectedCalls: number;
+      deviation: number;
+      wordCount: number | null;
+      createdAt: string;
+      status: string;
+    }>;
+    total: number;
+    page: number;
+    pageSize: number;
+    stats: {
+      mean: number;
+      std: number;
+      threshold: number;
+      sigma: number;
+    } | null;
+  }> => {
+    const adminToken = localStorage.getItem('academicguard-admin');
+    let token = '';
+    try {
+      if (adminToken) {
+        const parsed = JSON.parse(adminToken);
+        token = parsed.state?.adminToken || '';
+      }
+    } catch (e) { /* ignore */ }
+
+    const response = await api.get('/admin/anomaly/orders', {
+      params: {
+        min_price: params?.minPrice,
+        max_price: params?.maxPrice,
+        sigma: params?.sigma || 2.0,
+        page: params?.page || 1,
+        page_size: params?.pageSize || 20,
+      },
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
     return transformKeys(response.data);
   },
 };

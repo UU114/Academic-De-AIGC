@@ -11,234 +11,234 @@ All methods must maintain academic standards while reducing AI-generated pattern
 # Comprehensive structure-level De-AIGC knowledge base
 # 结构层面 De-AIGC 知识库
 STRUCTURE_DEAIGC_KNOWLEDGE = """
-# 学术论文结构层面 De-AIGC 方法大全
+# Comprehensive De-AIGC Methods for Academic Paper Structure
 
-## 核心原则
+## Core Principles
 
-AI生成文本在结构上的最大特征是"过度完美"——逻辑过于线性、对称过于完美、过渡过于显式。
-人类写作的特点是"有序中带有自然的不规则性"。
+The most distinctive structural feature of AI-generated text is "excessive perfection" — overly linear logic, too-perfect symmetry, and overtly explicit transitions.
+Human writing is characterized by "order with natural irregularity."
 
-**重要：所有修改必须保持学术论文的严谨性和专业性，不能为了降低AI检测而牺牲学术质量。**
-
----
-
-## 一、宏观结构优化方法
-
-### 1.1 打破线性叙事（Linear Flow Breaking）
-
-**问题**：AI倾向于使用"引言→方法→结果→讨论"的严格线性结构
-
-**学术友好的解决方案**：
-- **问题前置法**：在引言中先呈现一个具体的研究悖论或反常现象，再引出研究背景
-- **案例开局法**：以一个具体的实验失败案例或研究困境开篇，增加叙事张力
-- **结果闪回法**：在方法部分适当预告关键发现，创建非线性阅读体验
-- **对话嵌入法**：在适当位置插入与其他研究者观点的"对话"，打破单一叙事线
-
-**示例**：
-原文：This paper investigates the effects of climate change on agriculture. First, we review existing literature...
-改后：A 40% crop failure in the North China Plain in 2022 defied all predictive models. This anomaly—the focus of our investigation—challenges fundamental assumptions about...
-
-### 1.2 章节功能重组（Section Function Reorganization）
-
-**问题**：AI生成的各章节功能划分过于清晰，每章只做一件事
-
-**学术友好的解决方案**：
-- **功能融合**：在方法章节中融入部分结果预览，在结果中嵌入方法调整说明
-- **论证交织**：让理论框架和实证分析在同一章节中交替出现
-- **深浅搭配**：同一章节内安排不同深度的内容，如概述性段落与深入分析段落交替
-
-**注意**：融合不能损害论文的可读性，必须保持逻辑的可追踪性
-
-### 1.3 打破完美对称（Breaking Perfect Symmetry）
-
-**问题**：AI倾向于生成对称结构，如每章段落数相近、每段字数均匀
-
-**学术友好的解决方案**：
-- **有意的不均衡**：重点章节可以是其他章节的2-3倍长度
-- **段落长度变化**：关键论证用长段落深入展开，过渡性内容用短段落简洁处理
-- **层级深度变化**：某些章节有3级子标题，某些只有2级，反映内容本身的复杂度差异
+**IMPORTANT: All modifications must maintain academic rigor and professionalism. Never sacrifice academic quality to reduce AI detection.**
 
 ---
 
-## 二、段落层面优化方法
+## I. Macro-Structure Optimization Methods
 
-### 2.1 移除显性连接词（Removing Explicit Connectors）
+### 1.1 Breaking Linear Flow
 
-**问题**：AI过度使用"Furthermore", "Moreover", "Additionally", "In conclusion"等连接词
+**Problem**: AI tends to use a strict linear structure: Introduction → Methodology → Results → Discussion
 
-**学术友好的替代策略**：
+**Academically-Friendly Solutions**:
+- **Problem-First Approach**: Present a specific research paradox or anomaly in the introduction before providing background
+- **Case-Opening Approach**: Begin with a specific experimental failure or research dilemma to increase narrative tension
+- **Results Flashback**: Preview key findings in the methodology section to create a non-linear reading experience
+- **Dialogue Embedding**: Insert "dialogues" with other researchers' viewpoints at appropriate points to break the single narrative line
 
-#### 2.1.1 语义回声法（Semantic Echo）
-用重复上段关键概念的方式自然承接，不需要显性连接词
-- 原文：Furthermore, the temperature increase affects soil moisture.
-- 改后：Soil moisture—directly impacted by these temperature shifts—demonstrates...
+**Example**:
+Before: This paper investigates the effects of climate change on agriculture. First, we review existing literature...
+After: A 40% crop failure in the North China Plain in 2022 defied all predictive models. This anomaly—the focus of our investigation—challenges fundamental assumptions about...
 
-#### 2.1.2 代词承接法（Pronoun Bridge）
-使用"This", "Such", "These findings"等代词自然过渡
-- 原文：Moreover, our analysis reveals that...
-- 改后：This pattern suggests that...
+### 1.2 Section Function Reorganization
 
-#### 2.1.3 问题引导法（Question-driven Transition）
-用设问方式引入新内容
-- 原文：Additionally, we examined the role of...
-- 改后：How does this relate to agricultural output? Our examination of...
+**Problem**: AI-generated sections have overly clear functional divisions, with each chapter doing only one thing
 
-#### 2.1.4 对比引入法（Contrast Introduction）
-通过对比自然过渡
-- 原文：However, some researchers disagree.
-- 改后：Smith (2020) challenges this interpretation, arguing that...
+**Academically-Friendly Solutions**:
+- **Function Fusion**: Incorporate preliminary results in methodology sections; embed method adjustments in results
+- **Argument Interweaving**: Allow theoretical framework and empirical analysis to alternate within the same section
+- **Depth Variation**: Arrange content of different depths within the same section, alternating overview paragraphs with in-depth analysis
 
-### 2.2 打破段落公式化模式（Breaking Formulaic Paragraph Patterns）
+**Note**: Fusion should not compromise readability; logical traceability must be maintained
 
-**问题**：AI段落常遵循"主题句→支持证据→小结"的公式
+### 1.3 Breaking Perfect Symmetry
 
-**学术友好的变体**：
-- **证据先行**：先呈现数据或引用，再解释其意义
-- **递进展开**：从具体到抽象，或从抽象到具体
-- **反驳-修正结构**：先呈现可能的反对意见，再给出回应
-- **类比开局**：用类比或隐喻开始段落
+**Problem**: AI tends to generate symmetric structures with similar paragraph counts per chapter and uniform word counts
 
-### 2.3 增加句子长度变化（Sentence Length Variation）
-
-**问题**：AI句子长度过于均匀
-
-**学术友好的方法**：
-- 复杂论证用长句，结论性陈述用短句
-- 在一组长句后插入一个简短有力的判断句
-- 使用括号补充信息增加句子复杂度变化
+**Academically-Friendly Solutions**:
+- **Intentional Imbalance**: Key chapters can be 2-3x the length of others
+- **Paragraph Length Variation**: Use long paragraphs for key arguments; short paragraphs for transitional content
+- **Hierarchy Depth Variation**: Some chapters have 3 levels of subheadings, others only 2, reflecting actual content complexity
 
 ---
 
-## 三、衔接层面优化方法
+## II. Paragraph-Level Optimization Methods
 
-### 3.1 隐性逻辑衔接（Implicit Logical Connection）
+### 2.1 Removing Explicit Connectors
 
-**目标**：让读者能感受到逻辑但看不到明显的逻辑标记
+**Problem**: AI overuses connectors like "Furthermore," "Moreover," "Additionally," "In conclusion"
 
-**方法**：
-- **时间顺序隐含**：用时态变化暗示时间推移
-- **因果关系隐含**：通过句子排列暗示因果，而非使用"because", "therefore"
-- **对比关系隐含**：并置对比内容，不用"however", "on the contrary"
+**Academically-Friendly Replacement Strategies**:
 
-### 3.2 学术引用作为衔接（Citations as Transitions）
+#### 2.1.1 Semantic Echo
+Use repetition of key concepts from the previous paragraph for natural continuation without explicit connectors
+- Before: Furthermore, the temperature increase affects soil moisture.
+- After: Soil moisture—directly impacted by these temperature shifts—demonstrates...
 
-**方法**：
-- 用不同学者观点的对话串联段落
-- 用"X argued..., but Y later demonstrated..."的方式自然过渡
-- 引用本身携带的时间线或逻辑关系作为衔接
+#### 2.1.2 Pronoun Bridge
+Use "This," "Such," "These findings" for natural transitions
+- Before: Moreover, our analysis reveals that...
+- After: This pattern suggests that...
 
-### 3.3 主题词回环（Thematic Word Cycling）
+#### 2.1.3 Question-Driven Transition
+Use rhetorical questions to introduce new content
+- Before: Additionally, we examined the role of...
+- After: How does this relate to agricultural output? Our examination of...
 
-**方法**：
-- 段落首句重复上段末句的关键词
-- 在不同段落中用同义词或近义词指代同一概念，创造"词汇回声"
-- 使用指示代词（this phenomenon, such effects）建立连接
+#### 2.1.4 Contrast Introduction
+Transition naturally through contrast
+- Before: However, some researchers disagree.
+- After: Smith (2020) challenges this interpretation, arguing that...
+
+### 2.2 Breaking Formulaic Paragraph Patterns
+
+**Problem**: AI paragraphs often follow the formula: Topic sentence → Supporting evidence → Summary
+
+**Academically-Friendly Variations**:
+- **Evidence First**: Present data or citations first, then explain their significance
+- **Progressive Development**: Move from specific to abstract, or abstract to specific
+- **Refutation-Correction Structure**: Present possible objections first, then respond
+- **Analogy Opening**: Begin paragraphs with analogies or metaphors
+
+### 2.3 Sentence Length Variation
+
+**Problem**: AI sentence lengths are too uniform
+
+**Academically-Friendly Methods**:
+- Use long sentences for complex arguments, short sentences for conclusions
+- Insert a brief, powerful statement after a series of long sentences
+- Use parenthetical information to vary sentence complexity
 
 ---
 
-## 四、开头与结尾优化方法
+## III. Transition-Level Optimization Methods
 
-### 4.1 避免公式化开头
+### 3.1 Implicit Logical Connection
 
-**AI常见模式**：
+**Goal**: Let readers perceive logic without seeing obvious logical markers
+
+**Methods**:
+- **Implicit Temporal Sequence**: Use tense changes to suggest time progression
+- **Implicit Causality**: Suggest cause-effect through sentence arrangement without "because," "therefore"
+- **Implicit Contrast**: Juxtapose contrasting content without "however," "on the contrary"
+
+### 3.2 Citations as Transitions
+
+**Methods**:
+- Use dialogue between different scholars' viewpoints to connect paragraphs
+- Transition naturally with "X argued..., but Y later demonstrated..."
+- Use the timeline or logical relationships inherent in citations for connection
+
+### 3.3 Thematic Word Cycling
+
+**Methods**:
+- Repeat key words from the previous paragraph's ending in the next paragraph's opening
+- Use synonyms or near-synonyms across different paragraphs to create "lexical echo"
+- Use demonstrative pronouns (this phenomenon, such effects) to establish connections
+
+---
+
+## IV. Opening and Closing Optimization Methods
+
+### 4.1 Avoiding Formulaic Openings
+
+**Common AI Patterns**:
 - "This paper aims to..."
 - "In recent years, there has been growing interest in..."
 - "The purpose of this study is to..."
 
-**学术友好的替代**：
-- 以研究悖论或反常现象开篇
-- 以具体数据或案例开篇
-- 以学术争议开篇
-- 以研究者的"困惑"开篇（第一人称适度使用）
+**Academically-Friendly Alternatives**:
+- Open with a research paradox or anomaly
+- Open with specific data or case studies
+- Open with academic controversy
+- Open with the researcher's "puzzlement" (moderate use of first person)
 
-### 4.2 避免过度闭合的结尾
+### 4.2 Avoiding Over-Closed Endings
 
-**AI常见模式**：
+**Common AI Patterns**:
 - "In conclusion, this study has demonstrated..."
 - "To summarize, the findings indicate..."
-- 完美回应所有研究问题
+- Perfectly addressing all research questions
 
-**学术友好的替代**：
-- **开放式结尾**：指出尚未解决的问题或新的研究方向
-- **审慎结尾**：使用hedging语言（"may suggest", "appears to indicate"）
-- **问题式结尾**：以新的研究问题收尾
-- **局限性承认**：坦诚讨论研究局限，留下探索空间
-
----
-
-## 五、跨段落优化方法
-
-### 5.1 建立回指结构（Cross-Reference Structure）
-
-**问题**：AI文本往往是线性的，缺少前后呼应
-
-**方法**：
-- 在后文中明确回指前文的论点或数据（"As noted in Section 2..."）
-- 创建"论证循环"：在结论中呼应引言中提出的问题
-- 使用脚注或括号建立跨段落连接
-
-### 5.2 制造有控制的"不完美"
-
-**方法**：
-- 允许某些论点只是初步探讨，不必完全证明
-- 保留一些"悬而未决"的讨论
-- 承认数据的模糊性或解释的多样性
+**Academically-Friendly Alternatives**:
+- **Open-Ended Closing**: Point to unresolved issues or new research directions
+- **Cautious Closing**: Use hedging language ("may suggest," "appears to indicate")
+- **Question-Style Closing**: End with new research questions
+- **Limitation Acknowledgment**: Candidly discuss research limitations, leaving room for exploration
 
 ---
 
-## 六、特定问题的解决方案
+## V. Cross-Paragraph Optimization Methods
 
-### 6.1 线性流程过于明显
-**诊断**：Document follows a strict, linear progression: Introduction -> Methodology -> Results -> Conclusion
-**解决方案**：
-1. 在方法部分插入预期结果的简短讨论
-2. 在结果部分回顾方法调整
-3. 考虑使用"研究故事"叙事法，记录研究过程中的曲折
+### 5.1 Building Cross-Reference Structure
 
-### 6.2 IMRaD结构过于公式化
-**诊断**：Structure is a highly formulaic IMRaD format
-**解决方案**：
-1. 在标准章节外增加"研究背景"或"概念框架"章节
-2. 将讨论和结论合并，或将方法和结果部分交织
-3. 添加独立的"研究局限"章节
+**Problem**: AI text is often linear, lacking back-and-forth references
 
-### 6.3 完美对称结构
-**诊断**：Perfect symmetry: each section contains exactly one paragraph
-**解决方案**：
-1. 根据内容实际需要调整段落数量
-2. 重点章节应该有更多段落
-3. 某些章节可以只有概述性内容
+**Methods**:
+- Explicitly reference earlier arguments or data ("As noted in Section 2...")
+- Create "argument loops": Echo questions raised in the introduction in the conclusion
+- Use footnotes or parentheses for cross-paragraph connections
 
-### 6.4 段落长度过于均匀
-**诊断**：All paragraphs are extremely short and uniform in length
-**解决方案**：
-1. 合并相关的短段落
-2. 扩展关键论证段落
-3. 创造长短段落交替的节奏感
+### 5.2 Creating Controlled "Imperfection"
 
-### 6.5 显性连接词过度使用
-**诊断**：Explicit AI-fingerprint connectors detected (Furthermore, Moreover, etc.)
-**解决方案**：
-1. 使用语义回声替代
-2. 使用代词承接替代
-3. 使用引用或数据作为过渡
-
-### 6.6 缺乏回指结构
-**诊断**：No cross-references between sections
-**解决方案**：
-1. 添加"如前所述"、"正如第X节讨论的"等回指
-2. 在结论中呼应引言
-3. 在讨论中引用之前的数据
+**Methods**:
+- Allow some arguments to be preliminary explorations, not fully proven
+- Retain some "unresolved" discussions
+- Acknowledge data ambiguity or interpretation diversity
 
 ---
 
-## 重要提醒
+## VI. Solutions for Specific Issues
 
-1. **学术优先**：所有修改必须服务于学术表达，不能为降低AI检测而牺牲清晰度
-2. **保持一致性**：选择的风格应在全文保持一致
-3. **领域惯例**：不同学科有不同的写作惯例，修改应符合目标领域的规范
-4. **参考文献**：所有引用和数据必须真实可查
-5. **适度原则**：不需要使用所有方法，选择最适合的2-3种即可
+### 6.1 Overly Obvious Linear Flow
+**Diagnosis**: Document follows a strict, linear progression: Introduction -> Methodology -> Results -> Conclusion
+**Solutions**:
+1. Insert brief discussion of expected results in methodology section
+2. Review method adjustments in results section
+3. Consider using "research story" narrative to document research twists and turns
+
+### 6.2 Overly Formulaic IMRaD Structure
+**Diagnosis**: Structure is a highly formulaic IMRaD format
+**Solutions**:
+1. Add "Research Background" or "Conceptual Framework" sections beyond standard chapters
+2. Merge discussion and conclusion, or interweave methods and results
+3. Add a separate "Research Limitations" section
+
+### 6.3 Perfect Symmetric Structure
+**Diagnosis**: Perfect symmetry: each section contains exactly one paragraph
+**Solutions**:
+1. Adjust paragraph count based on actual content needs
+2. Key sections should have more paragraphs
+3. Some sections can contain only overview content
+
+### 6.4 Overly Uniform Paragraph Length
+**Diagnosis**: All paragraphs are extremely short and uniform in length
+**Solutions**:
+1. Merge related short paragraphs
+2. Expand key argument paragraphs
+3. Create rhythm through alternating long and short paragraphs
+
+### 6.5 Overuse of Explicit Connectors
+**Diagnosis**: Explicit AI-fingerprint connectors detected (Furthermore, Moreover, etc.)
+**Solutions**:
+1. Use semantic echo replacement
+2. Use pronoun bridge replacement
+3. Use citations or data as transitions
+
+### 6.6 Lack of Cross-Reference Structure
+**Diagnosis**: No cross-references between sections
+**Solutions**:
+1. Add cross-references like "As mentioned earlier," "As discussed in Section X"
+2. Echo the introduction in the conclusion
+3. Reference earlier data in the discussion
+
+---
+
+## Important Reminders
+
+1. **Academic Priority**: All modifications must serve academic expression; never sacrifice clarity to reduce AI detection
+2. **Maintain Consistency**: The chosen style should remain consistent throughout
+3. **Disciplinary Conventions**: Different fields have different writing conventions; modifications should conform to target field norms
+4. **References**: All citations and data must be verifiable
+5. **Moderation Principle**: Not all methods need to be used; select the 2-3 most appropriate ones
 """
 
 # Issue-specific suggestion prompt template
@@ -329,7 +329,7 @@ QUICK_ISSUE_SUGGESTION_PROMPT = """You are a De-AIGC expert. Analyze this struct
 
 ## ISSUE
 Type: {issue_type}
-Description: {issue_description_zh}
+Description: {issue_description}
 Severity: {severity}
 
 ## DOCUMENT CONTEXT
@@ -338,17 +338,21 @@ Sections: {total_sections}, Paragraphs: {total_paragraphs}
 
 ## OUTPUT (JSON)
 {{
+  "diagnosis": "Brief problem analysis in English (2-3 sentences)",
   "diagnosis_zh": "【问题诊断】简明扼要的问题分析（2-3句）",
+  "quick_fix": "Immediately actionable modification suggestions (specific steps)",
   "quick_fix_zh": "【快速修改】立即可执行的修改建议（具体步骤）",
+  "detailed_strategy": "More systematic modification approach",
   "detailed_strategy_zh": "【深度策略】更系统的修改方案",
-  "prompt_snippet": "用户可以复制使用的提示词片段（中文）",
-  "estimated_improvement": "预估改进幅度（分数）"
+  "prompt_snippet": "A prompt snippet the user can copy and use (in English)",
+  "estimated_improvement": "Estimated improvement score"
 }}
 
 Rules:
-- All output in Chinese
+- Provide output in both English and Chinese where applicable
 - Be specific and actionable
 - Keep academic standards
+- The prompt_snippet MUST be in English
 """
 
 
@@ -396,7 +400,7 @@ def format_issue_prompt(
     if use_quick_mode:
         return QUICK_ISSUE_SUGGESTION_PROMPT.format(
             issue_type=issue_type,
-            issue_description_zh=issue_description_zh,
+            issue_description=issue_description,
             severity=severity,
             structure_score=structure_score,
             total_sections=total_sections,

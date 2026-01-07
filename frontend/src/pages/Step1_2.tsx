@@ -21,6 +21,11 @@ import {
   Upload,
   FileText,
   Type,
+  BarChart3,
+  Merge,
+  Expand,
+  Scissors,
+  PenLine,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import Button from '../components/common/Button';
@@ -152,6 +157,55 @@ export default function Step1_2() {
   const [newText, setNewText] = useState('');
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+
+  // Paragraph length analysis state (Two-Phase Enhancement)
+  // 段落长度分析状态（两阶段增强）
+  const [paragraphLengthAnalysis, setParagraphLengthAnalysis] = useState<{
+    paragraphLengths: Array<{
+      position: string;
+      wordCount: number;
+      section: string;
+      summary: string;
+      summaryZh: string;
+    }>;
+    meanLength: number;
+    stdDev: number;
+    cv: number;
+    isUniform: boolean;
+    humanLikeCvTarget: number;
+    strategies: Array<{
+      strategyType: string;
+      targetPositions: string[];
+      description: string;
+      descriptionZh: string;
+      reason: string;
+      reasonZh: string;
+      priority: number;
+      expandSuggestion?: string;
+      expandSuggestionZh?: string;
+      // For merge strategy, semantic relationship between paragraphs
+      // 对于合并策略，段落间的语义关系
+      semanticRelation?: string;
+      semanticRelationZh?: string;
+      // For split/compress strategy, what aspects to separate or remove
+      // 对于拆分/压缩策略，应分离或删除哪些方面
+      splitPoints?: string[];
+      splitPointsZh?: string[];
+    }>;
+    summary: string;
+    summaryZh: string;
+  } | null>(null);
+  const [isLoadingParagraphLength, setIsLoadingParagraphLength] = useState(false);
+  const [paragraphLengthError, setParagraphLengthError] = useState<string | null>(null);
+  const [selectedStrategyIndices, setSelectedStrategyIndices] = useState<Set<number>>(new Set());
+  const [expandTexts, setExpandTexts] = useState<Record<number, string>>({}); // strategyIndex -> expandText
+  const [isApplyingStrategies, setIsApplyingStrategies] = useState(false);
+  const [strategyResult, setStrategyResult] = useState<{
+    modifiedText: string;
+    changesSummaryZh: string;
+    strategiesApplied: number;
+    newCv?: number;
+  } | null>(null);
 
   // Prevent duplicate API calls
   // 防止重复API调用
@@ -479,6 +533,100 @@ export default function Step1_2() {
   const closeMergeResult = useCallback(() => {
     setMergeResult(null);
     setRegenerateCount(0);
+  }, []);
+
+  // ==== Paragraph Length Analysis Functions (Two-Phase Enhancement) ====
+  // ==== 段落长度分析功能（两阶段增强）====
+
+  // Analyze paragraph length distribution (Phase 1)
+  // 分析段落长度分布（阶段1）
+  const analyzeParagraphLength = useCallback(async () => {
+    if (!documentId) return;
+
+    setIsLoadingParagraphLength(true);
+    setParagraphLengthError(null);
+    setSelectedStrategyIndices(new Set());
+    setExpandTexts({});
+    setStrategyResult(null);
+
+    try {
+      const data = await structureApi.analyzeParagraphLength(documentId);
+      setParagraphLengthAnalysis(data);
+    } catch (err) {
+      console.error('Paragraph length analysis error:', err);
+      setParagraphLengthError('段落长度分析失败 / Paragraph length analysis failed');
+    } finally {
+      setIsLoadingParagraphLength(false);
+    }
+  }, [documentId]);
+
+  // Toggle strategy selection
+  // 切换策略选择
+  const toggleStrategySelection = useCallback((index: number) => {
+    setSelectedStrategyIndices(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(index)) {
+        newSet.delete(index);
+        // Clear expand text if deselected
+        setExpandTexts(prev => {
+          const { [index]: _, ...rest } = prev;
+          return rest;
+        });
+      } else {
+        newSet.add(index);
+      }
+      return newSet;
+    });
+  }, []);
+
+  // Update expand text for a strategy
+  // 更新策略的扩展文本
+  const updateExpandText = useCallback((index: number, text: string) => {
+    setExpandTexts(prev => ({
+      ...prev,
+      [index]: text,
+    }));
+  }, []);
+
+  // Apply selected strategies (Phase 2)
+  // 应用选中的策略（阶段2）
+  const applyStrategies = useCallback(async () => {
+    if (!documentId || !paragraphLengthAnalysis || selectedStrategyIndices.size === 0) return;
+
+    setIsApplyingStrategies(true);
+    setStrategyResult(null);
+
+    try {
+      const selectedStrategies = Array.from(selectedStrategyIndices).map(idx => {
+        const strategy = paragraphLengthAnalysis.strategies[idx];
+        return {
+          strategyType: strategy.strategyType,
+          targetPositions: strategy.targetPositions,
+          expandText: strategy.strategyType === 'expand' ? expandTexts[idx] : undefined,
+        };
+      });
+
+      const result = await structureApi.applyParagraphStrategies(
+        documentId,
+        selectedStrategies,
+        { sessionId: sessionId || undefined }
+      );
+      setStrategyResult(result);
+      // Set the modified text for continuation
+      setNewText(result.modifiedText);
+      setModifyMode('text');
+    } catch (err) {
+      console.error('Apply strategies error:', err);
+      setParagraphLengthError('应用策略失败 / Failed to apply strategies');
+    } finally {
+      setIsApplyingStrategies(false);
+    }
+  }, [documentId, paragraphLengthAnalysis, selectedStrategyIndices, expandTexts, sessionId]);
+
+  // Close strategy result
+  // 关闭策略结果
+  const closeStrategyResult = useCallback(() => {
+    setStrategyResult(null);
   }, []);
 
   // Validate and set file
@@ -1126,6 +1274,288 @@ export default function Step1_2() {
               )}
             </div>
           )}
+
+          {/* Paragraph Length Analysis Section (Two-Phase Enhancement) */}
+          {/* 段落长度分析区域（两阶段增强）*/}
+          <div className="card p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center">
+                <BarChart3 className="w-5 h-5 text-purple-600 mr-2" />
+                <h3 className="text-lg font-semibold text-gray-800">
+                  段落长度分布分析 / Paragraph Length Analysis
+                </h3>
+              </div>
+              <Button
+                variant="outline"
+                onClick={analyzeParagraphLength}
+                disabled={isLoadingParagraphLength}
+                className="flex items-center"
+              >
+                {isLoadingParagraphLength ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    分析中...
+                  </>
+                ) : (
+                  <>
+                    <BarChart3 className="w-4 h-4 mr-2" />
+                    开始分析
+                  </>
+                )}
+              </Button>
+            </div>
+
+            <p className="text-sm text-gray-500 mb-4">
+              分析段落长度分布，检测是否过于均匀（AI写作特征），并提供改进策略。
+            </p>
+
+            {/* Loading State */}
+            {isLoadingParagraphLength && (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="w-8 h-8 animate-spin text-purple-600 mr-3" />
+                <span className="text-gray-600">正在分析段落长度分布...</span>
+              </div>
+            )}
+
+            {/* Error State */}
+            {paragraphLengthError && (
+              <div className="flex items-center p-3 bg-red-50 text-red-700 rounded-lg">
+                <AlertCircle className="w-5 h-5 mr-2 flex-shrink-0" />
+                <span>{paragraphLengthError}</span>
+              </div>
+            )}
+
+            {/* Analysis Result */}
+            {paragraphLengthAnalysis && !isLoadingParagraphLength && (
+              <div className="space-y-4">
+                {/* Statistics */}
+                <div className="grid grid-cols-4 gap-3">
+                  <div className="p-3 bg-gray-50 rounded-lg text-center">
+                    <p className="text-lg font-bold text-gray-800">
+                      {paragraphLengthAnalysis.meanLength.toFixed(1)}
+                    </p>
+                    <p className="text-xs text-gray-500">平均长度（词）</p>
+                  </div>
+                  <div className="p-3 bg-gray-50 rounded-lg text-center">
+                    <p className="text-lg font-bold text-gray-800">
+                      {paragraphLengthAnalysis.stdDev.toFixed(1)}
+                    </p>
+                    <p className="text-xs text-gray-500">标准差</p>
+                  </div>
+                  <div className={clsx(
+                    'p-3 rounded-lg text-center',
+                    paragraphLengthAnalysis.isUniform ? 'bg-red-50' : 'bg-green-50'
+                  )}>
+                    <p className={clsx(
+                      'text-lg font-bold',
+                      paragraphLengthAnalysis.isUniform ? 'text-red-600' : 'text-green-600'
+                    )}>
+                      {paragraphLengthAnalysis.cv.toFixed(2)}
+                    </p>
+                    <p className="text-xs text-gray-500">CV (变异系数)</p>
+                  </div>
+                  <div className="p-3 bg-purple-50 rounded-lg text-center">
+                    <p className="text-lg font-bold text-purple-600">
+                      {paragraphLengthAnalysis.humanLikeCvTarget.toFixed(2)}
+                    </p>
+                    <p className="text-xs text-gray-500">目标 CV</p>
+                  </div>
+                </div>
+
+                {/* Uniform Warning */}
+                {paragraphLengthAnalysis.isUniform && (
+                  <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                    <div className="flex items-start">
+                      <AlertCircle className="w-5 h-5 text-amber-500 mr-2 flex-shrink-0 mt-0.5" />
+                      <div>
+                        <p className="font-medium text-amber-800">
+                          段落长度过于均匀 / Paragraph lengths too uniform
+                        </p>
+                        <p className="text-sm text-amber-700 mt-1">
+                          {paragraphLengthAnalysis.summaryZh}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Strategy Suggestions */}
+                {paragraphLengthAnalysis.strategies.length > 0 && (
+                  <div className="mt-4">
+                    <h4 className="font-semibold text-gray-800 mb-3">
+                      改进策略（可多选）/ Improvement Strategies
+                    </h4>
+                    <div className="space-y-3">
+                      {paragraphLengthAnalysis.strategies.map((strategy, idx) => (
+                        <div
+                          key={idx}
+                          className={clsx(
+                            'p-4 rounded-lg border-2 transition-all',
+                            selectedStrategyIndices.has(idx)
+                              ? 'border-purple-500 bg-purple-50'
+                              : 'border-gray-200 bg-white hover:border-gray-300'
+                          )}
+                        >
+                          <div className="flex items-start">
+                            <button
+                              onClick={() => toggleStrategySelection(idx)}
+                              className="mr-3 mt-1 text-gray-500 hover:text-purple-600"
+                            >
+                              {selectedStrategyIndices.has(idx) ? (
+                                <CheckSquare className="w-5 h-5 text-purple-600" />
+                              ) : (
+                                <Square className="w-5 h-5" />
+                              )}
+                            </button>
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2 mb-1">
+                                {strategy.strategyType === 'merge' && (
+                                  <span className="flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700">
+                                    <Merge className="w-3 h-3 mr-1" />
+                                    合并
+                                  </span>
+                                )}
+                                {strategy.strategyType === 'expand' && (
+                                  <span className="flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700">
+                                    <Expand className="w-3 h-3 mr-1" />
+                                    扩展
+                                  </span>
+                                )}
+                                {strategy.strategyType === 'split' && (
+                                  <span className="flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-700">
+                                    <Scissors className="w-3 h-3 mr-1" />
+                                    拆分
+                                  </span>
+                                )}
+                                {strategy.strategyType === 'compress' && (
+                                  <span className="flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-700">
+                                    <Scissors className="w-3 h-3 mr-1" />
+                                    压缩
+                                  </span>
+                                )}
+                                <span className="text-xs text-gray-400">
+                                  优先级: {strategy.priority}
+                                </span>
+                              </div>
+                              <p className="font-medium text-gray-800">
+                                {strategy.descriptionZh}
+                              </p>
+                              <p className="text-sm text-gray-500 mt-1">
+                                {strategy.reasonZh}
+                              </p>
+                              {strategy.targetPositions.length > 0 && (
+                                <p className="text-xs text-gray-400 mt-1">
+                                  目标段落: {strategy.targetPositions.join(', ')}
+                                </p>
+                              )}
+
+                              {/* Semantic Relation for Merge Strategy */}
+                              {/* 合并策略的语义关系 */}
+                              {strategy.strategyType === 'merge' && strategy.semanticRelationZh && (
+                                <div className="mt-2 p-2 bg-blue-50 rounded border border-blue-200">
+                                  <p className="text-xs text-blue-700">
+                                    <span className="font-medium">语义关系：</span>
+                                    {strategy.semanticRelationZh}
+                                  </p>
+                                </div>
+                              )}
+
+                              {/* Split Points for Split/Compress Strategy */}
+                              {/* 拆分/压缩策略的拆分点 */}
+                              {(strategy.strategyType === 'split' || strategy.strategyType === 'compress') && strategy.splitPointsZh && strategy.splitPointsZh.length > 0 && (
+                                <div className="mt-2 p-2 bg-orange-50 rounded border border-orange-200">
+                                  <p className="text-xs text-orange-700 font-medium mb-1">
+                                    {strategy.strategyType === 'split' ? '建议拆分点：' : '建议修改：'}
+                                  </p>
+                                  <ul className="text-xs text-orange-600 list-disc list-inside">
+                                    {strategy.splitPointsZh.map((point, pIdx) => (
+                                      <li key={pIdx}>{point}</li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+
+                              {/* Expand Text Input */}
+                              {strategy.strategyType === 'expand' && selectedStrategyIndices.has(idx) && (
+                                <div className="mt-3">
+                                  {strategy.expandSuggestionZh && (
+                                    <p className="text-xs text-purple-600 mb-2">
+                                      <PenLine className="w-3 h-3 inline mr-1" />
+                                      建议: {strategy.expandSuggestionZh}
+                                    </p>
+                                  )}
+                                  <textarea
+                                    value={expandTexts[idx] || ''}
+                                    onChange={(e) => updateExpandText(idx, e.target.value)}
+                                    placeholder="请输入要添加的内容..."
+                                    className="textarea w-full h-24 text-sm"
+                                  />
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Apply Strategies Button */}
+                    <div className="mt-4 flex justify-end">
+                      <Button
+                        variant="primary"
+                        onClick={applyStrategies}
+                        disabled={selectedStrategyIndices.size === 0 || isApplyingStrategies}
+                        className="flex items-center"
+                      >
+                        {isApplyingStrategies ? (
+                          <>
+                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                            应用中...
+                          </>
+                        ) : (
+                          <>
+                            <Wand2 className="w-4 h-4 mr-2" />
+                            应用 {selectedStrategyIndices.size} 个策略
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {/* No Strategies Needed */}
+                {paragraphLengthAnalysis.strategies.length === 0 && !paragraphLengthAnalysis.isUniform && (
+                  <div className="flex items-center p-3 bg-green-50 text-green-700 rounded-lg">
+                    <CheckCircle className="w-5 h-5 mr-2 flex-shrink-0" />
+                    <span>段落长度分布良好，无需调整。</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Strategy Apply Result */}
+            {strategyResult && (
+              <div className="mt-4 p-4 bg-white border border-green-200 rounded-lg">
+                <div className="flex items-center justify-between mb-3">
+                  <h4 className="font-semibold text-green-800">
+                    策略应用成功
+                  </h4>
+                  <button onClick={closeStrategyResult} className="text-gray-400 hover:text-gray-600">
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+                <p className="text-sm text-green-700 mb-3">
+                  {strategyResult.changesSummaryZh}
+                </p>
+                <div className="p-3 bg-gray-50 rounded-lg text-sm text-gray-700 whitespace-pre-wrap max-h-60 overflow-y-auto">
+                  {strategyResult.modifiedText.substring(0, 500)}
+                  {strategyResult.modifiedText.length > 500 && '...'}
+                </div>
+                <p className="text-xs text-gray-500 mt-2">
+                  修改后的文本已自动填入下方输入框，您可以继续编辑或直接进入下一步。
+                </p>
+              </div>
+            )}
+          </div>
 
           {/* No Issues */}
           {/* 无问题 */}

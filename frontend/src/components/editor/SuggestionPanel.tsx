@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Sparkles, Wrench, Edit3, ChevronDown, ChevronUp, CheckCircle2, MousePointerClick, X, SkipForward, Flag } from 'lucide-react';
+import { Sparkles, Wrench, Edit3, ChevronDown, ChevronUp, CheckCircle2, MousePointerClick, X, SkipForward, Flag, RotateCcw } from 'lucide-react';
 import { clsx } from 'clsx';
 import type { SuggestResponse, Suggestion, SuggestionSource } from '../../types';
 import Button from '../common/Button';
@@ -25,6 +25,7 @@ interface SuggestionPanelProps {
   sentenceProcessed?: boolean;
   sentenceProcessedType?: 'processed' | 'skip' | 'flag';  // Type of processing / 处理类型
   sentenceId?: string;
+  onReselect?: () => void;  // Callback to reselect/re-edit suggestion / 重新选择改写方案的回调
   // Analysis state from parent
   // 来自父组件的分析状态
   analysisState?: AnalysisState;
@@ -54,6 +55,7 @@ export default function SuggestionPanel({
   sentenceProcessed = false,
   sentenceProcessedType,
   sentenceId,
+  onReselect,
   analysisState: externalAnalysisState,
   onAnalysisStateChange,
   customText = '',
@@ -152,6 +154,19 @@ export default function SuggestionPanel({
         <p className="text-xs text-gray-400 mb-4">
           {titleEn}
         </p>
+
+        {/* Reselect button */}
+        {/* 重新选择按钮 */}
+        {onReselect && (
+          <button
+            onClick={onReselect}
+            className="flex items-center justify-center mx-auto mb-4 px-4 py-2 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-lg transition-colors"
+          >
+            <RotateCcw className="w-4 h-4 mr-2" />
+            <span className="text-sm font-medium">重新选择改写方案</span>
+          </button>
+        )}
+
         <div className="flex items-center justify-center text-gray-500 mb-4">
           <MousePointerClick className="w-4 h-4 mr-2" />
           <p className="text-sm">
@@ -408,12 +423,18 @@ function SuggestionTrack({
             )}
           </div>
           <div className="flex items-center">
-            <span className="text-xs text-gray-500 mr-1">
+            <span className={clsx(
+              'text-xs font-medium mr-1',
+              suggestion.semanticSimilarity >= 0.95 ? 'text-green-600' :
+              suggestion.semanticSimilarity >= 0.90 ? 'text-yellow-600' :
+              suggestion.semanticSimilarity >= 0.85 ? 'text-orange-500' :
+              'text-red-500'
+            )}>
               {(suggestion.semanticSimilarity * 100).toFixed(0)}%
             </span>
             <InfoTooltip
               title="语义相似度"
-              content="改写后与原文的语义相似程度。使用Sentence-BERT或备用算法计算。>85%表示语义保持良好，<70%可能存在语义偏移风险。建议选择高相似度的改写方案。"
+              content="改写后与原文的语义相似程度。>=95%绿色(优秀)，90-95%黄色(良好)，85-90%橙色(注意)，<85%红色(警告)。建议选择高相似度的改写方案。"
               iconSize="sm"
             />
           </div>

@@ -10,10 +10,20 @@ from sqlalchemy import select
 import os
 import json
 from datetime import datetime
+import re
 
 from src.db.database import get_db
 from src.db.models import Document, Session, Sentence, Modification
 from src.api.schemas import ExportResult
+
+# Import python-docx for Word document export
+# 导入python-docx用于Word文档导出
+try:
+    from docx import Document as DocxDocument
+    from docx.shared import Pt
+    DOCX_AVAILABLE = True
+except ImportError:
+    DOCX_AVAILABLE = False
 
 router = APIRouter()
 
@@ -63,16 +73,34 @@ async def export_document(
     )
     modifications = {m.sentence_id: m for m in mods_result.scalars().all()}
 
-    # Build final text
-    # 构建最终文本
-    final_sentences = []
+    # Build final text with paragraph breaks
+    # 构建带段落分隔的最终文本
+    paragraphs_dict = {}  # Group sentences by paragraph
     for sentence in sentences:
-        if sentence.id in modifications:
-            final_sentences.append(modifications[sentence.id].modified_text)
-        else:
-            final_sentences.append(sentence.original_text)
+        # Get paragraph index from analysis_json
+        # 从analysis_json获取段落索引
+        para_idx = 0
+        if sentence.analysis_json:
+            para_idx = sentence.analysis_json.get("paragraph_index", 0) or 0
 
-    final_text = " ".join(final_sentences)
+        if para_idx not in paragraphs_dict:
+            paragraphs_dict[para_idx] = []
+
+        # Get sentence text (modified or original)
+        # 获取句子文本（已修改或原始）
+        if sentence.id in modifications:
+            paragraphs_dict[para_idx].append(modifications[sentence.id].modified_text)
+        else:
+            paragraphs_dict[para_idx].append(sentence.original_text)
+
+    # Join sentences within paragraphs with space, paragraphs with double newline
+    # 段落内句子用空格连接，段落间用双换行
+    final_paragraphs = []
+    for para_idx in sorted(paragraphs_dict.keys()):
+        para_text = " ".join(paragraphs_dict[para_idx])
+        final_paragraphs.append(para_text)
+
+    final_text = "\n\n".join(final_paragraphs)
 
     # Create export file
     # 创建导出文件
@@ -80,11 +108,62 @@ async def export_document(
     os.makedirs(export_dir, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{doc.filename.rsplit('.', 1)[0]}_{timestamp}.{format}"
-    filepath = os.path.join(export_dir, filename)
 
-    with open(filepath, "w", encoding="utf-8") as f:
-        f.write(final_text)
+    # Clean up filename: remove yolo_step prefixes recursively
+    # 清理文件名：递归移除yolo_step前缀
+    base_name = doc.filename.rsplit('.', 1)[0]
+    clean_name = base_name
+    while clean_name.startswith('yolo_step') or clean_name.startswith('yolo_'):
+        clean_name = re.sub(r'^(yolo_)?step[\d\-]+_', '', clean_name)
+        # Also handle bare 'yolo_' prefix just in case
+        if clean_name.startswith('yolo_') and not clean_name.startswith('yolo_step'):
+             clean_name = clean_name[5:]
+
+    if not clean_name:
+        clean_name = "document"
+
+    # Add prefix based on status
+    # 根据状态添加前缀
+    prefix = "processed" if session.status == "completed" else "partial"
+    final_filename_base = f"{prefix}_{clean_name}_{timestamp}"
+
+    # Handle docx format with python-docx
+    # 使用python-docx处理docx格式
+    if format == "docx":
+        if not DOCX_AVAILABLE:
+            raise HTTPException(
+                status_code=500,
+                detail="python-docx library not installed. Please install it with: pip install python-docx"
+            )
+
+        filename = f"{final_filename_base}.docx"
+        filepath = os.path.join(export_dir, filename)
+
+        # Create Word document with proper paragraph formatting
+        # 创建带有正确段落格式的Word文档
+        docx_doc = DocxDocument()
+
+        # Set default font style
+        # 设置默认字体样式
+        style = docx_doc.styles['Normal']
+        font = style.font
+        font.size = Pt(12)
+
+        # Add each paragraph as a separate Word paragraph
+        # 将每个段落添加为单独的Word段落
+        for para_text in final_paragraphs:
+            if para_text.strip():
+                docx_doc.add_paragraph(para_text.strip())
+
+        docx_doc.save(filepath)
+    else:
+        # Text format (txt or other)
+        # 文本格式（txt或其他）
+        filename = f"{final_filename_base}.{format}"
+        filepath = os.path.join(export_dir, filename)
+
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(final_text)
 
     file_size = os.path.getsize(filepath)
 

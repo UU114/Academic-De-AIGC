@@ -23,6 +23,7 @@ interface TaskItem {
   totalSentences: number;
   processed: number;
   progressPercent: number;
+  colloquialismLevel: number;  // Colloquialism level (0-10) / 口语化程度
   highRiskCount: number;
   mediumRiskCount: number;
   lowRiskCount: number;
@@ -78,6 +79,7 @@ export default function History() {
           totalSentences: session.totalSentences,
           processed: session.processed,
           progressPercent: session.progressPercent,
+          colloquialismLevel: session.colloquialismLevel ?? 4,
           highRiskCount: doc?.highRiskCount || 0,
           mediumRiskCount: doc?.mediumRiskCount || 0,
           lowRiskCount: doc?.lowRiskCount || 0,
@@ -261,6 +263,10 @@ export default function History() {
                         <span>•</span>
                         <span className={task.mode === 'yolo' ? 'text-amber-600' : 'text-primary-600'}>
                           {task.mode === 'intervention' ? '干预模式' : 'YOLO模式'}
+                        </span>
+                        <span>•</span>
+                        <span className="text-purple-600" title="表达风格：0=最学术，10=最通俗 / Style: 0=Academic, 10=Casual">
+                          风格: {task.colloquialismLevel} (学术↔通俗)
                         </span>
                         <span>•</span>
                         <span>{formatDate(task.createdAt)}</span>

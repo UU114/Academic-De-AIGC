@@ -11,6 +11,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import List, Dict, Optional
+from pydantic import BaseModel
 
 from src.db.database import get_db
 from src.db.models import Document, Sentence as SentenceModel
@@ -27,6 +28,14 @@ ref_handler = ReferenceHandler()
 paraphrase_detector = ParaphraseDetector()
 scorer = RiskScorer()
 whitelist_extractor = WhitelistExtractor()
+
+
+class TextUploadRequest(BaseModel):
+    """
+    Request body for text upload
+    文本上传请求体
+    """
+    text: str
 
 
 @router.get("/", response_model=List[DocumentInfo])
@@ -387,7 +396,7 @@ async def delete_document(
 
 @router.post("/new/text")
 async def upload_text(
-    text: str,
+    request: TextUploadRequest,
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -395,7 +404,11 @@ async def upload_text(
     直接上传文本（文件上传的替代方案）
 
     CAASS v2.0 Phase 2: Uses paragraph context baseline and whitelist extraction
+
+    Note: Text is received in request body to avoid URL length limits (431 error)
+    注意：文本通过请求体接收以避免URL长度限制（431错误）
     """
+    text = request.text
     doc_id = str(uuid.uuid4())
 
     # CAASS v2.0 Phase 2: Extract whitelist from text

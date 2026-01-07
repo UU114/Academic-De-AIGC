@@ -64,9 +64,15 @@ class Settings(BaseSettings):
     volcengine_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     volcengine_model: str = "deepseek-v3-2-251201"  # Volcengine model endpoint ID
 
-    llm_provider: str = "volcengine"  # volcengine | deepseek | gemini | anthropic | openai
+    # DashScope (阿里云灵积) API - Qwen models
+    # DashScope API - 通义千问模型
+    dashscope_api_key: Optional[str] = Field(default=None, alias="DASHSCOPE_API_KEY")
+    dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    dashscope_model: str = "qwen-plus"  # DashScope model name
+
+    llm_provider: str = "volcengine"  # volcengine | dashscope | deepseek | gemini | anthropic | openai
     llm_model: str = "deepseek-v3-2-251201"  # volcengine model or deepseek-chat | gemini-2.5-flash | etc.
-    llm_max_tokens: int = 1024
+    llm_max_tokens: int = 2048  # Increased from 1024 to handle longer sentences
     llm_temperature: float = 0.7
 
     # DeepSeek API base URL (official - commented out, using Volcengine instead)
@@ -157,6 +163,19 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 60 * 24  # 24 hours
 
+    # ==========================================
+    # Admin Configuration
+    # 管理员配置
+    # ==========================================
+    admin_secret_key: Optional[str] = Field(
+        default=None,
+        description="Secret key for admin access (env: ADMIN_SECRET_KEY)"
+    )
+    admin_token_expire_minutes: int = Field(
+        default=60 * 8,  # 8 hours
+        description="Admin token expiration time in minutes"
+    )
+
     def is_debug_mode(self) -> bool:
         """
         Check if running in debug mode
@@ -181,6 +200,13 @@ class Settings(BaseSettings):
             self.platform_api_key and
             self.platform_app_id
         )
+
+    def is_admin_configured(self) -> bool:
+        """
+        Check if admin access is configured
+        检查管理员访问是否已配置
+        """
+        return bool(self.admin_secret_key)
 
     class Config:
         env_file = ".env"

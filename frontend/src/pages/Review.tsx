@@ -23,6 +23,19 @@ interface ReviewStats {
   flagged: number;
   avgRiskReduction: number;
   sourceDistribution: { llm: number; rule: number; custom: number };
+  stepLogs: StepLog[];
+}
+
+interface StepLog {
+  step: string;
+  action: string;
+  message: string;
+  issues_count?: number;
+  changes_count?: number;
+  processed?: number;
+  skipped?: number;
+  original_risk?: number;
+  new_risk?: number;
 }
 
 interface ModificationRecord {
@@ -46,7 +59,7 @@ export default function Review() {
   const [isLoading, setIsLoading] = useState(true);
   const [stats, setStats] = useState<ReviewStats | null>(null);
   const [modifications, setModifications] = useState<ModificationRecord[]>([]);
-  const [activeTab, setActiveTab] = useState<'summary' | 'details' | 'export'>('summary');
+  const [activeTab, setActiveTab] = useState<'summary' | 'details' | 'export' | 'process'>('summary');
   const [isExporting, setIsExporting] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -74,6 +87,7 @@ export default function Review() {
           flagged: progress.flagged,
           avgRiskReduction: reviewStats.avgRiskReduction,
           sourceDistribution: reviewStats.sourceDistribution,
+          stepLogs: reviewStats.step_logs || [],
         });
 
         // Note: Modification details would need another API call
@@ -179,6 +193,7 @@ export default function Review() {
       <div className="flex space-x-2 mb-6">
         {[
           { id: 'summary', label: '概览', icon: BarChart2 },
+          { id: 'process', label: '全流程日志', icon: CheckCircle },
           { id: 'details', label: '详情', icon: FileText },
           { id: 'export', label: '导出', icon: Download },
         ].map((tab) => (
@@ -246,6 +261,12 @@ export default function Review() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {activeTab === 'process' && stats && (
+        <div className="space-y-6">
+          <ProcessLogs logs={stats.stepLogs} />
         </div>
       )}
 
@@ -475,5 +496,83 @@ function ExportButton({
         )}
       </div>
     </button>
+  );
+}
+
+function ProcessLogs({ logs }: { logs: StepLog[] }) {
+  // Group logs by step
+  const groupedLogs = logs.reduce((acc, log) => {
+    const step = log.step || 'unknown';
+    if (!acc[step]) acc[step] = [];
+    acc[step].push(log);
+    return acc;
+  }, {} as Record<string, StepLog[]>);
+
+  const stepTitles: Record<string, string> = {
+    'step1-1': '第一步：结构分析与重组 / Step 1: Structure Analysis',
+    'step1-2': '第二步：段落关系优化 / Step 2: Paragraph Optimization',
+    'step2': '第三步：衔接与过渡修复 / Step 3: Transition Repair',
+    'step3': '第四步：句子级智能润色 / Step 4: Sentence Polish',
+    'complete': '流程完成 / Process Completed',
+  };
+
+  const stepOrder = ['step1-1', 'step1-2', 'step2', 'step3', 'complete'];
+
+  return (
+    <div className="space-y-6">
+      {stepOrder.map((step) => {
+        const stepLogs = groupedLogs[step];
+        if (!stepLogs || stepLogs.length === 0) return null;
+
+        return (
+          <div key={step} className="card p-6">
+            <h3 className="text-lg font-bold text-gray-800 mb-4 border-b pb-2">
+              {stepTitles[step] || step}
+            </h3>
+            <div className="space-y-4">
+              {stepLogs.map((log, idx) => (
+                <div key={idx} className={clsx(
+                  "p-3 rounded-lg border-l-4",
+                  log.action === 'error' ? "bg-red-50 border-red-500" :
+                  log.action === 'modified' ? "bg-green-50 border-green-500" :
+                  log.action === 'found_issues' ? "bg-amber-50 border-amber-500" :
+                  "bg-gray-50 border-blue-400"
+                )}>
+                  <div className="flex justify-between items-start">
+                    <span className="font-semibold text-sm uppercase tracking-wide opacity-75 mb-1 block">
+                      {log.action.replace('_', ' ')}
+                    </span>
+                    {log.changes_count !== undefined && (
+                      <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full">
+                        {log.changes_count} changes
+                      </span>
+                    )}
+                    {log.issues_count !== undefined && (
+                      <span className="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded-full">
+                        {log.issues_count} issues
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-gray-800 whitespace-pre-wrap">{log.message}</p>
+                  
+                  {/* Detailed metrics for sentence processing */}
+                  {log.original_risk !== undefined && (
+                    <div className="mt-2 text-xs text-gray-500 flex gap-4">
+                      <span>Risk: {Math.round(log.original_risk)} → {Math.round(log.new_risk || 0)}</span>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+      
+      {logs.length === 0 && (
+        <div className="text-center text-gray-500 py-10">
+          暂无流程日志 / No process logs available
+        </div>
+      )}
+    </div>
   );
 }

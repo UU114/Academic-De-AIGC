@@ -11,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 from typing import Optional
 import logging
+import re
+import httpx
 
 from src.api.schemas import (
     StructureAnalysisRequest,
@@ -853,7 +855,7 @@ async def analyze_document_relationships_step2(
     - AI risk assessment for each paragraph
     - Rewrite suggestions
 
-    Requires Step 1-1 to be completed first.
+    If Step 1-1 is not completed (no cache), it will be automatically run first.
 
     Args:
         request: Document structure request 文档结构请求
@@ -869,26 +871,56 @@ async def analyze_document_relationships_step2(
         if not document:
             raise HTTPException(status_code=404, detail="Document not found")
 
-        # Check if Step 1-1 has been completed
-        # 检查步骤 1-1 是否已完成
         step1_1_key = "step1_1_cache"
         step1_2_key = "step1_2_cache"
 
+        # Check if Step 1-1 has been completed
+        # 检查步骤 1-1 是否已完成
         if not document.structure_analysis_cache or step1_1_key not in document.structure_analysis_cache:
-            raise HTTPException(
-                status_code=400,
-                detail="Step 1-1 (structure analysis) must be completed first"
+            logger.info(f"Step 1-1 cache missing for document {request.document_id}, auto-running Step 1-1 analysis...")
+            
+            # Auto-run Step 1-1
+            # 自动运行 Step 1-1
+            
+            # Get colloquialism_level from session if provided
+            target_colloquialism = None
+            if request.session_id:
+                session = await db.get(Session, request.session_id)
+                if session:
+                    target_colloquialism = session.colloquialism_level
+                    logger.info(f"Using colloquialism_level={target_colloquialism} from session {request.session_id}")
+
+            # Perform Step 1-1 analysis
+            step1_1_result = await smart_analyzer.analyze_structure(
+                document.original_text, 
+                target_colloquialism=target_colloquialism
             )
+
+            # Initialize cache dict if needed
+            if not document.structure_analysis_cache:
+                document.structure_analysis_cache = {}
+            
+            # Cache Step 1-1 result
+            document.structure_analysis_cache[step1_1_key] = step1_1_result
+            flag_modified(document, 'structure_analysis_cache')
+            # We don't commit here yet, we'll commit after Step 1-2 to save DB calls, 
+            # or commit now to be safe. Committing now is safer.
+            await db.commit()
+            
+            structure_result = step1_1_result
+        else:
+            # Get Step 1-1 result from cache
+            # 从缓存获取步骤 1-1 结果
+            structure_result = document.structure_analysis_cache[step1_1_key]
 
         # Check if we have cached Step 1-2 result
         # 检查是否有缓存的步骤 1-2 结果
         if step1_2_key in document.structure_analysis_cache:
+            # If we just auto-ran Step 1-1, we probably want to re-run Step 1-2 too,
+            # but usually if Step 1-1 was missing, Step 1-2 would be missing too.
+            # If explicit re-analysis is needed, cache should be cleared via delete endpoint.
             logger.info(f"Using cached Step 1-2 result for document {request.document_id}")
             return document.structure_analysis_cache[step1_2_key]
-
-        # Get Step 1-1 result
-        # 获取步骤 1-1 结果
-        structure_result = document.structure_analysis_cache[step1_1_key]
 
         # Perform Step 1-2 analysis
         # 执行步骤 1-2 分析
@@ -900,6 +932,11 @@ async def analyze_document_relationships_step2(
 
         # Cache the result to SQLite
         # 缓存结果到 SQLite
+        # Refresh document to ensure we have latest version if we committed above
+        # (SQLAlchemy async session usually handles this, but being careful)
+        if not document.structure_analysis_cache:
+             document.structure_analysis_cache = {}
+             
         document.structure_analysis_cache[step1_2_key] = result
         flag_modified(document, 'structure_analysis_cache')
         await db.commit()
@@ -1339,9 +1376,31 @@ async def _call_llm_for_suggestion(prompt: str, settings) -> str:
     """
     import httpx
 
-    # Use Volcengine (preferred)
-    # 使用火山引擎（首选）
-    if settings.llm_provider == "volcengine" and settings.volcengine_api_key:
+    # Use DashScope (Aliyun)
+    # 使用阿里云灵积
+    if settings.llm_provider == "dashscope" and settings.dashscope_api_key:
+        async with httpx.AsyncClient(
+            base_url=settings.dashscope_base_url,
+            headers={
+                "Authorization": f"Bearer {settings.dashscope_api_key}",
+                "Content-Type": "application/json"
+            },
+            timeout=60.0,
+            trust_env=False
+        ) as client:
+            response = await client.post("/chat/completions", json={
+                "model": settings.dashscope_model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 2048,
+                "temperature": 0.2
+            })
+            response.raise_for_status()
+            data = response.json()
+            return data["choices"][0]["message"]["content"]
+
+    # Use Volcengine
+    # 使用火山引擎
+    elif settings.llm_provider == "volcengine" and settings.volcengine_api_key:
         async with httpx.AsyncClient(
             base_url=settings.volcengine_base_url,
             headers={
@@ -1524,9 +1583,31 @@ async def get_issue_suggestion(
         # 调用 LLM API
         response_text = ""
 
-        # Use Volcengine (preferred)
-        # 使用火山引擎（首选）
-        if settings.llm_provider == "volcengine" and settings.volcengine_api_key:
+        # Use DashScope (Aliyun)
+        # 使用阿里云灵积
+        if settings.llm_provider == "dashscope" and settings.dashscope_api_key:
+            async with httpx.AsyncClient(
+                base_url=settings.dashscope_base_url,
+                headers={
+                    "Authorization": f"Bearer {settings.dashscope_api_key}",
+                    "Content-Type": "application/json"
+                },
+                timeout=90.0,
+                trust_env=False
+            ) as client:
+                response = await client.post("/chat/completions", json={
+                    "model": settings.dashscope_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 4096,
+                    "temperature": 0.3
+                })
+                response.raise_for_status()
+                data = response.json()
+                response_text = data["choices"][0]["message"]["content"]
+
+        # Use Volcengine
+        # 使用火山引擎
+        elif settings.llm_provider == "volcengine" and settings.volcengine_api_key:
             async with httpx.AsyncClient(
                 base_url=settings.volcengine_base_url,
                 headers={
@@ -1655,6 +1736,9 @@ MERGE_MODIFY_PROMPT_TEMPLATE = """You are a professional academic writing editor
 ## ISSUES TO ADDRESS:
 {issues_list}
 
+**NOTE**: Multiple issues may refer to the same paragraph position (e.g., a connector issue, logic break, and high-risk flag on the same paragraph).
+When generating the prompt, instruct to address related issues TOGETHER rather than separately.
+
 ## USER'S ADDITIONAL NOTES:
 {user_notes}
 
@@ -1665,7 +1749,7 @@ The prompt should:
 2. Maintain the target style level ({colloquialism_level}/10)
 3. Preserve the original meaning and content
 4. Be specific about what to change (remove connectors, restructure sentences, etc.)
-5. Be written in the SAME LANGUAGE as the document
+5. **CRITICAL: The generated prompt MUST be written in English, regardless of document language**
 6. IMPORTANT: Preserve all previous improvements from Step 1-1 (if any)
 7. **For connector issues: Include the specific semantic echo replacements provided above**
 
@@ -1682,9 +1766,13 @@ CRITICAL: The generated prompt MUST explicitly mention preserving previous impro
 CRITICAL: If semantic echo replacements are provided, the generated prompt MUST include these specific replacements.
 """
 
-# Prompt template for direct modification
-# 直接修改的提示词模板
+# Prompt template for direct modification (diff-based output to save tokens)
+# 直接修改的提示词模板（基于差异输出以节省 tokens）
 MERGE_MODIFY_APPLY_TEMPLATE = """You are a professional academic writing editor specializing in De-AIGC (removing AI-writing patterns).
+
+## [CRITICAL] LANGUAGE REQUIREMENT:
+**Document Language: {doc_language}**
+**All modifications MUST be entirely in {doc_language}.**
 
 ## DOCUMENT TO MODIFY:
 {document_text}
@@ -1700,38 +1788,50 @@ MERGE_MODIFY_APPLY_TEMPLATE = """You are a professional academic writing editor 
 ## ISSUES TO FIX:
 {issues_list}
 
+**NOTE**: Multiple issues may refer to the same paragraph position. Address them TOGETHER in a single modification.
+
 ## USER'S ADDITIONAL NOTES:
 {user_notes}
 
 ## YOUR TASK:
-Modify the document to address ALL the listed issues while:
-1. Maintaining the target style level ({colloquialism_level}/10)
-2. Preserving the original meaning and structure
-3. Keeping the output in the SAME LANGUAGE as the input
-4. Making natural-sounding changes that a human would write
-5. **CRITICAL: Preserve all improvements from previous steps (Step 1-1) - DO NOT revert any changes already made**
-6. **For connector issues: USE the specific semantic echo replacements provided above**
+Identify and fix the problematic sentences/paragraphs. For each fix:
+1. **CRITICAL: Modifications MUST be entirely in {doc_language}**
+2. Maintain the target style level ({colloquialism_level}/10)
+3. Preserve the original meaning
+4. Make natural-sounding changes that a human would write
 
 ## MODIFICATION GUIDELINES:
-- Remove explicit connector words (Furthermore, Moreover, Additionally, 此外, 另外, etc.)
-- Use semantic echo (repeat key concepts from previous paragraph) instead of connectors
-- **When semantic echo replacements are provided above, USE THEM DIRECTLY**
+- Remove explicit connector words (Furthermore, Moreover, Additionally, etc.)
+- Use semantic echo instead of connectors
 - Break up formulaic sentence patterns
 - Vary sentence length and structure
 - Avoid AI-typical patterns like "First... Second... Third..."
-- **Keep all previous improvements intact - only add new improvements, never revert**
 
-## OUTPUT FORMAT (JSON):
+## OUTPUT FORMAT (JSON) - ONLY OUTPUT THE CHANGES, NOT THE FULL DOCUMENT:
 {{
-  "modified_text": "Your complete modified document here...",
+  "modifications": [
+    {{
+      "original": "The exact original sentence or paragraph that needs modification...",
+      "modified": "The modified version of that sentence or paragraph...",
+      "reason": "Brief reason for the change"
+    }},
+    {{
+      "original": "Another sentence to modify...",
+      "modified": "Its modified version...",
+      "reason": "Brief reason"
+    }}
+  ],
   "changes_summary_zh": "修改摘要：1. ...; 2. ...; 3. ...",
   "changes_count": 5,
   "issues_addressed": ["connector_overuse", "linear_flow"]
 }}
 
-CRITICAL: Output the COMPLETE modified document, not just the changed parts. Preserve all content not related to the issues.
-CRITICAL: If previous improvements exist, you MUST maintain them. Only make additional improvements, never revert to original patterns.
-CRITICAL: If semantic echo replacements are provided, you MUST use these exact replacements in the modified text.
+CRITICAL RULES:
+1. The "original" field MUST be an EXACT substring from the document (copy-paste, no paraphrasing)
+2. Only output the parts that need modification, NOT the entire document
+3. Each modification should be a complete sentence or small paragraph
+4. All "modified" text MUST be in {doc_language} only
+5. Keep modifications focused - don't rewrite large sections unnecessarily
 """
 
 # Style level descriptions
@@ -1782,6 +1882,12 @@ async def generate_merge_modify_prompt(
         # 获取文档以访问 Step 1-1 缓存
         document = await db.get(Document, request.document_id)
 
+        # Detect document language for context building
+        # 检测文档语言以构建上下文
+        doc_language = "en"  # Default to English
+        if document and document.original_text:
+            doc_language = _detect_document_language(document.original_text)
+
         # Get colloquialism level from session
         # 从会话获取口语化级别
         colloquialism_level = 3  # Default to semi-formal
@@ -1792,21 +1898,30 @@ async def generate_merge_modify_prompt(
 
         style_description = STYLE_LEVEL_DESCRIPTIONS.get(colloquialism_level, STYLE_LEVEL_DESCRIPTIONS[3])
 
-        # Build previous improvements context from Step 1-1 cache
-        # 从 Step 1-1 缓存构建之前的改进上下文
-        previous_improvements = _build_previous_improvements_context(document)
+        # Build previous improvements context from Step 1-1 cache (in document's language)
+        # 从 Step 1-1 缓存构建之前的改进上下文（使用文档的语言）
+        previous_improvements = _build_previous_improvements_context(document, doc_language)
 
-        # Build semantic echo context from Step 1-2 cache
-        # 从 Step 1-2 缓存构建语义回声上下文
-        semantic_echo_context = _build_semantic_echo_context(document)
+        # Build semantic echo context from Step 1-2 cache (in document's language)
+        # 从 Step 1-2 缓存构建语义回声上下文（使用文档的语言）
+        semantic_echo_context = _build_semantic_echo_context(document, doc_language)
 
-        # Build issues list
-        # 构建问题列表
+        # Build issues list in document's language
+        # 使用文档语言构建问题列表
         issues_list = ""
         for i, issue in enumerate(request.selected_issues, 1):
-            issues_list += f"{i}. [{issue.severity.upper()}] {issue.description_zh}\n"
+            # Select description based on document language
+            # 根据文档语言选择描述
+            if doc_language == "zh":
+                desc = issue.description_zh or issue.description
+            else:
+                desc = issue.description or issue.description_zh
+            issues_list += f"{i}. [{issue.severity.upper()}] {desc}\n"
             if issue.affected_positions:
-                issues_list += f"   Affected positions: {', '.join(issue.affected_positions)}\n"
+                if doc_language == "zh":
+                    issues_list += f"   影响位置: {', '.join(issue.affected_positions)}\n"
+                else:
+                    issues_list += f"   Affected positions: {', '.join(issue.affected_positions)}\n"
 
         # Build prompt for LLM
         # 构建 LLM 提示词
@@ -1879,6 +1994,11 @@ async def apply_merge_modify(
         if not document:
             raise HTTPException(status_code=404, detail="Document not found")
 
+        # Detect document language to ensure output language consistency
+        # 检测文档语言以确保输出语言一致性
+        doc_language = _detect_document_language(document.original_text)
+        logger.info(f"Detected document language: {doc_language}")
+
         # Get colloquialism level from session
         # 从会话获取口语化级别
         colloquialism_level = 3  # Default to semi-formal
@@ -1889,46 +2009,98 @@ async def apply_merge_modify(
 
         style_description = STYLE_LEVEL_DESCRIPTIONS.get(colloquialism_level, STYLE_LEVEL_DESCRIPTIONS[3])
 
-        # Build previous improvements context from Step 1-1 cache
-        # 从 Step 1-1 缓存构建之前的改进上下文
-        previous_improvements = _build_previous_improvements_context(document)
+        # Build previous improvements context from Step 1-1 cache (in document's language)
+        # 从 Step 1-1 缓存构建之前的改进上下文（使用文档的语言）
+        previous_improvements = _build_previous_improvements_context(document, doc_language)
 
-        # Build semantic echo context from Step 1-2 cache
-        # 从 Step 1-2 缓存构建语义回声上下文
-        semantic_echo_context = _build_semantic_echo_context(document)
+        # Build semantic echo context from Step 1-2 cache (in document's language)
+        # 从 Step 1-2 缓存构建语义回声上下文（使用文档的语言）
+        semantic_echo_context = _build_semantic_echo_context(document, doc_language)
 
-        # Build issues list
-        # 构建问题列表
+        # Build issues list in document's language
+        # 使用文档语言构建问题列表
         issues_list = ""
         for i, issue in enumerate(request.selected_issues, 1):
-            issues_list += f"{i}. [{issue.severity.upper()}] {issue.description_zh}\n"
+            # Select description based on document language
+            # 根据文档语言选择描述
+            if doc_language == "zh":
+                desc = issue.description_zh or issue.description
+            else:
+                desc = issue.description or issue.description_zh
+            issues_list += f"{i}. [{issue.severity.upper()}] {desc}\n"
             if issue.affected_positions:
-                issues_list += f"   Affected: {', '.join(issue.affected_positions)}\n"
+                if doc_language == "zh":
+                    issues_list += f"   影响位置: {', '.join(issue.affected_positions)}\n"
+                else:
+                    issues_list += f"   Affected: {', '.join(issue.affected_positions)}\n"
 
         # Build prompt for LLM
         # 构建 LLM 提示词
+        # Determine language instruction for prompt
+        # 确定prompt中的语言指令
+        if doc_language == "zh":
+            language_instruction = "Chinese (中文)"
+            user_notes_default = "无附加说明"
+        else:
+            language_instruction = "English"
+            user_notes_default = "No additional notes"
+
+        # Input limit: 180000 chars ≈ 30k words ≈ 40k tokens (within 64K context window)
+        # 输入限制：180000字符 ≈ 30000单词 ≈ 40000 tokens（在64K上下文窗口内）
         prompt = MERGE_MODIFY_APPLY_TEMPLATE.format(
-            document_text=document.original_text[:15000],  # Limit to avoid token overflow
+            document_text=document.original_text[:180000],  # ~30k words, ~40k tokens input
             colloquialism_level=colloquialism_level,
             style_description=style_description,
             previous_improvements=previous_improvements,
             semantic_echo_context=semantic_echo_context,
             issues_list=issues_list,
-            user_notes=request.user_notes or "No additional notes"
+            user_notes=request.user_notes or user_notes_default,
+            doc_language=language_instruction
         )
 
-        # Call LLM with longer timeout for document modification
-        # 调用 LLM，文档修改需要更长超时
-        response_text = await _call_llm_for_merge_modify(prompt, settings, max_tokens=8192, timeout=120.0)
+        # Call LLM - now outputs diff only, so max_tokens can be smaller
+        # 调用 LLM - 现在只输出 diff，所以 max_tokens 可以更小
+        response_text = await _call_llm_for_merge_modify(prompt, settings, max_tokens=8192, timeout=180.0)
 
         # Parse response
         # 解析响应
         result = _parse_json_response(response_text)
 
+        # Apply modifications (diff) to original document
+        # 将修改（差异）应用到原文档
+        modified_text = document.original_text
+        modifications = result.get("modifications", [])
+        applied_count = 0
+
+        for mod in modifications:
+            original = mod.get("original", "")
+            modified = mod.get("modified", "")
+            if original and modified and original in modified_text:
+                modified_text = modified_text.replace(original, modified, 1)  # Replace first occurrence only
+                applied_count += 1
+                logger.debug(f"Applied modification: {original[:50]}... -> {modified[:50]}...")
+            elif original and modified:
+                # Try fuzzy match if exact match fails (handle minor whitespace differences)
+                # 如果精确匹配失败，尝试模糊匹配（处理细微的空白差异）
+                # Normalize whitespace for matching
+                original_normalized = re.sub(r'\s+', ' ', original.strip())
+                text_normalized = re.sub(r'\s+', ' ', modified_text)
+                if original_normalized in text_normalized:
+                    # Find original position in actual text
+                    # 在实际文本中找到原始位置
+                    pattern = re.sub(r'\s+', r'\\s+', re.escape(original.strip()))
+                    match = re.search(pattern, modified_text)
+                    if match:
+                        modified_text = modified_text[:match.start()] + modified + modified_text[match.end():]
+                        applied_count += 1
+                        logger.debug(f"Applied fuzzy modification: {original[:50]}...")
+                else:
+                    logger.warning(f"Could not find original text: {original[:100]}...")
+
         return MergeModifyApplyResponse(
-            modified_text=result.get("modified_text", document.original_text),
-            changes_summary_zh=result.get("changes_summary_zh", "修改已完成"),
-            changes_count=result.get("changes_count", 0),
+            modified_text=modified_text,
+            changes_summary_zh=result.get("changes_summary_zh", f"已应用 {applied_count} 处修改"),
+            changes_count=applied_count,
             issues_addressed=result.get("issues_addressed", []),
             remaining_attempts=2,  # 3 total, 1 used
             colloquialism_level=colloquialism_level
@@ -1937,8 +2109,12 @@ async def apply_merge_modify(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Apply merge modify error: {e}")
-        raise HTTPException(status_code=500, detail=f"修改失败: {str(e)}")
+        import traceback
+        error_type = type(e).__name__
+        error_msg = str(e) if str(e) else f"{error_type} (no message)"
+        logger.error(f"Apply merge modify error [{error_type}]: {error_msg}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"修改失败: {error_type} - {error_msg}")
 
 
 async def _call_llm_for_merge_modify(prompt: str, settings, max_tokens: int = 4096, timeout: float = 90.0) -> str:
@@ -1948,9 +2124,45 @@ async def _call_llm_for_merge_modify(prompt: str, settings, max_tokens: int = 40
     """
     import httpx
 
-    # Use Volcengine (preferred)
-    # 使用火山引擎（首选）
-    if settings.llm_provider == "volcengine" and settings.volcengine_api_key:
+    logger.info(f"LLM call: provider={settings.llm_provider}, prompt_len={len(prompt)}, max_tokens={max_tokens}, timeout={timeout}")
+
+    # Use DashScope (Aliyun)
+    # 使用阿里云灵积
+    if settings.llm_provider == "dashscope" and settings.dashscope_api_key:
+        try:
+            async with httpx.AsyncClient(
+                base_url=settings.dashscope_base_url,
+                headers={
+                    "Authorization": f"Bearer {settings.dashscope_api_key}",
+                    "Content-Type": "application/json"
+                },
+                timeout=httpx.Timeout(timeout, connect=30.0),
+                trust_env=False
+            ) as client:
+                logger.info(f"Calling DashScope API with model={settings.dashscope_model}")
+                response = await client.post("/chat/completions", json={
+                    "model": settings.dashscope_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": max_tokens,
+                    "temperature": 0.3
+                })
+                response.raise_for_status()
+                data = response.json()
+                logger.info(f"DashScope response received, usage: {data.get('usage', {})}")
+                return data["choices"][0]["message"]["content"]
+        except httpx.TimeoutException as e:
+            logger.error(f"DashScope API timeout after {timeout}s: {type(e).__name__}")
+            raise TimeoutError(f"DashScope API 请求超时 ({timeout}秒)")
+        except httpx.HTTPStatusError as e:
+            logger.error(f"DashScope API HTTP error: {e.response.status_code} - {e.response.text[:500]}")
+            raise ValueError(f"DashScope API 错误: HTTP {e.response.status_code}")
+        except Exception as e:
+            logger.error(f"DashScope API error: {type(e).__name__} - {e}")
+            raise
+
+    # Use Volcengine
+    # 使用火山引擎
+    elif settings.llm_provider == "volcengine" and settings.volcengine_api_key:
         async with httpx.AsyncClient(
             base_url=settings.volcengine_base_url,
             headers={
@@ -2039,7 +2251,42 @@ def _parse_json_response(response: str) -> dict:
         return {}
 
 
-def _build_previous_improvements_context(document) -> str:
+def _detect_document_language(text: str) -> str:
+    """
+    Detect the primary language of a document.
+    检测文档的主要语言。
+
+    Args:
+        text: Document text to analyze
+
+    Returns:
+        "zh" for Chinese, "en" for English
+    """
+    if not text:
+        return "en"
+
+    # Count Chinese characters vs total characters
+    # 统计中文字符与总字符的比例
+    chinese_count = 0
+    total_count = 0
+
+    for char in text:
+        if '\u4e00' <= char <= '\u9fff':  # CJK Unified Ideographs
+            chinese_count += 1
+            total_count += 1
+        elif char.isalpha():  # Latin alphabet
+            total_count += 1
+
+    if total_count == 0:
+        return "en"
+
+    # If more than 10% of alphabetic characters are Chinese, treat as Chinese
+    # 如果超过10%的字母字符是中文，则视为中文文档
+    chinese_ratio = chinese_count / total_count
+    return "zh" if chinese_ratio > 0.1 else "en"
+
+
+def _build_previous_improvements_context(document, doc_language: str = "en") -> str:
     """
     Build context about previous improvements from Step 1-1 analysis.
     从 Step 1-1 分析结果构建之前改进的上下文。
@@ -2050,9 +2297,10 @@ def _build_previous_improvements_context(document) -> str:
 
     Args:
         document: Document model with structure_analysis_cache
+        doc_language: Document language ("en" or "zh")
 
     Returns:
-        Formatted string describing previous improvements
+        Formatted string describing previous improvements (in document's language)
     """
     if not document or not document.structure_analysis_cache:
         return ""
@@ -2067,7 +2315,12 @@ def _build_previous_improvements_context(document) -> str:
         structure_issues = step1_1_cache.get("structureIssues") or step1_1_cache.get("structure_issues", [])
         if structure_issues:
             for issue in structure_issues[:5]:  # Limit to top 5 to avoid prompt bloat
-                desc = issue.get("descriptionZh") or issue.get("description_zh") or issue.get("description", "")
+                # Select description based on document language
+                # 根据文档语言选择描述
+                if doc_language == "zh":
+                    desc = issue.get("descriptionZh") or issue.get("description_zh") or issue.get("description", "")
+                else:
+                    desc = issue.get("description") or issue.get("descriptionZh") or issue.get("description_zh", "")
                 if desc:
                     improvements.append(f"- {desc}")
 
@@ -2075,9 +2328,14 @@ def _build_previous_improvements_context(document) -> str:
         # 包含风格分析上下文
         style_analysis = step1_1_cache.get("styleAnalysis") or step1_1_cache.get("style_analysis", {})
         if style_analysis:
-            style_name = style_analysis.get("styleNameZh") or style_analysis.get("style_name_zh", "")
-            if style_name:
-                improvements.append(f"- 文档原始风格: {style_name}")
+            if doc_language == "zh":
+                style_name = style_analysis.get("styleNameZh") or style_analysis.get("style_name_zh", "")
+                if style_name:
+                    improvements.append(f"- 文档原始风格: {style_name}")
+            else:
+                style_name = style_analysis.get("styleName") or style_analysis.get("style_name", "")
+                if style_name:
+                    improvements.append(f"- Document original style: {style_name}")
 
     # Extract Step 1-2 issues if available
     # 提取 Step 1-2 的问题（如果有）
@@ -2088,33 +2346,47 @@ def _build_previous_improvements_context(document) -> str:
         relationship_issues = step1_2_cache.get("relationshipIssues") or step1_2_cache.get("relationship_issues", [])
         if relationship_issues:
             for issue in relationship_issues[:3]:  # Limit to top 3
-                desc = issue.get("descriptionZh") or issue.get("description_zh") or issue.get("description", "")
+                # Select description based on document language
+                # 根据文档语言选择描述
+                if doc_language == "zh":
+                    desc = issue.get("descriptionZh") or issue.get("description_zh") or issue.get("description", "")
+                else:
+                    desc = issue.get("description") or issue.get("descriptionZh") or issue.get("description_zh", "")
                 if desc:
                     improvements.append(f"- {desc}")
 
     if not improvements:
         return ""
 
-    # Build the context block
-    # 构建上下文块
+    # Build the context block based on document language
+    # 根据文档语言构建上下文块
     improvements_text = "\n".join(improvements)
-    return f"""## ⚠️ PREVIOUS ANALYSIS CONTEXT (MUST PRESERVE):
-The document has been analyzed in previous steps. The following issues/improvements were identified:
+
+    if doc_language == "zh":
+        return f"""## [IMPORTANT] 之前分析的上下文（必须保留）:
 在之前的步骤中已对文档进行了分析，识别出以下问题/改进点：
 
 {improvements_text}
 
-**CRITICAL INSTRUCTION 关键指令:**
-- You MUST preserve any improvements already made based on these issues
-- DO NOT revert the document to patterns that were flagged as problematic
-- Only make NEW improvements for the current issues, while keeping previous changes intact
+**关键指令:**
 - 必须保留已根据这些问题所做的改进
 - 不要将文档恢复到被标记为有问题的模式
 - 仅对当前问题进行新的改进，同时保持之前的更改不变
 """
+    else:
+        return f"""## [IMPORTANT] PREVIOUS ANALYSIS CONTEXT (MUST PRESERVE):
+The document has been analyzed in previous steps. The following issues/improvements were identified:
+
+{improvements_text}
+
+**CRITICAL INSTRUCTION:**
+- You MUST preserve any improvements already made based on these issues
+- DO NOT revert the document to patterns that were flagged as problematic
+- Only make NEW improvements for the current issues, while keeping previous changes intact
+"""
 
 
-def _build_semantic_echo_context(document) -> str:
+def _build_semantic_echo_context(document, doc_language: str = "en") -> str:
     """
     Build semantic echo replacement context from Step 1-2 analysis.
     从 Step 1-2 分析结果构建语义回声替换上下文。
@@ -2124,15 +2396,24 @@ def _build_semantic_echo_context(document) -> str:
 
     Args:
         document: Document model with structure_analysis_cache
+        doc_language: Document language ("en" or "zh")
 
     Returns:
-        Formatted string with semantic echo replacements
+        Formatted string with semantic echo replacements (in document's language)
     """
     if not document or not document.structure_analysis_cache:
         return ""
 
     cache = document.structure_analysis_cache
     replacements = []
+    has_chinese_replacement = False  # Track if any cached replacement is in Chinese
+
+    def _is_chinese_text(text: str) -> bool:
+        """Check if text contains significant Chinese characters"""
+        if not text:
+            return False
+        chinese_count = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+        return chinese_count > len(text) * 0.1
 
     # Extract semantic echo replacements from Step 1-2 cache
     # 从 Step 1-2 缓存提取语义回声替换
@@ -2147,16 +2428,52 @@ def _build_semantic_echo_context(document) -> str:
             current_opening = conn.get("current_opening") or conn.get("currentOpening", "")
             replacement = conn.get("semantic_echo_replacement") or conn.get("semanticEchoReplacement", "")
             prev_concepts = conn.get("prev_key_concepts") or conn.get("prevKeyConcepts", [])
-            explanation = conn.get("replacement_explanation_zh") or conn.get("replacementExplanationZh", "")
+            # Select explanation based on language
+            # 根据语言选择说明
+            if doc_language == "zh":
+                explanation = conn.get("replacement_explanation_zh") or conn.get("replacementExplanationZh", "")
+            else:
+                explanation = conn.get("replacement_explanation") or conn.get("replacementExplanation", "") or \
+                              conn.get("replacement_explanation_zh") or conn.get("replacementExplanationZh", "")
 
             if current_opening and replacement:
                 concepts_str = ", ".join(prev_concepts) if prev_concepts else "N/A"
-                replacements.append(f"""
+
+                # Check if replacement language matches document language
+                # 检查替换内容的语言是否与文档语言匹配
+                replacement_is_chinese = _is_chinese_text(replacement)
+
+                if doc_language == "zh":
+                    replacements.append(f"""
 ### 位置 {position}: "{word}"
 - **原文**: {current_opening}
 - **前段关键概念**: {concepts_str}
 - **语义回声替换**: {replacement}
 - **说明**: {explanation}""")
+                else:
+                    # If document is English but replacement is Chinese, do NOT include Chinese text
+                    # 如果文档是英文但替换是中文，不包含中文文本
+                    if replacement_is_chinese:
+                        has_chinese_replacement = True
+                        # Only provide key concepts, let LLM generate English replacement
+                        # 只提供关键概念，让LLM生成英文替换
+                        replacements.append(f"""
+### Position {position}: "{word}"
+- **Original text to modify**: {current_opening}
+- **Connector to REMOVE**: "{word}"
+- **Key concepts from previous paragraph**: {concepts_str}
+- **YOUR TASK**: Generate a NEW English sentence that:
+  1. Removes the connector "{word}" completely
+  2. Uses one of the key concepts [{concepts_str}] at the beginning to create natural flow
+  3. Maintains the original meaning
+  4. Output MUST be entirely in English""")
+                    else:
+                        replacements.append(f"""
+### Position {position}: "{word}"
+- **Original**: {current_opening}
+- **Previous paragraph key concepts**: {concepts_str}
+- **Semantic echo replacement**: {replacement}
+- **Explanation**: {explanation}""")
 
     # Also check Step 1-1 for any connector issues with replacements
     # 同时检查 Step 1-1 是否有带替换的连接词问题
@@ -2169,34 +2486,89 @@ def _build_semantic_echo_context(document) -> str:
                 original = issue.get("originalText") or issue.get("original_text", "")
                 replacement = issue.get("semanticEchoReplacement") or issue.get("semantic_echo_replacement", "")
                 if original and replacement and len(replacements) < 10:  # Limit total
-                    replacements.append(f"""
+                    replacement_is_chinese = _is_chinese_text(replacement)
+                    if doc_language == "zh":
+                        replacements.append(f"""
 ### 连接词问题
 - **原文**: {original}
 - **语义回声替换**: {replacement}""")
+                    else:
+                        # If document is English but replacement is Chinese, do NOT include Chinese text
+                        # 如果文档是英文但替换是中文，不包含中文文本
+                        if replacement_is_chinese:
+                            has_chinese_replacement = True
+                            # Extract connector word from original if possible (common connectors)
+                            # 尝试从原文中提取连接词
+                            connector_patterns = ["Furthermore", "Moreover", "Additionally", "However", "Therefore", "Thus", "Hence", "Consequently", "In addition", "On the other hand"]
+                            detected_connector = ""
+                            for pattern in connector_patterns:
+                                if pattern.lower() in original.lower():
+                                    detected_connector = pattern
+                                    break
+
+                            replacements.append(f"""
+### Connector Issue (from structure analysis)
+- **Original text to modify**: {original}
+- **Connector to REMOVE**: "{detected_connector if detected_connector else 'explicit connector'}"
+- **YOUR TASK**: Generate a NEW English sentence that:
+  1. Removes any explicit connector (Furthermore, Moreover, Additionally, etc.) completely
+  2. Starts with a reference to concepts from previous context to create natural flow
+  3. Maintains the original meaning
+  4. Output MUST be entirely in English - NO Chinese text allowed""")
+                        else:
+                            replacements.append(f"""
+### Connector Issue
+- **Original**: {original}
+- **Semantic echo replacement**: {replacement}""")
 
     if not replacements:
         return ""
 
-    # Build the context block
-    # 构建上下文块
+    # Build the context block based on document language
+    # 根据文档语言构建上下文块
     replacements_text = "\n".join(replacements)
-    return f"""## 🔄 SEMANTIC ECHO REPLACEMENTS (语义回声替换 - 必须使用):
-The following specific replacements have been generated for explicit connector words.
-**YOU MUST use these exact replacements in the modified text.**
+
+    if doc_language == "zh":
+        return f"""## 🔄 语义回声替换 (必须使用):
 以下是针对显性连接词生成的具体替换方案。**您必须在修改后的文本中使用这些替换。**
 
 {replacements_text}
 
-**HOW TO USE 使用方法:**
-1. Find each original text in the document
-2. Replace it with the semantic echo replacement
-3. The replacement uses key concepts from the previous paragraph to create natural flow
-4. Do NOT add back any explicit connectors
-
+**使用方法:**
 1. 在文档中找到每个原文
 2. 用语义回声替换进行替换
 3. 替换使用前一段的关键概念来创建自然的衔接
 4. 不要再添加任何显性连接词
+"""
+    else:
+        # If there are Chinese replacements, add special instructions
+        # 如果有中文替换，添加特殊指令
+        if has_chinese_replacement:
+            return f"""## 🔄 SEMANTIC ECHO REPLACEMENTS:
+The following connector issues need to be addressed. Some cached replacements are in Chinese and MUST be translated/regenerated in English.
+**CRITICAL: The output document MUST be entirely in English. Do NOT include any Chinese text.**
+
+{replacements_text}
+
+**HOW TO USE:**
+1. Find each original text in the document
+2. For English replacements: use them directly
+3. For Chinese replacements: Generate a NEW English replacement using the key concepts
+4. The replacement should use concepts from the previous paragraph to create natural flow
+5. Do NOT add back any explicit connectors
+"""
+        else:
+            return f"""## 🔄 SEMANTIC ECHO REPLACEMENTS (MUST USE):
+The following specific replacements have been generated for explicit connector words.
+**YOU MUST use these exact replacements in the modified text.**
+
+{replacements_text}
+
+**HOW TO USE:**
+1. Find each original text in the document
+2. Replace it with the semantic echo replacement
+3. The replacement uses key concepts from the previous paragraph to create natural flow
+4. Do NOT add back any explicit connectors
 """
 
 
@@ -2225,3 +2597,351 @@ def _generate_fallback_prompt(selected_issues: list, user_notes: str = None) -> 
         prompt += f"用户注意事项：{user_notes}\n"
 
     return prompt
+
+
+# =============================================================================
+# Step 1-2 Two-Phase Enhancement: Paragraph Length Distribution
+# Step 1-2 两阶段增强：段落长度分布
+# =============================================================================
+
+from src.api.schemas import (
+    ParagraphLengthAnalysisRequest,
+    ParagraphLengthAnalysisResponse,
+    ParagraphLengthStrategyItem,
+    ParagraphLengthInfo,
+    ApplyParagraphStrategiesRequest,
+    ApplyParagraphStrategiesResponse,
+    SelectedStrategy,
+)
+from src.core.analyzer.smart_structure import (
+    analyze_paragraph_length_distribution,
+    analyze_paragraph_length_distribution_async
+)
+
+
+@router.post("/paragraph-length/analyze", response_model=ParagraphLengthAnalysisResponse)
+async def analyze_paragraph_length(
+    request: ParagraphLengthAnalysisRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Phase 1: Analyze paragraph length distribution and suggest strategies
+    第一阶段：分析段落长度分布并建议策略
+
+    This endpoint analyzes the paragraph lengths in the document and suggests
+    strategies (merge, expand, split) to improve the CV (coefficient of variation)
+    for a more human-like distribution.
+    此端点分析文档中的段落长度，并建议策略（合并、扩展、拆分）
+    以改善CV（变异系数），使分布更像人类写作。
+
+    Returns strategies that the user can multi-select.
+    If user selects "expand", they will need to provide new content.
+    返回用户可以多选的策略。
+    如果用户选择"扩展"，需要提供新内容。
+
+    Args:
+        request: Contains document_id 包含文档ID
+
+    Returns:
+        ParagraphLengthAnalysisResponse with statistics and strategies
+        包含统计数据和策略的响应
+    """
+    try:
+        # Get document from database
+        # 从数据库获取文档
+        document = await db.get(Document, request.document_id)
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found")
+
+        # Check if we have cached Step 1-1 result
+        # 检查是否有缓存的 Step 1-1 结果
+        step1_1_key = "step1_1_smart_structure"
+        if not document.structure_analysis_cache or step1_1_key not in document.structure_analysis_cache:
+            # Run Step 1-1 first
+            # 先运行 Step 1-1
+            logger.info(f"Running Step 1-1 for document {request.document_id}")
+            step1_1_result = await smart_analyzer.analyze(document.original_text)
+            if not document.structure_analysis_cache:
+                document.structure_analysis_cache = {}
+            document.structure_analysis_cache[step1_1_key] = step1_1_result
+            flag_modified(document, 'structure_analysis_cache')
+            await db.commit()
+        else:
+            step1_1_result = document.structure_analysis_cache[step1_1_key]
+
+        # Analyze paragraph length distribution using async LLM-based semantic analysis
+        # 使用异步LLM语义分析进行段落长度分布分析
+        analysis = await analyze_paragraph_length_distribution_async(step1_1_result)
+
+        # Convert to response format
+        # 转换为响应格式
+        paragraph_lengths = [
+            ParagraphLengthInfo(
+                position=p["position"],
+                word_count=p["word_count"],
+                section=str(p["section"]),
+                summary=p.get("summary", ""),
+                summary_zh=p.get("summary_zh", "")
+            )
+            for p in analysis.paragraph_lengths
+        ]
+
+        strategies = [
+            ParagraphLengthStrategyItem(
+                strategy_type=s.strategy_type,
+                target_positions=s.target_positions,
+                description=s.description,
+                description_zh=s.description_zh,
+                reason=s.reason,
+                reason_zh=s.reason_zh,
+                priority=s.priority,
+                expand_suggestion=s.expand_suggestion,
+                expand_suggestion_zh=s.expand_suggestion_zh,
+                semantic_relation=s.semantic_relation,
+                semantic_relation_zh=s.semantic_relation_zh,
+                split_points=s.split_points,
+                split_points_zh=s.split_points_zh
+            )
+            for s in analysis.strategies
+        ]
+
+        return ParagraphLengthAnalysisResponse(
+            paragraph_lengths=paragraph_lengths,
+            mean_length=analysis.mean_length,
+            std_dev=analysis.std_dev,
+            cv=analysis.cv,
+            is_uniform=analysis.is_uniform,
+            human_like_cv_target=analysis.human_like_cv_target,
+            strategies=strategies,
+            summary=analysis.summary,
+            summary_zh=analysis.summary_zh
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Paragraph length analysis error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/paragraph-length/apply", response_model=ApplyParagraphStrategiesResponse)
+async def apply_paragraph_strategies(
+    request: ApplyParagraphStrategiesRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Phase 2: Apply user-selected paragraph length strategies
+    第二阶段：应用用户选择的段落长度策略
+
+    Applies the selected strategies (merge, expand, split) to modify the document.
+    For expand strategies, uses the user-provided text.
+    应用选定的策略（合并、扩展、拆分）来修改文档。
+    对于扩展策略，使用用户提供的文本。
+
+    Args:
+        request: Contains document_id, session_id, and selected strategies
+
+    Returns:
+        ApplyParagraphStrategiesResponse with modified text
+    """
+    try:
+        # Get document from database
+        # 从数据库获取文档
+        document = await db.get(Document, request.document_id)
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found")
+
+        # Get colloquialism level from session if available
+        # 如果可用，从会话获取口语化程度
+        colloquialism_level = 4  # default
+        if request.session_id:
+            session = await db.get(Session, request.session_id)
+            if session:
+                colloquialism_level = session.colloquialism_level
+
+        # Get cached Step 1-1 result for paragraph structure
+        # 获取缓存的 Step 1-1 结果以了解段落结构
+        step1_1_key = "step1_1_smart_structure"
+        if not document.structure_analysis_cache or step1_1_key not in document.structure_analysis_cache:
+            raise HTTPException(
+                status_code=400,
+                detail="Please run paragraph length analysis first (Phase 1)"
+            )
+        step1_1_result = document.structure_analysis_cache[step1_1_key]
+
+        # Build modification prompt based on selected strategies
+        # 根据选择的策略构建修改提示词
+        strategy_instructions = []
+        for strategy in request.selected_strategies:
+            if strategy.strategy_type == "merge":
+                positions = " and ".join(strategy.target_positions)
+                strategy_instructions.append(
+                    f"MERGE paragraphs {positions} into a single paragraph. "
+                    f"Combine their content naturally while maintaining logical flow."
+                )
+            elif strategy.strategy_type == "expand":
+                positions = ", ".join(strategy.target_positions)
+                if strategy.expand_text:
+                    strategy_instructions.append(
+                        f"EXPAND paragraph(s) {positions} by incorporating the following content: "
+                        f"\"{strategy.expand_text}\". "
+                        f"Integrate this content naturally into the existing paragraph(s)."
+                    )
+                else:
+                    strategy_instructions.append(
+                        f"EXPAND paragraph(s) {positions} with additional supporting details, "
+                        f"examples, or data to increase their length."
+                    )
+            elif strategy.strategy_type == "split":
+                positions = ", ".join(strategy.target_positions)
+                strategy_instructions.append(
+                    f"SPLIT paragraph(s) {positions} into two separate paragraphs. "
+                    f"Find a natural breaking point and ensure each resulting paragraph has a clear focus."
+                )
+
+        if not strategy_instructions:
+            return ApplyParagraphStrategiesResponse(
+                modified_text=document.original_text,
+                changes_summary_zh="没有选择任何策略",
+                strategies_applied=0,
+                new_cv=None
+            )
+
+        # Generate modification prompt
+        # 生成修改提示词
+        prompt = f"""You are a professional academic writing editor. Modify the following document according to the specified paragraph strategies.
+
+## DOCUMENT:
+{document.original_text}
+
+## PARAGRAPH STRATEGIES TO APPLY:
+{chr(10).join(f"{i+1}. {instr}" for i, instr in enumerate(strategy_instructions))}
+
+## REQUIREMENTS:
+1. Apply ALL the specified strategies
+2. Maintain academic writing style (colloquialism level: {colloquialism_level}/10)
+3. Preserve the original meaning and key information
+4. Keep the document language consistent with the original
+5. Output ONLY the modified document text, no explanations
+
+## OUTPUT:
+Return the complete modified document text."""
+
+        # Call LLM to apply modifications
+        # 调用LLM应用修改
+        from src.config import get_settings
+        settings = get_settings()
+        response_text = ""
+
+        # Use configured LLM provider
+        # 使用配置的LLM提供者
+        if settings.llm_provider == "openai" and settings.openai_api_key:
+            async with httpx.AsyncClient(
+                base_url=settings.openai_base_url,
+                headers={
+                    "Authorization": f"Bearer {settings.openai_api_key}",
+                    "Content-Type": "application/json"
+                },
+                timeout=120.0,
+                trust_env=False
+            ) as client:
+                response = await client.post("/chat/completions", json={
+                    "model": settings.llm_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 8192,
+                    "temperature": 0.3
+                })
+                response.raise_for_status()
+                data = response.json()
+                response_text = data["choices"][0]["message"]["content"]
+
+        elif settings.llm_provider == "volcengine" and settings.volcengine_api_key:
+            async with httpx.AsyncClient(
+                base_url=settings.volcengine_base_url,
+                headers={
+                    "Authorization": f"Bearer {settings.volcengine_api_key}",
+                    "Content-Type": "application/json"
+                },
+                timeout=120.0,
+                trust_env=False
+            ) as client:
+                response = await client.post("/chat/completions", json={
+                    "model": settings.volcengine_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 8192,
+                    "temperature": 0.3
+                })
+                response.raise_for_status()
+                data = response.json()
+                response_text = data["choices"][0]["message"]["content"]
+
+        elif settings.llm_provider == "deepseek" and settings.deepseek_api_key:
+            async with httpx.AsyncClient(
+                base_url=settings.deepseek_base_url,
+                headers={
+                    "Authorization": f"Bearer {settings.deepseek_api_key}",
+                    "Content-Type": "application/json"
+                },
+                timeout=120.0,
+                trust_env=False
+            ) as client:
+                response = await client.post("/chat/completions", json={
+                    "model": settings.llm_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 8192,
+                    "temperature": 0.3
+                })
+                response.raise_for_status()
+                data = response.json()
+                response_text = data["choices"][0]["message"]["content"]
+
+        elif settings.llm_provider == "gemini" and settings.gemini_api_key:
+            from google import genai
+            client = genai.Client(api_key=settings.gemini_api_key)
+            gen_response = await client.aio.models.generate_content(
+                model=settings.llm_model,
+                contents=prompt,
+                config={"max_output_tokens": 8192, "temperature": 0.3}
+            )
+            response_text = gen_response.text
+
+        else:
+            raise ValueError("No LLM API configured")
+
+        # Clean up response
+        # 清理响应
+        modified_text = response_text.strip()
+        if modified_text.startswith("```"):
+            lines = modified_text.split("\n")
+            lines = [l for l in lines if not l.strip().startswith("```")]
+            modified_text = "\n".join(lines).strip()
+
+        # Calculate new CV (re-analyze the modified text)
+        # 计算新的CV（重新分析修改后的文本）
+        # For now, we skip re-analysis to save time. Frontend can trigger re-analysis if needed.
+        # 目前跳过重新分析以节省时间。如果需要，前端可以触发重新分析。
+
+        # Generate summary
+        # 生成摘要
+        strategy_types = [s.strategy_type for s in request.selected_strategies]
+        changes_summary = f"已应用 {len(request.selected_strategies)} 个策略："
+        if "merge" in strategy_types:
+            changes_summary += "合并段落、"
+        if "expand" in strategy_types:
+            changes_summary += "扩展段落、"
+        if "split" in strategy_types:
+            changes_summary += "拆分段落、"
+        changes_summary = changes_summary.rstrip("、")
+
+        return ApplyParagraphStrategiesResponse(
+            modified_text=modified_text,
+            changes_summary_zh=changes_summary,
+            strategies_applied=len(request.selected_strategies),
+            new_cv=None  # Would need re-analysis to calculate
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Apply paragraph strategies error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

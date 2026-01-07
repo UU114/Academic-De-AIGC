@@ -173,6 +173,7 @@ export interface SessionInfo {
   totalSentences: number;
   processed: number;
   progressPercent: number;
+  colloquialismLevel: number;  // Colloquialism level (0-10) / 口语化程度 (0-10)
   createdAt: string;
   completedAt?: string;
 }

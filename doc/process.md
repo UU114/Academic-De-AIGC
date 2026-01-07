@@ -1,11 +1,300 @@
 # AcademicGuard 开发进度
 # AcademicGuard Development Progress
 
-> 最后更新 Last Updated: 2026-01-05
+> 最后更新 Last Updated: 2026-01-06
 
 ---
 
 ## 最近更新 | Recent Updates
+
+### 2026-01-06 - YOLO全自动处理模式 | YOLO Full Auto Processing Mode
+
+#### 需求 | Requirements
+实现YOLO模式的全自动化处理功能：
+- 上传文档并点击开始处理后，系统自动执行整个流程直到完成
+- 每个步骤自动全选AI修改建议
+- Step3自动处理中高风险句子
+- 完成后自动跳转到Review页面
+
+Implement YOLO mode full automation:
+- After uploading and clicking start, system automatically processes the entire flow to completion
+- Each step auto-selects all AI modification suggestions
+- Step3 automatically processes medium/high risk sentences
+- Auto-redirect to Review page after completion
+
+#### 修改内容 | Changes
+
+| 文件 File | 修改 Modification |
+|-----------|-------------------|
+| `src/api/routes/session.py` | 新增API端点 `yolo-full-auto` - 从Step 1-1到Step 3的全自动处理流程<br>包含：结构分析→段落关系→段落衔接→句子精修，每步自动全选问题并应用AI修改 |
+| `frontend/src/services/api.ts` | `sessionApi` 新增 `yoloFullAuto()` 方法 - 调用全自动处理API，15分钟超时 |
+| `frontend/src/pages/YoloFullAuto.tsx` | 新建全自动处理页面组件，显示4步骤进度、实时日志、完成后自动跳转 |
+| `frontend/src/pages/Upload.tsx` | 修改 `proceedToProcessing()` - YOLO模式时直接导航到全自动处理页面 |
+| `frontend/src/App.tsx` | 新增路由 `/yolo-full-auto/:sessionId` 指向 `YoloFullAuto` 组件 |
+
+#### 技术细节 | Technical Details
+
+1. **后端全自动流程**：
+   - Step 1-1：调用 `SmartStructureAnalyzer.analyze_structure()` → 收集问题 → 调用 `apply_merge_modify()` 应用修改
+   - Step 1-2：调用 `analyze_relationships()` → 收集问题 → 应用修改
+   - Step 2：调用 `TransitionAnalyzer.analyze_document()` → 收集中高风险衔接问题 → 应用修改
+   - Step 3：重新分句 → 创建句子记录 → 对 risk_score >= 25 的句子调用 LLM/Rule 建议并应用
+   - 每步完成后用修改后的文本创建新文档继续处理
+
+2. **前端进度展示**：
+   - 4个步骤卡片显示状态（pending/processing/completed/error）
+   - 实时显示每步的日志信息
+   - 处理完成后2秒自动跳转到Review页面
+
+#### 结果 | Result
+用户选择YOLO模式上传文档后，系统完全自动化处理：
+- 结构问题自动修复
+- 段落关系问题自动修复
+- 衔接问题自动修复
+- 中高风险句子自动改写
+- 最终直接跳转到审核页面查看结果
+
+---
+
+### 2026-01-06 - Step2 段落逻辑框架分析：句子角色检测 | Step2 Paragraph Logic Framework: Sentence Role Detection
+
+#### 需求 | Requirements
+在Step2中实现段落内句子逻辑框架的分析功能，包括：
+- 分析每个句子在段落中的角色（论点、证据、分析、批判、让步、综合等）
+- 检测是否有AI模板化的刚性框架（如"背景→证据→分析→结论"的线性顺序）
+- 分析爆发度（Burstiness）- 句子长度变异性
+- 识别缺失的角色元素
+- 提供具体改进建议
+
+Implement paragraph-level sentence logic framework analysis in Step2:
+- Analyze each sentence's role (CLAIM, EVIDENCE, ANALYSIS, CRITIQUE, CONCESSION, SYNTHESIS, etc.)
+- Detect AI-like rigid framework patterns (e.g., linear Context→Evidence→Analysis→Conclusion)
+- Analyze burstiness (sentence length variation)
+- Identify missing role elements
+- Provide specific improvement suggestions
+
+#### 修改内容 | Changes
+
+| 文件 File | 修改 Modification |
+|-----------|-------------------|
+| `src/prompts/paragraph_logic.py` | 新增 `SENTENCE_ROLE_ANALYSIS_PROMPT` - LLM提示词用于句子角色分析和逻辑框架检测<br>新增 `get_sentence_role_analysis_prompt()` 函数 |
+| `src/core/analyzer/paragraph_logic.py` | 新增数据类：`SentenceRole`, `LogicFramework`, `BurstinessAnalysis`, `ParagraphLogicFrameworkResult`<br>新增异步函数 `analyze_paragraph_logic_framework()` - 综合分析入口<br>新增辅助函数：`_create_minimal_result()`, `_create_fallback_result()`, `_generate_basic_suggestions()`, `_parse_llm_analysis_result()` |
+| `src/api/routes/paragraph.py` | 新增API端点 `/analyze-logic-framework` (POST)<br>新增响应模型：`SentenceRoleItem`, `LogicFrameworkItem`, `BurstinessAnalysisItem`, `ParagraphLogicFrameworkResponse` |
+| `frontend/src/services/api.ts` | `paragraphApi` 新增 `analyzeLogicFramework()` 方法 |
+| `frontend/src/components/editor/ParagraphLogicPanel.tsx` | 新增句子角色颜色映射 `ROLE_COLORS`<br>新增高级分析状态和选项卡切换<br>新增 `renderAdvancedAnalysis()` 渲染函数<br>显示句子角色、逻辑框架、爆发度分析、缺失元素、改进建议 |
+
+#### 技术细节 | Technical Details
+
+1. **句子角色类型** (10种)：
+   - CLAIM (论点) - 陈述主要论点或立场
+   - EVIDENCE (证据) - 呈现数据、引用或事实支持
+   - ANALYSIS (分析) - 解释数据或阐述关系
+   - CRITIQUE (批判) - 质疑、挑战或识别局限性
+   - CONCESSION (让步) - 承认反论点或复杂性
+   - SYNTHESIS (综合) - 整合多个观点或视角
+   - TRANSITION (过渡) - 连接不同想法或章节
+   - CONTEXT (背景) - 提供背景或定位主题
+   - IMPLICATION (含义推导) - 得出更广泛的结论或意义
+   - ELABORATION (展开细化) - 对前一点添加细节
+
+2. **逻辑框架模式**：
+   - AI式刚性模式（高风险）：LINEAR_TEMPLATE, ADDITIVE_STACK, UNIFORM_RHYTHM
+   - 人类化动态模式（低风险）：ANI_STRUCTURE, CRITICAL_DEPTH, NON_LINEAR, VARIED_RHYTHM
+
+3. **爆发度分析**：
+   - 计算句子长度的CV（变异系数）
+   - 检测是否有戏剧性变化（长短句交替）
+   - 可视化句子长度分布
+
+#### 结果 | Result
+- Step2的ParagraphLogicPanel组件现有"基础分析"和"句子角色"两个选项卡
+- 句子角色选项卡提供LLM驱动的深度语义分析
+- 每个句子显示角色标签和颜色编码
+- 显示逻辑框架模式及AI风险评估
+- 显示爆发度分析及句子长度可视化
+- 显示缺失角色和具体改进建议
+
+---
+
+### 2026-01-06 - 段落长度分析：语义感知策略生成 | Paragraph Length Analysis: Semantic-Aware Strategy Generation
+
+#### 需求 | Requirements
+段落长度分析检测到CV过低（段落长度过于均匀）时，没有生成解决策略。需要基于语义分析生成智能策略，包括：
+- 分析哪些段落可以扩展（introduction, methodology, analysis等）
+- 分析哪些相邻段落语义紧密可以合并
+- 分析哪些段落包含多重意思可以拆分或压缩
+
+When paragraph length analysis detects low CV (too uniform paragraph lengths), no strategies were generated. Need semantic-aware intelligent strategy generation, including:
+- Identify paragraphs that can be expanded (introduction, methodology, analysis, etc.)
+- Identify adjacent paragraphs with tight semantic relationship for merging
+- Identify paragraphs with multiple ideas for splitting or compression
+
+#### 修改内容 | Changes
+
+| 文件 File | 修改 Modification |
+|-----------|-------------------|
+| `src/core/analyzer/smart_structure.py` | 1. 新增 `PARAGRAPH_LENGTH_STRATEGY_PROMPT` LLM提示词，用于语义分析<br>2. 新增 `generate_semantic_strategies()` 异步函数调用LLM分析<br>3. 新增 `analyze_paragraph_length_distribution_async()` 异步版本<br>4. 新增 `_generate_fallback_strategies()` 后备策略生成<br>5. `ParagraphLengthStrategy` 新增字段：`semantic_relation`, `semantic_relation_zh`, `split_points`, `split_points_zh`<br>6. 新增策略类型 `compress`（压缩） |
+| `src/api/schemas.py` | `ParagraphLengthStrategyItem` 新增字段：`semanticRelation`, `semanticRelationZh`, `splitPoints`, `splitPointsZh` |
+| `src/api/routes/structure.py` | 更新导入和使用异步版本 `analyze_paragraph_length_distribution_async` |
+| `frontend/src/pages/Step1_2.tsx` | 1. 类型定义新增 `semanticRelation`, `splitPoints` 等字段<br>2. 新增"压缩"策略类型显示<br>3. 合并策略显示语义关系说明<br>4. 拆分/压缩策略显示建议拆分点 |
+
+#### 技术细节 | Technical Details
+
+1. **LLM语义分析**：当CV < 0.30时，调用LLM分析段落内容，基于以下维度生成策略：
+   - **扩展**：引言需要背景铺垫、方法论需要实现细节、分析需要数据支撑
+   - **合并**：相邻段落讨论相同主题/因果关系/上下文与细节
+   - **拆分**：段落混合多个主题（如结果与讨论）
+   - **压缩**：段落有冗余信息或重复内容
+
+2. **后备机制**：如LLM调用失败，使用基于规则的后备策略生成
+
+3. **新字段说明**：
+   - `semanticRelationZh`：合并策略的语义关系说明（如"两者描述同一流程的连续步骤"）
+   - `splitPointsZh`：拆分/压缩策略的具体建议（如"在呈现数值结果之后"、"删除重复表1数据的第2-3句"）
+
+#### 结果 | Result
+- CV过低时总是能生成2-4个有针对性的策略建议
+- 策略包含具体的语义分析和可操作建议
+- 前端显示语义关系和拆分点等详细信息
+
+---
+
+### 2026-01-06 - 文档导出格式优化：保留段落换行 | Document Export Formatting: Preserve Paragraph Breaks
+
+#### 需求 | Requirements
+导出的文档没有换行，所有内容挤在一起，需要优化导出格式以保留段落结构。
+
+Exported documents lack line breaks, all content is squeezed together. Need to optimize export formatting to preserve paragraph structure.
+
+#### 修改内容 | Changes
+
+| 文件 File | 修改 Modification |
+|-----------|-------------------|
+| `src/api/routes/export.py` | 1. 修改导出逻辑，按段落分组句子<br>2. 从 `analysis_json` 读取 `paragraph_index`<br>3. 段落内用空格连接，段落间用双换行分隔<br>4. 新增 docx 格式支持（使用 python-docx）<br>5. Word 文档每个段落作为独立段落添加 |
+| `requirements.txt` | 新增 `python-docx>=1.1.0` 依赖 |
+
+#### 技术细节 | Technical Details
+
+1. **段落分组**：从每个句子的 `analysis_json.paragraph_index` 读取段落索引，将同一段落的句子分组
+2. **文本格式**：段落内句子用空格连接，段落间用 `\n\n` 分隔
+3. **Word 格式**：使用 `python-docx` 库，每个段落调用 `add_paragraph()` 添加，自动保留段落格式
+
+#### 结果 | Result
+- txt 格式：段落间有双换行分隔
+- docx 格式：每个段落是 Word 文档中的独立段落，格式正确
+
+#### 注意 | Note
+需要手动安装 `python-docx`：`pip install python-docx`（如网络问题请使用国内镜像）
+
+---
+
+### 2026-01-06 - Step 1-2 两阶段增强：段落长度分布分析 | Step 1-2 Two-Phase Enhancement: Paragraph Length Distribution Analysis
+
+#### 需求 | Requirements
+在 Step 1-2 中增加段落长度分布分析功能，分两阶段：
+1. **阶段1**：分析段落长度分布，检测 CV（变异系数）是否过低（< 0.3 表示AI特征），提供可选策略（合并、扩展、拆分）
+2. **阶段2**：用户多选策略后应用，如果选择"扩展"策略则需要输入新内容
+
+Add paragraph length distribution analysis to Step 1-2, in two phases:
+1. **Phase 1**: Analyze paragraph length distribution, detect if CV (coefficient of variation) is too low (< 0.3 indicates AI characteristics), provide selectable strategies (merge, expand, split)
+2. **Phase 2**: Apply user-selected strategies, if "expand" is selected, user needs to input new content
+
+#### 修改内容 | Changes
+
+| 文件 File | 修改 Modification |
+|-----------|-------------------|
+| `src/core/analyzer/smart_structure.py` | 1. 新增 `ParagraphLengthStrategy` 类<br>2. 新增 `ParagraphLengthAnalysis` 类<br>3. 新增 `analyze_paragraph_length_distribution()` 函数 |
+| `src/api/schemas.py` | 1. 新增 `ParagraphLengthStrategyItem` schema<br>2. 新增 `ParagraphLengthInfo` schema<br>3. 新增 `ParagraphLengthAnalysisRequest/Response` schemas<br>4. 新增 `SelectedStrategy` schema<br>5. 新增 `ApplyParagraphStrategiesRequest/Response` schemas |
+| `src/api/routes/structure.py` | 1. 新增 `/paragraph-length/analyze` 端点 (Phase 1)<br>2. 新增 `/paragraph-length/apply` 端点 (Phase 2) |
+| `frontend/src/services/api.ts` | 1. 新增 `analyzeParagraphLength()` API 函数<br>2. 新增 `applyParagraphStrategies()` API 函数 |
+| `frontend/src/pages/Step1_2.tsx` | 1. 新增段落长度分析状态变量<br>2. 新增分析、选择、应用策略的函数<br>3. 新增"段落长度分布分析"UI 区块<br>4. 策略卡片支持多选<br>5. 扩展策略显示输入框 |
+
+#### 策略说明 | Strategy Description
+
+| 策略类型 | 图标 | 说明 |
+|----------|------|------|
+| merge (合并) | 🔗 | 合并相邻的短段落 |
+| expand (扩展) | 📈 | 扩展中等长度段落，用户输入新内容 |
+| split (拆分) | ✂️ | 拆分过长段落 |
+
+#### 统计指标 | Statistics
+
+| 指标 | 说明 | 阈值 |
+|------|------|------|
+| CV (Coefficient of Variation) | 变异系数 = 标准差/平均值 | < 0.30 表示过于均匀（AI特征）|
+| 目标 CV | 人类学术写作的目标 CV | ≥ 0.40 |
+| 短段落阈值 | 平均长度的 60% 以下 | 可合并 |
+| 超长段落阈值 | 平均长度的 180% 以上 | 建议拆分 |
+
+#### 结果 | Result
+Step 1-2 页面新增"段落长度分布分析"区块，用户可以：
+1. 点击"开始分析"查看段落长度统计
+2. 多选改进策略（合并/扩展/拆分）
+3. 对于扩展策略，输入要添加的内容
+4. 点击"应用策略"让 LLM 执行修改
+5. 修改后的文本自动填入文档修改区域
+
+Step 1-2 page now has "Paragraph Length Distribution Analysis" section, users can:
+1. Click "Start Analysis" to view paragraph length statistics
+2. Multi-select improvement strategies (merge/expand/split)
+3. For expand strategies, input content to add
+4. Click "Apply Strategies" to let LLM execute modifications
+5. Modified text is auto-filled into document modification area
+
+---
+
+### 2026-01-06 - Step2 新增句子融合策略 | Add Sentence Fusion Strategy to Step2
+
+#### 需求 | Requirements
+将嵌套从句的逻辑从 Step3 移到 Step2，由 LLM 自主判断：
+1. 如果前后句子语义关系非常密切，可以在保持语义的情况下合并
+2. 改写成各种从句等复杂句式（关系从句、从属从句、分词短语等）
+3. 也需要注意用短句
+4. 每一个段落单独分析、单独修改
+
+Move nested clause logic from Step3 to Step2, let LLM judge autonomously:
+1. If adjacent sentences have very close semantic relationship, merge while preserving semantics
+2. Rewrite into complex sentence forms (relative clauses, subordinate clauses, participial phrases, etc.)
+3. Also use short sentences for emphasis
+4. Each paragraph analyzed and modified individually
+
+#### 修改内容 | Changes
+
+| 文件 File | 修改 Modification |
+|-----------|-------------------|
+| `src/prompts/paragraph_logic.py` | 1. 新增 `STRATEGY_DESCRIPTIONS["sentence_fusion"]`<br>2. 新增 `get_sentence_fusion_prompt()` 函数 (~130行)<br>3. 更新 `STRATEGY_PROMPTS` 映射<br>4. 更新 `get_paragraph_logic_prompt()` 路由 |
+| `src/api/routes/paragraph.py` | 1. 更新 `ParagraphRestructureRequest.strategy` Literal 类型<br>2. 新增 `sentence_fusion` 策略处理逻辑<br>3. 新增响应解析：`fusion_applied` 和 `semantic_analysis` |
+
+#### Sentence Fusion 策略说明 | Strategy Description
+
+**语义关系分析**:
+| 关系类型 | 决策 | 说明 |
+|----------|------|------|
+| CAUSE_EFFECT | 考虑合并 | 因果关系 |
+| ELABORATION | 考虑合并 | 详述/细化 |
+| DEFINITION_EXAMPLE | 考虑合并 | 定义+例证 |
+| CONDITION_RESULT | 考虑合并 | 条件+结果 |
+| TOPIC_SHIFT | 保持分离 | 话题转换 |
+| CONTRAST | 保持分离 | 对比关系 |
+
+**融合策略**:
+1. **关系从句融合**: which, that, where, whereby
+2. **从属从句融合**: because, since, although, while
+3. **分词短语融合**: -ing/-ed phrases
+4. **同位语融合**: appositive structures
+5. **条件融合**: provided that, given that
+
+**平衡要求**:
+- 长句 (25-40+ 词) 1-2 句（来自合并）
+- 短句 (8-14 词) 1-2 句（用于强调）
+- 目标 CV > 0.30
+
+#### 结果 | Result
+Step2 现在支持 "sentence_fusion" 策略，LLM 可自主判断语义关系并决定合并或保持分离。
+
+Step2 now supports "sentence_fusion" strategy, LLM can autonomously judge semantic relationships and decide to merge or keep separate.
+
+---
 
 ### 2026-01-05 - 添加 Burstiness 指示器到界面 | Add Burstiness Indicator to UI
 

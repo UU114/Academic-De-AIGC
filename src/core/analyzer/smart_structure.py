@@ -281,8 +281,14 @@ For each connector found, you MUST:
 ### 2. DETECT LOGIC BREAK POINTS (段落间逻辑断裂点)
 For each consecutive paragraph pair (Para N → Para N+1):
 - Check semantic continuity: Does N+1 naturally follow N?
-- Identify transition type: "smooth" / "abrupt" / "glue_word_only"
+- Identify transition type: "smooth" / "abrupt" / "glue_word_only" / "ai_perfect_linear"
 - A "glue_word_only" transition = connection relies ONLY on explicit connectors without semantic echo
+- A "ai_perfect_linear" transition = TOO PERFECT linear flow, typical AI pattern (e.g., "Introduction → Overview → Details → Conclusion" flow)
+
+**IMPORTANT**: The `issue_zh` field MUST describe what is WRONG with this transition, NOT what is good about it!
+- BAD example: "从阐明综述目标，自然过渡到具体分类阐述..." (This sounds positive!)
+- GOOD example: "具有典型AI生成的'完美线性过渡'特征，从综述目标过于直接地过渡到分类阐述，缺乏人类写作的自然跳跃和思维转折"
+- The issue description should highlight the AI PATTERN being detected, not describe the content flow
 
 ### 3. ANALYZE AI RISK FOR EACH PARAGRAPH
 For each paragraph, determine:
@@ -331,11 +337,22 @@ For each paragraph, determine:
       "to_position": "2(2)",
       "transition_type": "glue_word_only",
       "issue": "Connected only by 'Moreover', no semantic continuity",
-      "issue_zh": "仅靠'此外'连接，缺乏语义连贯性",
+      "issue_zh": "仅靠显性连接词'此外'连接，缺乏语义连贯性，属于典型AI写作模式",
       "suggestion": "Use semantic echo - repeat key concept from previous paragraph",
-      "suggestion_zh": "建议使用语义回声",
+      "suggestion_zh": "建议使用语义回声，用前段关键概念自然承接",
       "prev_key_concepts": ["concept1", "concept2"],
       "semantic_echo_example": "Example of how to rewrite using key concepts"
+    }},
+    {{
+      "from_position": "1(1)",
+      "to_position": "1(2)",
+      "transition_type": "ai_perfect_linear",
+      "issue": "Too perfect linear flow from introduction to classification, typical AI pattern",
+      "issue_zh": "具有典型AI生成的'完美线性过渡'特征，从引言直接过渡到分类阐述过于顺畅，缺乏人类写作自然的思维跳跃",
+      "suggestion": "Break the perfect linearity by adding a question, contrast, or unexpected angle",
+      "suggestion_zh": "打破线性结构，可在过渡处加入疑问、对比或意外视角",
+      "prev_key_concepts": ["research background", "problem statement"],
+      "semantic_echo_example": "Instead of direct flow, insert a rhetorical question or contrast"
     }}
   ],
   "paragraph_risks": [
@@ -1069,9 +1086,13 @@ For example:
         Call LLM API directly using httpx with trust_env=False to bypass proxy
         直接使用httpx调用LLM API，设置trust_env=False以绕过代理
         """
+        # DashScope (阿里云灵积) - Qwen models
+        # 阿里云灵积 - 通义千问模型
+        if settings.llm_provider == "dashscope" and settings.dashscope_api_key:
+            return await self._call_dashscope(prompt)
         # Volcengine (火山引擎) - preferred for faster DeepSeek access
         # 火山引擎 - 更快的 DeepSeek 访问
-        if settings.llm_provider == "volcengine" and settings.volcengine_api_key:
+        elif settings.llm_provider == "volcengine" and settings.volcengine_api_key:
             return await self._call_volcengine(prompt)
         # DeepSeek official (commented out - slower)
         # DeepSeek 官方（已注释 - 较慢）
@@ -1082,7 +1103,31 @@ For example:
         elif settings.openai_api_key:
             return await self._call_openai(prompt)
         else:
-            raise ValueError("No LLM API configured. Please set VOLCENGINE_API_KEY or other LLM API key in .env")
+            raise ValueError("No LLM API configured. Please set DASHSCOPE_API_KEY or other LLM API key in .env")
+
+    async def _call_dashscope(self, prompt: str) -> str:
+        """
+        Call DashScope (阿里云灵积) API - OpenAI compatible format
+        调用阿里云灵积 API - OpenAI 兼容格式
+        """
+        async with httpx.AsyncClient(
+            base_url=settings.dashscope_base_url,
+            headers={
+                "Authorization": f"Bearer {settings.dashscope_api_key}",
+                "Content-Type": "application/json"
+            },
+            timeout=300.0,  # 5 minutes timeout for long documents
+            trust_env=False  # Ignore system proxy settings
+        ) as client:
+            response = await client.post("/chat/completions", json={
+                "model": settings.dashscope_model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 8192,  # Increased for longer documents
+                "temperature": self.temperature
+            })
+            response.raise_for_status()
+            data = response.json()
+            return data["choices"][0]["message"]["content"]
 
     async def _call_volcengine(self, prompt: str) -> str:
         """
@@ -1339,6 +1384,642 @@ For example:
             "recommendation": "Please retry analysis",
             "recommendation_zh": "请重试分析"
         }
+
+
+# =============================================================================
+# Paragraph Length Distribution Analysis (Step 1-2 Phase 1)
+# 段落长度分布分析（Step 1-2 阶段1）
+# =============================================================================
+
+# LLM Prompt for semantic-based paragraph length strategy generation
+# 基于语义的段落长度策略生成LLM提示词
+PARAGRAPH_LENGTH_STRATEGY_PROMPT = """You are an expert academic writing analyst. Analyze the paragraph structure and generate strategies to improve length variation (CV).
+
+## CURRENT SITUATION:
+- Mean paragraph length: {mean_length:.1f} words
+- Standard deviation: {std_dev:.1f}
+- Coefficient of Variation (CV): {cv:.2f}
+- Target CV: > 0.30 (human-like writing typically has CV 0.35-0.50)
+- Problem: Paragraph lengths are TOO UNIFORM, which is a typical AI writing pattern
+
+## PARAGRAPH LIST:
+{paragraph_list}
+
+## YOUR TASKS:
+
+### 1. IDENTIFY EXPANDABLE PARAGRAPHS
+Look for paragraphs that can be meaningfully expanded:
+- **Introduction paragraphs**: Can add more background, motivation, research gaps
+- **Methodology paragraphs**: Can add implementation details, parameter justification, algorithm steps
+- **Analysis/Results paragraphs**: Can add more data interpretation, comparison with baselines, statistical details
+- **Discussion paragraphs**: Can add implications, limitations, connections to prior work
+
+For each expandable paragraph, explain WHAT SPECIFIC CONTENT to add.
+
+### 2. IDENTIFY MERGEABLE PARAGRAPH PAIRS
+Look for adjacent paragraphs that:
+- Discuss the same topic/concept from different angles
+- Have a clear cause-effect relationship
+- Are both short and semantically tightly connected
+- One provides context and the other provides details
+
+Explain WHY they should be merged (semantic relationship).
+
+### 3. IDENTIFY SPLITTABLE/COMPRESSIBLE PARAGRAPHS
+Look for paragraphs that:
+- Contain multiple distinct ideas or arguments
+- Mix different topics (e.g., methods AND results)
+- Are overly dense with information
+- Have redundant content that can be compressed
+
+Specify WHERE to split or WHAT to compress.
+
+## OUTPUT FORMAT (JSON):
+{{
+  "strategies": [
+    {{
+      "strategy_type": "expand",
+      "target_positions": ["1(1)"],
+      "description": "Expand introduction with more research background",
+      "description_zh": "扩展引言部分，增加更多研究背景",
+      "reason": "Introduction paragraph is too brief, lacks context for the research problem",
+      "reason_zh": "引言段落过于简短，缺乏研究问题的背景铺垫",
+      "priority": 1,
+      "expand_suggestion": "Add 2-3 sentences about: 1) Historical context of the problem, 2) Recent developments in the field, 3) Gap this research addresses",
+      "expand_suggestion_zh": "建议添加2-3句话：1) 问题的历史背景 2) 领域近期发展 3) 本研究填补的空白"
+    }},
+    {{
+      "strategy_type": "merge",
+      "target_positions": ["2(1)", "2(2)"],
+      "description": "Merge two methodology paragraphs discussing the same technique",
+      "description_zh": "合并两个讨论相同技术的方法论段落",
+      "reason": "Both paragraphs discuss data preprocessing, creating fragmented reading experience",
+      "reason_zh": "两个段落都讨论数据预处理，造成阅读体验碎片化",
+      "priority": 2,
+      "semantic_relation": "Both describe sequential steps of the same preprocessing pipeline",
+      "semantic_relation_zh": "两者描述同一预处理流程的连续步骤"
+    }},
+    {{
+      "strategy_type": "split",
+      "target_positions": ["3(2)"],
+      "description": "Split paragraph containing both results and interpretation",
+      "description_zh": "拆分同时包含结果和解释的段落",
+      "reason": "Paragraph mixes data presentation with discussion, should be separated for clarity",
+      "reason_zh": "段落混合了数据呈现和讨论，应分开以提高清晰度",
+      "priority": 2,
+      "split_points": ["After presenting the numerical results", "Before 'This suggests that...'"],
+      "split_points_zh": ["在呈现数值结果之后", "在'这表明...'之前"]
+    }},
+    {{
+      "strategy_type": "compress",
+      "target_positions": ["4(1)"],
+      "description": "Compress redundant discussion paragraph",
+      "description_zh": "压缩冗余的讨论段落",
+      "reason": "Paragraph repeats information already stated in results section",
+      "reason_zh": "段落重复了结果部分已陈述的信息",
+      "priority": 3,
+      "split_points": ["Remove sentences 2-3 which repeat Table 1 data"],
+      "split_points_zh": ["删除重复表1数据的第2-3句"]
+    }}
+  ],
+  "analysis_summary": "Document has 12 paragraphs with very uniform lengths. Recommend 2 expansions, 1 merge, and 1 split to achieve natural variation.",
+  "analysis_summary_zh": "文档有12个段落，长度非常均匀。建议2处扩展、1处合并、1处拆分以实现自然变化。"
+}}
+
+CRITICAL RULES:
+- Generate AT LEAST 2-4 strategies, prioritizing those with highest impact on CV
+- Each strategy must have SPECIFIC, ACTIONABLE suggestions (not generic advice)
+- Priority 1 = highest priority, 5 = lowest
+- Focus on strategies that will INCREASE length variation (some longer, some shorter)
+- Consider the SEMANTIC CONTENT of paragraphs, not just their length
+"""
+
+
+class ParagraphLengthStrategy(BaseModel):
+    """Strategy suggestion for paragraph length optimization 段落长度优化策略建议"""
+    strategy_type: str = Field(description="merge|expand|split|compress")
+    target_positions: List[str] = Field(description="Affected paragraph positions")
+    description: str = Field(description="Strategy description")
+    description_zh: str = Field(description="策略描述")
+    reason: str = Field(description="Why this strategy is suggested")
+    reason_zh: str = Field(description="建议原因")
+    priority: int = Field(description="Priority 1-5, lower = more important")
+    # For expand strategy, what kind of content to add
+    # 对于扩展策略，建议添加什么类型的内容
+    expand_suggestion: Optional[str] = Field(default=None, description="Suggestion for what to expand")
+    expand_suggestion_zh: Optional[str] = Field(default=None, description="扩展建议")
+    # For merge strategy, semantic relationship between paragraphs
+    # 对于合并策略，段落间的语义关系
+    semantic_relation: Optional[str] = Field(default=None, description="Semantic relationship for merge")
+    semantic_relation_zh: Optional[str] = Field(default=None, description="合并的语义关系说明")
+    # For split/compress strategy, what aspects to separate or remove
+    # 对于拆分/压缩策略，应分离或删除哪些方面
+    split_points: Optional[List[str]] = Field(default=None, description="Points where to split")
+    split_points_zh: Optional[List[str]] = Field(default=None, description="建议拆分点")
+
+
+class ParagraphLengthAnalysis(BaseModel):
+    """Analysis of paragraph length distribution 段落长度分布分析"""
+    paragraph_lengths: List[Dict[str, Any]] = Field(description="List of {position, word_count, section}")
+    mean_length: float = Field(description="Mean paragraph length")
+    std_dev: float = Field(description="Standard deviation")
+    cv: float = Field(description="Coefficient of variation")
+    is_uniform: bool = Field(description="Whether lengths are too uniform (CV < 0.3)")
+    human_like_cv_target: float = Field(default=0.4, description="Target CV for human-like distribution")
+    strategies: List[ParagraphLengthStrategy] = Field(description="Suggested strategies")
+    summary: str = Field(description="Summary of length distribution")
+    summary_zh: str = Field(description="长度分布摘要")
+
+
+async def generate_semantic_strategies(
+    paragraph_lengths: List[Dict[str, Any]],
+    mean_length: float,
+    std_dev: float,
+    cv: float
+) -> List[ParagraphLengthStrategy]:
+    """
+    Use LLM to generate semantic-aware strategies for paragraph length optimization
+    使用LLM生成基于语义的段落长度优化策略
+
+    Args:
+        paragraph_lengths: List of paragraph info with position, word_count, section, summary
+        mean_length: Mean paragraph length
+        std_dev: Standard deviation
+        cv: Coefficient of variation
+
+    Returns:
+        List of ParagraphLengthStrategy with semantic-aware suggestions
+    """
+    # Build paragraph list for prompt
+    # 构建段落列表用于提示词
+    paragraph_list_lines = []
+    for para in paragraph_lengths:
+        position = para.get("position", "?")
+        word_count = para.get("word_count", 0)
+        section = para.get("section", "?")
+        summary_zh = para.get("summary_zh", "")
+        summary = para.get("summary", "")
+        display_summary = summary_zh if summary_zh else summary
+        paragraph_list_lines.append(
+            f"- {position} (Section {section}): {word_count} words - {display_summary}"
+        )
+
+    paragraph_list = "\n".join(paragraph_list_lines)
+
+    # Build prompt
+    # 构建提示词
+    prompt = PARAGRAPH_LENGTH_STRATEGY_PROMPT.format(
+        mean_length=mean_length,
+        std_dev=std_dev,
+        cv=cv,
+        paragraph_list=paragraph_list
+    )
+
+    try:
+        # Call LLM using SmartStructureAnalyzer's method
+        # 使用SmartStructureAnalyzer的方法调用LLM
+        analyzer = SmartStructureAnalyzer()
+        response_text = await analyzer._call_llm(prompt)
+
+        # Parse response
+        # 解析响应
+        result = analyzer._parse_llm_response(response_text)
+
+        # Convert to ParagraphLengthStrategy objects
+        # 转换为ParagraphLengthStrategy对象
+        strategies = []
+        for s in result.get("strategies", []):
+            strategy = ParagraphLengthStrategy(
+                strategy_type=s.get("strategy_type", "expand"),
+                target_positions=s.get("target_positions", []),
+                description=s.get("description", ""),
+                description_zh=s.get("description_zh", ""),
+                reason=s.get("reason", ""),
+                reason_zh=s.get("reason_zh", ""),
+                priority=s.get("priority", 3),
+                expand_suggestion=s.get("expand_suggestion"),
+                expand_suggestion_zh=s.get("expand_suggestion_zh"),
+                semantic_relation=s.get("semantic_relation"),
+                semantic_relation_zh=s.get("semantic_relation_zh"),
+                split_points=s.get("split_points"),
+                split_points_zh=s.get("split_points_zh")
+            )
+            strategies.append(strategy)
+
+        # Sort by priority
+        # 按优先级排序
+        strategies.sort(key=lambda x: x.priority)
+
+        logger.info(f"[SemanticStrategies] Generated {len(strategies)} strategies via LLM")
+        return strategies
+
+    except Exception as e:
+        logger.error(f"[SemanticStrategies] LLM call failed: {e}")
+        # Return empty list on failure, caller will handle fallback
+        # 失败时返回空列表，调用者会处理后备逻辑
+        return []
+
+
+def analyze_paragraph_length_distribution(
+    structure_result: Dict[str, Any]
+) -> ParagraphLengthAnalysis:
+    """
+    Analyze paragraph length distribution and suggest strategies for improvement
+    分析段落长度分布并建议改进策略
+
+    This is Phase 1 of the enhanced Step 1-2 process.
+    这是增强版 Step 1-2 的第一阶段。
+
+    Args:
+        structure_result: Result from Step 1-1 structure analysis
+
+    Returns:
+        ParagraphLengthAnalysis with strategies
+    """
+    import statistics
+
+    # Extract paragraph lengths from structure result
+    # 从结构结果中提取段落长度
+    paragraph_lengths = []
+    sections = structure_result.get("sections", [])
+
+    for section in sections:
+        section_num = section.get("number", "?")
+        paragraphs = section.get("paragraphs", [])
+        for para in paragraphs:
+            paragraph_lengths.append({
+                "position": para.get("position", "?"),
+                "word_count": para.get("word_count", 0),
+                "section": section_num,
+                "summary": para.get("summary", ""),
+                "summary_zh": para.get("summary_zh", "")
+            })
+
+    if not paragraph_lengths:
+        return ParagraphLengthAnalysis(
+            paragraph_lengths=[],
+            mean_length=0,
+            std_dev=0,
+            cv=0,
+            is_uniform=False,
+            strategies=[],
+            summary="No paragraphs found",
+            summary_zh="未找到段落"
+        )
+
+    # Calculate statistics
+    # 计算统计数据
+    lengths = [p["word_count"] for p in paragraph_lengths]
+    mean_len = statistics.mean(lengths)
+    std_dev = statistics.stdev(lengths) if len(lengths) > 1 else 0
+    cv = std_dev / mean_len if mean_len > 0 else 0
+
+    is_uniform = cv < 0.30  # Human academic writing typically has CV > 0.35
+
+    # Generate strategies
+    # 生成策略
+    strategies = []
+
+    if is_uniform:
+        # Sort by word count to find candidates for merging/splitting
+        # 按字数排序以找到合并/拆分候选
+        sorted_paras = sorted(paragraph_lengths, key=lambda x: x["word_count"])
+
+        # Find short paragraphs that could be merged
+        # 找到可以合并的短段落
+        short_threshold = mean_len * 0.6  # Paragraphs below 60% of mean
+        long_threshold = mean_len * 1.4   # Paragraphs above 140% of mean
+
+        short_paras = [p for p in paragraph_lengths if p["word_count"] < short_threshold]
+        long_paras = [p for p in paragraph_lengths if p["word_count"] > long_threshold]
+        medium_paras = [p for p in paragraph_lengths if short_threshold <= p["word_count"] <= long_threshold]
+
+        # Strategy 1: Merge adjacent short paragraphs
+        # 策略1：合并相邻的短段落
+        for i, para in enumerate(paragraph_lengths[:-1]):
+            next_para = paragraph_lengths[i + 1]
+            if para["word_count"] < short_threshold and next_para["word_count"] < short_threshold:
+                # Check if same section
+                if para["section"] == next_para["section"]:
+                    strategies.append(ParagraphLengthStrategy(
+                        strategy_type="merge",
+                        target_positions=[para["position"], next_para["position"]],
+                        description=f"Merge {para['position']} and {next_para['position']} (both short: {para['word_count']} + {next_para['word_count']} words)",
+                        description_zh=f"合并 {para['position']} 和 {next_para['position']}（均较短：{para['word_count']} + {next_para['word_count']} 词）",
+                        reason="Adjacent short paragraphs can be combined to create natural variation",
+                        reason_zh="相邻的短段落可以合并以创造自然的长度变化",
+                        priority=2
+                    ))
+
+        # Strategy 2: Expand medium paragraphs in expandable sections
+        # 策略2：在可扩展的章节中扩展中等段落
+        expandable_sections = ["introduction", "method", "result", "discussion", "data", "analysis"]
+        for para in medium_paras:
+            section_lower = para.get("section", "").lower()
+            summary_lower = (para.get("summary", "") + " " + para.get("summary_zh", "")).lower()
+
+            # Check if this is an expandable section
+            is_expandable = any(kw in section_lower or kw in summary_lower for kw in expandable_sections)
+
+            if is_expandable:
+                expand_hint = ""
+                expand_hint_zh = ""
+
+                if "data" in summary_lower or "result" in summary_lower:
+                    expand_hint = "Consider adding more data points, statistical details, or comparison with baseline"
+                    expand_hint_zh = "考虑添加更多数据点、统计细节或与基线的比较"
+                elif "method" in summary_lower or "analysis" in summary_lower:
+                    expand_hint = "Consider adding implementation details, parameter choices, or methodological justification"
+                    expand_hint_zh = "考虑添加实现细节、参数选择或方法论证"
+                elif "introduction" in section_lower:
+                    expand_hint = "Consider adding more background context or motivation"
+                    expand_hint_zh = "考虑添加更多背景上下文或动机"
+                else:
+                    expand_hint = "Consider adding supporting details or examples"
+                    expand_hint_zh = "考虑添加支持性细节或示例"
+
+                strategies.append(ParagraphLengthStrategy(
+                    strategy_type="expand",
+                    target_positions=[para["position"]],
+                    description=f"Expand {para['position']} ({para['word_count']} words)",
+                    description_zh=f"扩展 {para['position']}（{para['word_count']} 词）",
+                    reason="Expanding this paragraph will increase length variation",
+                    reason_zh="扩展此段落将增加长度变化",
+                    priority=3,
+                    expand_suggestion=expand_hint,
+                    expand_suggestion_zh=expand_hint_zh
+                ))
+
+        # Strategy 3: Split very long paragraphs
+        # 策略3：拆分超长段落
+        very_long_threshold = mean_len * 1.8
+        for para in paragraph_lengths:
+            if para["word_count"] > very_long_threshold:
+                strategies.append(ParagraphLengthStrategy(
+                    strategy_type="split",
+                    target_positions=[para["position"]],
+                    description=f"Split {para['position']} into 2 paragraphs ({para['word_count']} words, very long)",
+                    description_zh=f"将 {para['position']} 拆分为2个段落（{para['word_count']} 词，过长）",
+                    reason="Very long paragraphs can be split to create variation",
+                    reason_zh="超长段落可以拆分以创造变化",
+                    priority=2
+                ))
+
+    # Sort strategies by priority
+    # 按优先级排序策略
+    strategies.sort(key=lambda x: x.priority)
+
+    # Generate summary
+    # 生成摘要
+    if is_uniform:
+        summary = f"Paragraph lengths are too uniform (CV={cv:.2f}, target>0.30). {len(strategies)} strategies suggested."
+        summary_zh = f"段落长度过于均匀（CV={cv:.2f}，目标>0.30）。建议{len(strategies)}种策略。"
+    else:
+        summary = f"Paragraph length distribution is acceptable (CV={cv:.2f})."
+        summary_zh = f"段落长度分布可接受（CV={cv:.2f}）。"
+
+    return ParagraphLengthAnalysis(
+        paragraph_lengths=paragraph_lengths,
+        mean_length=mean_len,
+        std_dev=std_dev,
+        cv=cv,
+        is_uniform=is_uniform,
+        strategies=strategies,
+        summary=summary,
+        summary_zh=summary_zh
+    )
+
+
+async def analyze_paragraph_length_distribution_async(
+    structure_result: Dict[str, Any]
+) -> ParagraphLengthAnalysis:
+    """
+    Async version: Analyze paragraph length distribution with LLM-based semantic analysis
+    异步版本：使用LLM语义分析进行段落长度分布分析
+
+    When simple statistical analysis doesn't generate strategies (because paragraphs are
+    uniformly medium-length), this function calls LLM to analyze semantic relationships
+    and generate intelligent merge/expand/split/compress suggestions.
+
+    当简单统计分析无法生成策略时（因为段落长度均匀且都是中等长度），
+    此函数调用LLM分析语义关系并生成智能的合并/扩展/拆分/压缩建议。
+
+    Args:
+        structure_result: Result from Step 1-1 structure analysis
+
+    Returns:
+        ParagraphLengthAnalysis with semantic-aware strategies
+    """
+    import statistics
+
+    # First, run the basic statistical analysis
+    # 首先，运行基本统计分析
+    paragraph_lengths = []
+    sections = structure_result.get("sections", [])
+
+    for section in sections:
+        section_num = section.get("number", "?")
+        section_title = section.get("title", "")
+        paragraphs = section.get("paragraphs", [])
+        for para in paragraphs:
+            paragraph_lengths.append({
+                "position": para.get("position", "?"),
+                "word_count": para.get("word_count", 0),
+                "section": section_num,
+                "section_title": section_title,
+                "summary": para.get("summary", ""),
+                "summary_zh": para.get("summary_zh", ""),
+                "first_sentence": para.get("first_sentence", ""),
+                "last_sentence": para.get("last_sentence", "")
+            })
+
+    if not paragraph_lengths:
+        return ParagraphLengthAnalysis(
+            paragraph_lengths=[],
+            mean_length=0,
+            std_dev=0,
+            cv=0,
+            is_uniform=False,
+            strategies=[],
+            summary="No paragraphs found",
+            summary_zh="未找到段落"
+        )
+
+    # Calculate statistics
+    # 计算统计数据
+    lengths = [p["word_count"] for p in paragraph_lengths]
+    mean_len = statistics.mean(lengths)
+    std_dev = statistics.stdev(lengths) if len(lengths) > 1 else 0
+    cv = std_dev / mean_len if mean_len > 0 else 0
+
+    is_uniform = cv < 0.30
+
+    # If uniform, use LLM to generate semantic-aware strategies
+    # 如果均匀，使用LLM生成基于语义的策略
+    strategies = []
+
+    if is_uniform:
+        logger.info(f"[ParagraphLengthAsync] CV={cv:.2f} < 0.30, calling LLM for semantic analysis")
+
+        # Call LLM for semantic-aware strategies
+        # 调用LLM进行语义分析
+        llm_strategies = await generate_semantic_strategies(
+            paragraph_lengths=paragraph_lengths,
+            mean_length=mean_len,
+            std_dev=std_dev,
+            cv=cv
+        )
+
+        if llm_strategies:
+            strategies = llm_strategies
+            logger.info(f"[ParagraphLengthAsync] LLM generated {len(strategies)} strategies")
+        else:
+            # Fallback: Generate basic strategies if LLM fails
+            # 后备：如果LLM失败，生成基本策略
+            logger.warning("[ParagraphLengthAsync] LLM failed, generating fallback strategies")
+            strategies = _generate_fallback_strategies(paragraph_lengths, mean_len, cv)
+
+    # Generate summary
+    # 生成摘要
+    if is_uniform:
+        summary = f"Paragraph lengths are too uniform (CV={cv:.2f}, target>0.30). {len(strategies)} strategies suggested."
+        summary_zh = f"段落长度过于均匀（CV={cv:.2f}，目标>0.30）。建议{len(strategies)}种策略。"
+    else:
+        summary = f"Paragraph length distribution is acceptable (CV={cv:.2f})."
+        summary_zh = f"段落长度分布可接受（CV={cv:.2f}）。"
+
+    return ParagraphLengthAnalysis(
+        paragraph_lengths=paragraph_lengths,
+        mean_length=mean_len,
+        std_dev=std_dev,
+        cv=cv,
+        is_uniform=is_uniform,
+        strategies=strategies,
+        summary=summary,
+        summary_zh=summary_zh
+    )
+
+
+def _generate_fallback_strategies(
+    paragraph_lengths: List[Dict[str, Any]],
+    mean_len: float,
+    cv: float
+) -> List[ParagraphLengthStrategy]:
+    """
+    Generate fallback strategies when LLM is unavailable
+    当LLM不可用时生成后备策略
+
+    Args:
+        paragraph_lengths: List of paragraph info
+        mean_len: Mean paragraph length
+        cv: Coefficient of variation
+
+    Returns:
+        List of basic strategies
+    """
+    strategies = []
+
+    if not paragraph_lengths:
+        return strategies
+
+    # Strategy 1: Identify introduction paragraphs to expand
+    # 策略1：识别可扩展的引言段落
+    intro_paras = [p for p in paragraph_lengths if
+                   p.get("section", "").lower() in ["1", "intro", "introduction"] or
+                   "introduction" in p.get("section_title", "").lower() or
+                   "引言" in p.get("summary_zh", "") or
+                   "背景" in p.get("summary_zh", "")]
+
+    for para in intro_paras[:1]:  # Only first intro paragraph
+        strategies.append(ParagraphLengthStrategy(
+            strategy_type="expand",
+            target_positions=[para["position"]],
+            description=f"Expand introduction paragraph {para['position']}",
+            description_zh=f"扩展引言段落 {para['position']}",
+            reason="Introduction paragraphs typically benefit from more context and background",
+            reason_zh="引言段落通常需要更多的背景和上下文铺垫",
+            priority=1,
+            expand_suggestion="Add research background, motivation, and gap analysis",
+            expand_suggestion_zh="添加研究背景、动机和研究空白分析"
+        ))
+
+    # Strategy 2: Identify methodology paragraphs to expand
+    # 策略2：识别可扩展的方法论段落
+    method_paras = [p for p in paragraph_lengths if
+                    "method" in p.get("section_title", "").lower() or
+                    "方法" in p.get("summary_zh", "") or
+                    "实验" in p.get("summary_zh", "")]
+
+    for para in method_paras[:1]:  # Only first method paragraph
+        strategies.append(ParagraphLengthStrategy(
+            strategy_type="expand",
+            target_positions=[para["position"]],
+            description=f"Expand methodology paragraph {para['position']}",
+            description_zh=f"扩展方法论段落 {para['position']}",
+            reason="Methodology paragraphs often need more implementation details",
+            reason_zh="方法论段落通常需要更多的实现细节",
+            priority=2,
+            expand_suggestion="Add parameter justification, algorithm steps, or implementation details",
+            expand_suggestion_zh="添加参数说明、算法步骤或实现细节"
+        ))
+
+    # Strategy 3: Suggest merging adjacent short paragraphs in same section
+    # 策略3：建议合并同一章节内相邻的短段落
+    for i in range(len(paragraph_lengths) - 1):
+        para1 = paragraph_lengths[i]
+        para2 = paragraph_lengths[i + 1]
+        if (para1["section"] == para2["section"] and
+            para1["word_count"] < mean_len * 0.8 and
+            para2["word_count"] < mean_len * 0.8):
+            strategies.append(ParagraphLengthStrategy(
+                strategy_type="merge",
+                target_positions=[para1["position"], para2["position"]],
+                description=f"Consider merging {para1['position']} and {para2['position']}",
+                description_zh=f"考虑合并 {para1['position']} 和 {para2['position']}",
+                reason="Adjacent paragraphs in same section may have related content",
+                reason_zh="同一章节内相邻段落可能有相关内容",
+                priority=3,
+                semantic_relation="Adjacent paragraphs in same section",
+                semantic_relation_zh="同一章节内相邻段落"
+            ))
+            break  # Only suggest one merge
+
+    # Strategy 4: Suggest splitting a long-ish paragraph
+    # 策略4：建议拆分较长的段落
+    long_paras = [p for p in paragraph_lengths if p["word_count"] > mean_len * 1.3]
+    if long_paras:
+        para = max(long_paras, key=lambda x: x["word_count"])
+        strategies.append(ParagraphLengthStrategy(
+            strategy_type="split",
+            target_positions=[para["position"]],
+            description=f"Consider splitting {para['position']} ({para['word_count']} words)",
+            description_zh=f"考虑拆分 {para['position']}（{para['word_count']} 词）",
+            reason="Longer paragraphs may contain multiple ideas that could be separated",
+            reason_zh="较长的段落可能包含多个可以分开的观点",
+            priority=3,
+            split_points=["Look for topic shifts or transitional phrases"],
+            split_points_zh=["寻找主题转换或过渡性短语"]
+        ))
+
+    # If still no strategies, add a general suggestion
+    # 如果仍然没有策略，添加一个通用建议
+    if not strategies and paragraph_lengths:
+        # Pick a random middle paragraph to expand
+        mid_idx = len(paragraph_lengths) // 2
+        para = paragraph_lengths[mid_idx]
+        strategies.append(ParagraphLengthStrategy(
+            strategy_type="expand",
+            target_positions=[para["position"]],
+            description=f"Expand paragraph {para['position']} with more details",
+            description_zh=f"扩展段落 {para['position']}，添加更多细节",
+            reason=f"To increase length variation (current CV={cv:.2f}), some paragraphs need expansion",
+            reason_zh=f"为增加长度变化（当前CV={cv:.2f}），部分段落需要扩展",
+            priority=2,
+            expand_suggestion="Add supporting examples, data, or analysis",
+            expand_suggestion_zh="添加支持性示例、数据或分析"
+        ))
+
+    return strategies
 
 
 # =============================================================================

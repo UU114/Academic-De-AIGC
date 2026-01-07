@@ -260,6 +260,7 @@ class SessionState(BaseModel):
     suggestions: Optional[SuggestResponse] = None
     progress_percent: float
     status: str = "active"
+    step_logs: List[Dict[str, Any]] = []
 
 
 class ProgressUpdate(BaseModel):
@@ -303,8 +304,10 @@ class SessionInfo(BaseModel):
     total_sentences: int
     processed: int
     progress_percent: float
+    colloquialism_level: int = 4  # Colloquialism level (0-10) / 口语化程度 (0-10)
     created_at: datetime
     completed_at: Optional[datetime] = None
+    step_logs: List[Dict[str, Any]] = []
 
 
 class ExportResult(BaseModel):
@@ -1488,6 +1491,123 @@ class MergeModifyApplyResponse(BaseModel):
     issues_addressed: List[str] = Field(default=[], description="List of issue types addressed")
     remaining_attempts: int = Field(3, description="Remaining regeneration attempts")
     colloquialism_level: Optional[int] = Field(None, description="Target colloquialism level used")
+
+
+# =============================================================================
+# Paragraph Length Analysis Schemas (Step 1-2 Two-Phase Enhancement)
+# 段落长度分析模式（Step 1-2 两阶段增强）
+# =============================================================================
+
+class ParagraphLengthStrategyItem(BaseModel):
+    """
+    Single strategy suggestion for paragraph length optimization
+    段落长度优化的单个策略建议
+    """
+    model_config = ConfigDict(populate_by_name=True)
+
+    strategy_type: str = Field(..., alias="strategyType", description="merge|expand|split|compress")
+    target_positions: List[str] = Field(..., alias="targetPositions", description="Affected paragraph positions")
+    description: str = Field(..., description="Strategy description in English")
+    description_zh: str = Field(..., alias="descriptionZh", description="策略描述")
+    reason: str = Field(..., description="Why this strategy is suggested")
+    reason_zh: str = Field(..., alias="reasonZh", description="建议原因")
+    priority: int = Field(..., description="Priority 1-5, lower = more important")
+    # For expand strategy, what kind of content to add
+    # 对于扩展策略，建议添加什么类型的内容
+    expand_suggestion: Optional[str] = Field(None, alias="expandSuggestion", description="Suggestion for what to expand")
+    expand_suggestion_zh: Optional[str] = Field(None, alias="expandSuggestionZh", description="扩展建议")
+    # For merge strategy, semantic relationship between paragraphs
+    # 对于合并策略，段落间的语义关系
+    semantic_relation: Optional[str] = Field(None, alias="semanticRelation", description="Semantic relationship for merge")
+    semantic_relation_zh: Optional[str] = Field(None, alias="semanticRelationZh", description="合并的语义关系说明")
+    # For split/compress strategy, what aspects to separate or remove
+    # 对于拆分/压缩策略，应分离或删除哪些方面
+    split_points: Optional[List[str]] = Field(None, alias="splitPoints", description="Points where to split")
+    split_points_zh: Optional[List[str]] = Field(None, alias="splitPointsZh", description="建议拆分点")
+
+
+class ParagraphLengthInfo(BaseModel):
+    """
+    Information about a single paragraph's length
+    单个段落长度信息
+    """
+    model_config = ConfigDict(populate_by_name=True)
+
+    position: str = Field(..., description="Paragraph position e.g., '1(2)'")
+    word_count: int = Field(..., alias="wordCount", description="Number of words in paragraph")
+    section: str = Field(..., description="Section number or name")
+    summary: str = Field("", description="Paragraph summary")
+    summary_zh: str = Field("", alias="summaryZh", description="段落摘要")
+
+
+class ParagraphLengthAnalysisRequest(BaseModel):
+    """
+    Request for Phase 1 paragraph length analysis
+    第一阶段段落长度分析请求
+    """
+    model_config = ConfigDict(populate_by_name=True)
+
+    document_id: str = Field(..., alias="documentId", description="Document ID")
+
+
+class ParagraphLengthAnalysisResponse(BaseModel):
+    """
+    Response from Phase 1 paragraph length analysis
+    第一阶段段落长度分析响应
+
+    Contains statistics and strategy suggestions for the user to select.
+    包含统计数据和供用户选择的策略建议。
+    """
+    model_config = ConfigDict(populate_by_name=True)
+
+    paragraph_lengths: List[ParagraphLengthInfo] = Field(..., alias="paragraphLengths", description="List of paragraph length info")
+    mean_length: float = Field(..., alias="meanLength", description="Mean paragraph length in words")
+    std_dev: float = Field(..., alias="stdDev", description="Standard deviation of paragraph lengths")
+    cv: float = Field(..., description="Coefficient of variation (std_dev / mean)")
+    is_uniform: bool = Field(..., alias="isUniform", description="Whether lengths are too uniform (CV < 0.3)")
+    human_like_cv_target: float = Field(0.4, alias="humanLikeCvTarget", description="Target CV for human-like distribution")
+    strategies: List[ParagraphLengthStrategyItem] = Field(..., description="Suggested strategies")
+    summary: str = Field(..., description="Summary of analysis in English")
+    summary_zh: str = Field(..., alias="summaryZh", description="分析摘要")
+
+
+class SelectedStrategy(BaseModel):
+    """
+    User-selected strategy with optional expand text
+    用户选择的策略（可选扩展文本）
+    """
+    model_config = ConfigDict(populate_by_name=True)
+
+    strategy_type: str = Field(..., alias="strategyType", description="merge|expand|split")
+    target_positions: List[str] = Field(..., alias="targetPositions", description="Affected paragraph positions")
+    # For expand strategy, user-provided new content
+    # 对于扩展策略，用户提供的新内容
+    expand_text: Optional[str] = Field(None, alias="expandText", description="User-provided text for expand strategy")
+
+
+class ApplyParagraphStrategiesRequest(BaseModel):
+    """
+    Request for Phase 2: Apply selected paragraph strategies
+    第二阶段请求：应用选中的段落策略
+    """
+    model_config = ConfigDict(populate_by_name=True)
+
+    document_id: str = Field(..., alias="documentId", description="Document ID")
+    session_id: Optional[str] = Field(None, alias="sessionId", description="Session ID for colloquialism level")
+    selected_strategies: List[SelectedStrategy] = Field(..., alias="selectedStrategies", description="User-selected strategies")
+
+
+class ApplyParagraphStrategiesResponse(BaseModel):
+    """
+    Response from Phase 2: Applied paragraph strategies
+    第二阶段响应：已应用的段落策略
+    """
+    model_config = ConfigDict(populate_by_name=True)
+
+    modified_text: str = Field(..., alias="modifiedText", description="Modified document text")
+    changes_summary_zh: str = Field("", alias="changesSummaryZh", description="Summary of changes in Chinese")
+    strategies_applied: int = Field(..., alias="strategiesApplied", description="Number of strategies applied")
+    new_cv: Optional[float] = Field(None, alias="newCv", description="New CV after modifications")
 
 
 # =============================================================================

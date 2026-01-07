@@ -184,10 +184,15 @@ export default function Upload() {
         processLevels,
       });
 
-      // Navigate to Step 1-1 (document structure analysis) with mode and session
-      // Both intervention and yolo modes start from Step 1-1
-      // 导航到 Step 1-1（文档结构分析），带上模式和会话ID
-      // 干预模式和YOLO模式都从 Step 1-1 开始
+      // YOLO mode: Navigate to full auto processing page
+      // YOLO模式：导航到全自动处理页面
+      if (sessionMode === 'yolo') {
+        navigate(`/yolo-full-auto/${sessionResult.sessionId}`);
+        return;
+      }
+
+      // Intervention mode: Navigate to Step 1-1 (document structure analysis) with mode and session
+      // 干预模式：导航到 Step 1-1（文档结构分析），带上模式和会话ID
       navigate(`/flow/step1-1/${documentId}?mode=${sessionMode}&session=${sessionResult.sessionId}`);
     } catch (err) {
       setError((err as Error).message || '处理失败，请重试');

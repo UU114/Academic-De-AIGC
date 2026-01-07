@@ -219,13 +219,31 @@ function PPLIndicator({ ppl, pplRisk }: { ppl: number; pplRisk: string }) {
   };
 
   const getTooltip = () => {
+    // PPL score range explanation
+    // PPL 分数段说明
+    const rangeExplanation = `
+【PPL 分数段说明】
+• 0-15: 极低困惑度，文本高度可预测，强AI特征
+• 15-30: 低困惑度，有明显AI特征
+• 30-60: 中等困惑度，可能是AI或人类
+• 60-100: 较高困惑度，较自然
+• >100: 高困惑度，非常自然的人类写作`;
+
     if (pplRisk === 'high') {
-      return `PPL=${ppl.toFixed(1)}：困惑度很低，文本高度可预测，强烈AI特征。使用ONNX模型计算（如果不可用则用zlib压缩比）`;
+      return `PPL=${ppl.toFixed(1)} [高风险]
+当前困惑度很低，文本高度可预测，呈现强烈AI写作特征。
+建议：增加句式变化、使用更多样的词汇表达。
+${rangeExplanation}`;
     }
     if (pplRisk === 'medium') {
-      return `PPL=${ppl.toFixed(1)}：困惑度较低，有一定AI特征。使用ONNX模型计算（如果不可用则用zlib压缩比）`;
+      return `PPL=${ppl.toFixed(1)} [中等风险]
+当前困惑度较低，文本有一定AI特征。
+建议：适当调整措辞，增加表达多样性。
+${rangeExplanation}`;
     }
-    return `PPL=${ppl.toFixed(1)}：困惑度正常，文本较为自然。使用ONNX模型计算（如果不可用则用zlib压缩比）`;
+    return `PPL=${ppl.toFixed(1)} [低风险]
+当前困惑度正常，文本较为自然，符合人类写作特征。
+${rangeExplanation}`;
   };
 
   return (

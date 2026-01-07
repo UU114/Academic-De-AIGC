@@ -27,7 +27,7 @@ export default function Home() {
           English Paper AIGC Detection & Humanization Engine
         </p>
         <p className="text-lg text-gray-500 mb-8 max-w-2xl mx-auto">
-          AI教你改，而非AI替你改 - 人机协作式AIGC文本优化
+          智能协作，掌控自如 — 人机协作式AIGC文本优化
         </p>
 
         {/* Pricing badge for operational mode */}
@@ -138,10 +138,10 @@ export default function Home() {
                     <p>
                       目前的顶级检测器（如 <strong>Turnitin</strong> 和 <strong>GPTZero</strong>）并不仅靠"查重"，而是通过计算文本的 
                       <span className="text-indigo-600 font-medium"> 困惑度 (Perplexity) </span> 和 
-                      <span className="text-indigo-600 font-medium"> 爆发度 (Burstiness) </span> 来判定是否为 AI 生成。
+                      <span className="text-indigo-600 font-medium"> 节奏变化度 (Burstiness) </span> 来判定是否为 AI 生成。
                     </p>
                     <p>
-                      AI 生成的文本通常逻辑平顺、结构单一（低困惑度、低爆发度）。市面上的大多数工具仅仅是进行同义词替换，无法改变文章底层的逻辑结构特征，因此往往无法通过严格的检测。
+                      AI 生成的文本通常逻辑平顺、结构单一（低困惑度、低节奏变化度）。市面上的大多数工具仅仅是进行同义词替换，无法改变文章底层的逻辑结构特征，因此往往无法通过严格的检测。
                     </p>
                   </div>
                 </div>
@@ -151,7 +151,7 @@ export default function Home() {
                     AcademicGuard 的独家方案
                   </h3>
                   <p className="text-gray-600 mb-4 text-sm">
-                    我们是市面上<span className="text-red-600 font-bold">唯一</span>引入"结构化爆发度"分析的工具：
+                    我们是市面上<span className="text-red-600 font-bold">唯一</span>引入"结构化节奏变化度"分析的工具：
                   </p>
                   <ul className="space-y-3">
                     <li className="flex items-start text-sm text-gray-700">
@@ -160,7 +160,7 @@ export default function Home() {
                     </li>
                     <li className="flex items-start text-sm text-gray-700">
                       <CheckCircle className="w-4 h-4 text-green-500 mr-2 mt-0.5" />
-                      <span><strong>逻辑重构：</strong> 增强段落间的逻辑跳跃感（提升爆发度）</span>
+                      <span><strong>逻辑重构：</strong> 增强段落间的逻辑跳跃感（提升节奏变化度）</span>
                     </li>
                     <li className="flex items-start text-sm text-gray-700">
                       <CheckCircle className="w-4 h-4 text-green-500 mr-2 mt-0.5" />
@@ -192,9 +192,9 @@ export default function Home() {
               color="text-blue-600"
               bg="bg-blue-50"
             />
-            <DimensionCard 
+            <DimensionCard
               icon={<Zap className="w-6 h-6" />}
-              title="逻辑爆发度"
+              title="节奏变化度"
               subTitle="Logical Burstiness"
               description="评估句式结构与长度的跳跃感。人类写作充满节奏变化，而AI倾向于单调重复。"
               color="text-amber-600"

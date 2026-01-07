@@ -15,6 +15,11 @@ import {
   Check,
   RotateCcw,
   ArrowRight,
+  Target,
+  BarChart2,
+  Lightbulb,
+  AlertCircle,
+  BookOpen,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import type {
@@ -24,6 +29,79 @@ import type {
 } from '../../types';
 import Button from '../common/Button';
 import InfoTooltip from '../common/InfoTooltip';
+import { paragraphApi } from '../../services/api';
+
+/**
+ * Sentence role color mapping
+ * 句子角色颜色映射
+ */
+const ROLE_COLORS: Record<string, { bg: string; text: string; border: string }> = {
+  CLAIM: { bg: 'bg-blue-100', text: 'text-blue-700', border: 'border-blue-300' },
+  EVIDENCE: { bg: 'bg-green-100', text: 'text-green-700', border: 'border-green-300' },
+  ANALYSIS: { bg: 'bg-purple-100', text: 'text-purple-700', border: 'border-purple-300' },
+  CRITIQUE: { bg: 'bg-red-100', text: 'text-red-700', border: 'border-red-300' },
+  CONCESSION: { bg: 'bg-orange-100', text: 'text-orange-700', border: 'border-orange-300' },
+  SYNTHESIS: { bg: 'bg-teal-100', text: 'text-teal-700', border: 'border-teal-300' },
+  TRANSITION: { bg: 'bg-gray-100', text: 'text-gray-700', border: 'border-gray-300' },
+  CONTEXT: { bg: 'bg-yellow-100', text: 'text-yellow-700', border: 'border-yellow-300' },
+  IMPLICATION: { bg: 'bg-indigo-100', text: 'text-indigo-700', border: 'border-indigo-300' },
+  ELABORATION: { bg: 'bg-pink-100', text: 'text-pink-700', border: 'border-pink-300' },
+  UNKNOWN: { bg: 'bg-gray-50', text: 'text-gray-500', border: 'border-gray-200' },
+};
+
+/**
+ * Type definitions for advanced logic framework analysis result
+ * 高级逻辑框架分析结果的类型定义
+ */
+interface LogicFrameworkResult {
+  sentenceRoles: Array<{
+    index: number;
+    role: string;
+    roleZh: string;
+    confidence: number;
+    brief: string;
+  }>;
+  roleDistribution: Record<string, number>;
+  logicFramework: {
+    pattern: string;
+    patternZh: string;
+    isAiLike: boolean;
+    riskLevel: string;
+    description: string;
+    descriptionZh: string;
+  };
+  burstinessAnalysis: {
+    sentenceLengths: number[];
+    meanLength: number;
+    stdDev: number;
+    cv: number;
+    burstinessLevel: string;
+    burstinessZh: string;
+    hasDramaticVariation: boolean;
+    longestSentence: { index: number; length: number };
+    shortestSentence: { index: number; length: number };
+  };
+  missingElements: {
+    roles: string[];
+    description: string;
+    descriptionZh: string;
+  };
+  improvementSuggestions: Array<{
+    type: string;
+    suggestion: string;
+    suggestionZh: string;
+    priority: number;
+    example?: string;
+  }>;
+  overallAssessment: {
+    aiRiskScore: number;
+    mainIssues: string[];
+    summary: string;
+    summaryZh: string;
+  };
+  basicAnalysis: Record<string, unknown>;
+  sentences: string[];
+}
 
 interface ParagraphLogicPanelProps {
   paragraph: string;
@@ -68,6 +146,16 @@ export default function ParagraphLogicPanel({
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isRestructuring, setIsRestructuring] = useState(false);
   const [copied, setCopied] = useState(false);
+
+  // Advanced logic framework analysis state
+  // 高级逻辑框架分析状态
+  const [activeTab, setActiveTab] = useState<'basic' | 'advanced'>('basic');
+  const [advancedAnalysis, setAdvancedAnalysis] = useState<LogicFrameworkResult | null>(null);
+  const [isAnalyzingAdvanced, setIsAnalyzingAdvanced] = useState(false);
+  const [advancedError, setAdvancedError] = useState<string | null>(null);
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(
+    new Set(['roles', 'framework', 'suggestions'])
+  );
 
   // Update analysis when initialAnalysis changes
   // 当 initialAnalysis 变化时更新分析
@@ -210,6 +298,55 @@ export default function ParagraphLogicPanel({
   const handleReset = () => {
     setRestructureResult(null);
     setSelectedStrategy(null);
+  };
+
+  // Handle advanced logic framework analysis
+  // 处理高级逻辑框架分析
+  const handleAdvancedAnalysis = async () => {
+    if (!paragraph.trim()) return;
+
+    setIsAnalyzingAdvanced(true);
+    setAdvancedError(null);
+
+    try {
+      const result = await paragraphApi.analyzeLogicFramework(paragraph);
+      setAdvancedAnalysis(result);
+    } catch (error) {
+      console.error('Advanced logic framework analysis failed:', error);
+      setAdvancedError(error instanceof Error ? error.message : 'Analysis failed');
+    } finally {
+      setIsAnalyzingAdvanced(false);
+    }
+  };
+
+  // Toggle section expansion
+  // 切换章节展开
+  const toggleSection = (section: string) => {
+    setExpandedSections((prev) => {
+      const next = new Set(prev);
+      if (next.has(section)) {
+        next.delete(section);
+      } else {
+        next.add(section);
+      }
+      return next;
+    });
+  };
+
+  // Get burstiness level color
+  // 获取爆发度级别颜色
+  const getBurstinessColor = (level: string) => {
+    switch (level.toLowerCase()) {
+      case 'very_low':
+      case 'low':
+        return 'text-red-600';
+      case 'medium':
+        return 'text-yellow-600';
+      case 'high':
+        return 'text-green-600';
+      default:
+        return 'text-gray-600';
+    }
   };
 
   // Get logic structure badge
@@ -427,6 +564,311 @@ export default function ParagraphLogicPanel({
     );
   };
 
+  // Render advanced analysis
+  // 渲染高级分析
+  const renderAdvancedAnalysis = () => {
+    if (!advancedAnalysis) {
+      return (
+        <div className="text-center py-6">
+          <BookOpen className="w-12 h-12 text-purple-300 mx-auto mb-3" />
+          <p className="text-sm text-gray-500 mb-4">
+            分析段落内句子的逻辑角色和框架结构
+            <br />
+            Analyze sentence roles and logic framework
+          </p>
+          <Button
+            variant="primary"
+            onClick={handleAdvancedAnalysis}
+            disabled={isAnalyzingAdvanced || !paragraph.trim()}
+            className="flex items-center space-x-2 mx-auto"
+          >
+            {isAnalyzingAdvanced ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Target className="w-4 h-4" />
+            )}
+            <span>开始分析 / Analyze</span>
+          </Button>
+          {advancedError && (
+            <div className="mt-3 p-3 bg-red-50 text-red-700 rounded-lg text-sm">
+              <AlertCircle className="w-4 h-4 inline mr-1" />
+              {advancedError}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    return (
+      <div className="space-y-4">
+        {/* Overall Assessment */}
+        <div className="p-4 bg-gray-50 rounded-lg">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm font-medium text-gray-700">
+              AI 风险评分 / AI Risk Score
+            </span>
+            <span
+              className={clsx(
+                'px-2 py-1 rounded text-sm font-medium',
+                advancedAnalysis.overallAssessment.aiRiskScore > 60
+                  ? 'bg-red-100 text-red-700'
+                  : advancedAnalysis.overallAssessment.aiRiskScore > 30
+                  ? 'bg-orange-100 text-orange-700'
+                  : 'bg-green-100 text-green-700'
+              )}
+            >
+              {advancedAnalysis.overallAssessment.aiRiskScore}%
+            </span>
+          </div>
+          <p className="text-sm text-gray-600">{advancedAnalysis.overallAssessment.summaryZh}</p>
+        </div>
+
+        {/* Sentence Roles Section */}
+        <div className="border rounded-lg">
+          <button
+            onClick={() => toggleSection('roles')}
+            className="w-full flex items-center justify-between p-3 hover:bg-gray-50"
+          >
+            <div className="flex items-center space-x-2">
+              <Target className="w-4 h-4 text-blue-600" />
+              <span className="font-medium">句子角色分析 / Sentence Roles</span>
+            </div>
+            {expandedSections.has('roles') ? (
+              <ChevronUp className="w-4 h-4" />
+            ) : (
+              <ChevronDown className="w-4 h-4" />
+            )}
+          </button>
+
+          {expandedSections.has('roles') && (
+            <div className="p-3 border-t space-y-2">
+              {advancedAnalysis.sentenceRoles.map((role, idx) => {
+                const colors = ROLE_COLORS[role.role] || ROLE_COLORS.UNKNOWN;
+                return (
+                  <div
+                    key={idx}
+                    className={clsx(
+                      'p-3 rounded-lg border',
+                      colors.bg,
+                      colors.border
+                    )}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className={clsx('text-xs font-medium', colors.text)}>
+                        [{role.role}] {role.roleZh}
+                      </span>
+                      <span className="text-xs text-gray-400">
+                        置信度: {(role.confidence * 100).toFixed(0)}%
+                      </span>
+                    </div>
+                    <p className="text-sm text-gray-700">
+                      {advancedAnalysis.sentences[idx]}
+                    </p>
+                    {role.brief && (
+                      <p className="text-xs text-gray-500 mt-1 italic">{role.brief}</p>
+                    )}
+                  </div>
+                );
+              })}
+
+              {/* Role Distribution */}
+              {Object.keys(advancedAnalysis.roleDistribution).length > 0 && (
+                <div className="mt-3 pt-3 border-t">
+                  <p className="text-xs text-gray-500 mb-2">角色分布 / Distribution:</p>
+                  <div className="flex flex-wrap gap-2">
+                    {Object.entries(advancedAnalysis.roleDistribution).map(([role, count]) => {
+                      const colors = ROLE_COLORS[role] || ROLE_COLORS.UNKNOWN;
+                      return (
+                        <span
+                          key={role}
+                          className={clsx(
+                            'px-2 py-1 rounded text-xs',
+                            colors.bg,
+                            colors.text
+                          )}
+                        >
+                          {role}: {count}
+                        </span>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Logic Framework Section */}
+        <div className="border rounded-lg">
+          <button
+            onClick={() => toggleSection('framework')}
+            className="w-full flex items-center justify-between p-3 hover:bg-gray-50"
+          >
+            <div className="flex items-center space-x-2">
+              <BarChart2 className="w-4 h-4 text-purple-600" />
+              <span className="font-medium">逻辑框架 / Logic Framework</span>
+            </div>
+            {expandedSections.has('framework') ? (
+              <ChevronUp className="w-4 h-4" />
+            ) : (
+              <ChevronDown className="w-4 h-4" />
+            )}
+          </button>
+
+          {expandedSections.has('framework') && (
+            <div className="p-3 border-t space-y-3">
+              {/* Framework Pattern */}
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-600">框架模式:</span>
+                <span
+                  className={clsx(
+                    'px-2 py-1 rounded text-sm',
+                    advancedAnalysis.logicFramework.isAiLike
+                      ? 'bg-red-100 text-red-700'
+                      : 'bg-green-100 text-green-700'
+                  )}
+                >
+                  {advancedAnalysis.logicFramework.patternZh}
+                  {advancedAnalysis.logicFramework.isAiLike && (
+                    <AlertTriangle className="w-3 h-3 inline ml-1" />
+                  )}
+                </span>
+              </div>
+
+              <p className="text-sm text-gray-600">{advancedAnalysis.logicFramework.descriptionZh}</p>
+
+              {/* Burstiness Analysis */}
+              <div className="pt-3 border-t">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm text-gray-600">爆发度 (Burstiness):</span>
+                  <span
+                    className={clsx(
+                      'text-sm font-medium',
+                      getBurstinessColor(advancedAnalysis.burstinessAnalysis.burstinessLevel)
+                    )}
+                  >
+                    {advancedAnalysis.burstinessAnalysis.burstinessZh}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2 text-xs text-gray-500">
+                  <div>平均长度: {advancedAnalysis.burstinessAnalysis.meanLength.toFixed(1)}</div>
+                  <div>标准差: {advancedAnalysis.burstinessAnalysis.stdDev.toFixed(2)}</div>
+                  <div>CV: {advancedAnalysis.burstinessAnalysis.cv.toFixed(2)}</div>
+                </div>
+
+                {/* Sentence length visualization */}
+                <div className="mt-2 flex items-end space-x-1 h-12">
+                  {advancedAnalysis.burstinessAnalysis.sentenceLengths.map((len, idx) => (
+                    <div
+                      key={idx}
+                      className={clsx(
+                        'flex-1 rounded-t',
+                        idx === advancedAnalysis.burstinessAnalysis.longestSentence.index
+                          ? 'bg-purple-500'
+                          : idx === advancedAnalysis.burstinessAnalysis.shortestSentence.index
+                          ? 'bg-orange-400'
+                          : 'bg-gray-300'
+                      )}
+                      style={{
+                        height: `${Math.min(100, (len / advancedAnalysis.burstinessAnalysis.meanLength) * 50)}%`,
+                      }}
+                      title={`句子 ${idx + 1}: ${len} 词`}
+                    />
+                  ))}
+                </div>
+                <p className="text-xs text-gray-400 mt-1 text-center">
+                  句子长度分布 (紫=最长, 橙=最短)
+                </p>
+              </div>
+
+              {/* Missing Elements */}
+              {advancedAnalysis.missingElements.roles.length > 0 && (
+                <div className="pt-3 border-t">
+                  <div className="flex items-center space-x-2 text-sm text-orange-600 mb-1">
+                    <AlertCircle className="w-4 h-4" />
+                    <span>缺失角色 / Missing Roles</span>
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    {advancedAnalysis.missingElements.roles.map((role) => (
+                      <span key={role} className="px-2 py-0.5 bg-orange-50 text-orange-600 text-xs rounded">
+                        {role}
+                      </span>
+                    ))}
+                  </div>
+                  <p className="text-xs text-gray-500 mt-1">
+                    {advancedAnalysis.missingElements.descriptionZh}
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Improvement Suggestions Section */}
+        {advancedAnalysis.improvementSuggestions.length > 0 && (
+          <div className="border rounded-lg">
+            <button
+              onClick={() => toggleSection('suggestions')}
+              className="w-full flex items-center justify-between p-3 hover:bg-gray-50"
+            >
+              <div className="flex items-center space-x-2">
+                <Lightbulb className="w-4 h-4 text-yellow-600" />
+                <span className="font-medium">
+                  改进建议 / Suggestions ({advancedAnalysis.improvementSuggestions.length})
+                </span>
+              </div>
+              {expandedSections.has('suggestions') ? (
+                <ChevronUp className="w-4 h-4" />
+              ) : (
+                <ChevronDown className="w-4 h-4" />
+              )}
+            </button>
+
+            {expandedSections.has('suggestions') && (
+              <div className="p-3 border-t space-y-3">
+                {advancedAnalysis.improvementSuggestions.map((suggestion, idx) => (
+                  <div
+                    key={idx}
+                    className="p-3 bg-yellow-50 rounded-lg border border-yellow-200"
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs font-medium text-yellow-700">
+                        [{suggestion.type}] 优先级: {suggestion.priority}
+                      </span>
+                    </div>
+                    <p className="text-sm text-gray-700">
+                      {suggestion.suggestionZh || suggestion.suggestion}
+                    </p>
+                    {suggestion.example && (
+                      <p className="text-xs text-gray-500 mt-2 italic bg-white p-2 rounded">
+                        示例: {suggestion.example}
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Re-analyze button */}
+        <div className="text-center pt-2">
+          <button
+            onClick={handleAdvancedAnalysis}
+            disabled={isAnalyzingAdvanced}
+            className="text-sm text-purple-600 hover:text-purple-800 disabled:opacity-50"
+          >
+            {isAnalyzingAdvanced ? (
+              <Loader2 className="w-4 h-4 animate-spin inline mr-1" />
+            ) : null}
+            重新分析 / Re-analyze
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   // Render restructure result
   // 渲染重组结果
   const renderRestructureResult = () => {
@@ -557,7 +999,7 @@ export default function ParagraphLogicPanel({
           />
         </div>
         <div className="flex items-center space-x-2">
-          {analysis && getLogicStructureBadge(analysis.logicStructure)}
+          {analysis && activeTab === 'basic' && getLogicStructureBadge(analysis.logicStructure)}
           <button
             onClick={() => setShowDetails(!showDetails)}
             className="p-1 rounded hover:bg-gray-100"
@@ -569,6 +1011,35 @@ export default function ParagraphLogicPanel({
             )}
           </button>
         </div>
+      </div>
+
+      {/* Tab Switcher */}
+      {/* 选项卡切换 */}
+      <div className="flex space-x-1 p-1 bg-gray-100 rounded-lg">
+        <button
+          onClick={() => setActiveTab('basic')}
+          className={clsx(
+            'flex-1 px-3 py-2 text-sm font-medium rounded-md transition-colors',
+            activeTab === 'basic'
+              ? 'bg-white text-indigo-700 shadow-sm'
+              : 'text-gray-600 hover:text-gray-800'
+          )}
+        >
+          <FileText className="w-4 h-4 inline mr-1" />
+          基础分析 / Basic
+        </button>
+        <button
+          onClick={() => setActiveTab('advanced')}
+          className={clsx(
+            'flex-1 px-3 py-2 text-sm font-medium rounded-md transition-colors',
+            activeTab === 'advanced'
+              ? 'bg-white text-purple-700 shadow-sm'
+              : 'text-gray-600 hover:text-gray-800'
+          )}
+        >
+          <BookOpen className="w-4 h-4 inline mr-1" />
+          句子角色 / Sentence Roles
+        </button>
       </div>
 
       {/* Paragraph preview */}
@@ -584,29 +1055,32 @@ export default function ParagraphLogicPanel({
         )}
       </div>
 
-      {/* Analyze button if no analysis yet */}
-      {/* 如果还没有分析则显示分析按钮 */}
-      {!analysis && onAnalyze && (
-        <div className="flex justify-center">
-          <Button
-            variant="primary"
-            onClick={handleAnalyze}
-            disabled={isAnalyzing || !paragraph.trim()}
-            className="flex items-center space-x-2"
-          >
-            {isAnalyzing ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <FileText className="w-4 h-4" />
-            )}
-            <span>Analyze Logic / 分析逻辑</span>
-          </Button>
-        </div>
-      )}
+      {/* Basic Tab Content */}
+      {activeTab === 'basic' && (
+        <>
+          {/* Analyze button if no analysis yet */}
+          {/* 如果还没有分析则显示分析按钮 */}
+          {!analysis && onAnalyze && (
+            <div className="flex justify-center">
+              <Button
+                variant="primary"
+                onClick={handleAnalyze}
+                disabled={isAnalyzing || !paragraph.trim()}
+                className="flex items-center space-x-2"
+              >
+                {isAnalyzing ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <FileText className="w-4 h-4" />
+                )}
+                <span>Analyze Logic / 分析逻辑</span>
+              </Button>
+            </div>
+          )}
 
-      {/* Analysis results */}
-      {/* 分析结果 */}
-      {analysis && (
+          {/* Analysis results */}
+          {/* 分析结果 */}
+          {analysis && (
         <>
           {/* Metrics */}
           {/* 指标 */}
@@ -651,8 +1125,14 @@ export default function ParagraphLogicPanel({
           {/* Restructure result */}
           {/* 重组结果 */}
           {restructureResult && renderRestructureResult()}
+          </>
+        )}
         </>
       )}
+
+      {/* Advanced Tab Content - Sentence Role Analysis */}
+      {/* 高级选项卡内容 - 句子角色分析 */}
+      {activeTab === 'advanced' && renderAdvancedAnalysis()}
 
       {/* Loading state */}
       {/* 加载状态 */}

@@ -8,11 +8,15 @@ import Profile from './pages/Profile'
 import Feedback from './pages/Feedback'
 import Intervention from './pages/Intervention'
 import Yolo from './pages/Yolo'
+import YoloFullAuto from './pages/YoloFullAuto'
 import Review from './pages/Review'
 import ThreeLevelFlow from './pages/ThreeLevelFlow'
 import Step1_1 from './pages/Step1_1'
 import Step1_2 from './pages/Step1_2'
 import Step2 from './pages/Step2'
+import AdminLogin from './pages/admin/AdminLogin'
+import AdminDashboard from './pages/admin/AdminDashboard'
+import AnomalyDetection from './pages/admin/AnomalyDetection'
 import { useModeStore } from './stores/modeStore'
 import { useAuthStore } from './stores/authStore'
 import { FloatingModeBadge } from './components/auth/ModeIndicator'
@@ -49,6 +53,14 @@ function App() {
       }}
     >
       <Routes>
+        {/* Admin routes (outside main layout) */}
+        {/* 管理员路由（在主布局之外） */}
+        <Route path="admin/login" element={<AdminLogin />} />
+        <Route path="admin" element={<AdminDashboard />} />
+        <Route path="admin/anomaly" element={<AnomalyDetection />} />
+
+        {/* Main application routes */}
+        {/* 主应用路由 */}
         <Route path="/" element={<Layout />}>
           <Route index element={<Home />} />
           <Route path="upload" element={<Upload />} />
@@ -65,6 +77,7 @@ function App() {
           <Route path="flow/:documentId" element={<ThreeLevelFlow />} />
           <Route path="intervention/:sessionId" element={<Intervention />} />
           <Route path="yolo/:sessionId" element={<Yolo />} />
+          <Route path="yolo-full-auto/:sessionId" element={<YoloFullAuto />} />
           <Route path="review/:sessionId" element={<Review />} />
         </Route>
       </Routes>

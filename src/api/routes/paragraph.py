@@ -15,7 +15,10 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from src.core.analyzer.scorer import RiskScorer
-from src.core.analyzer.paragraph_logic import ParagraphLogicAnalyzer
+from src.core.analyzer.paragraph_logic import (
+    ParagraphLogicAnalyzer,
+    analyze_paragraph_logic_framework
+)
 from src.prompts.paragraph_logic import (
     get_paragraph_logic_prompt,
     STRATEGY_DESCRIPTIONS,
@@ -75,7 +78,7 @@ class ParagraphAnalysisResponse(BaseModel):
 class ParagraphRestructureRequest(BaseModel):
     """Request model for paragraph restructuring"""
     paragraph: str = Field(..., description="The paragraph text to restructure")
-    strategy: Literal["ani", "subject_diversity", "implicit_connector", "rhythm", "citation_entanglement", "all"] = Field(
+    strategy: Literal["ani", "subject_diversity", "implicit_connector", "rhythm", "citation_entanglement", "document_aware", "sentence_fusion", "all"] = Field(
         ..., description="Restructuring strategy to apply"
     )
     tone_level: int = Field(4, ge=0, le=10, description="Target tone level")
@@ -90,6 +93,10 @@ class ParagraphRestructureRequest(BaseModel):
     lengths: Optional[List[int]] = Field(None, description="For rhythm: current sentence lengths")
     cv: Optional[float] = Field(None, description="For rhythm: coefficient of variation")
     citations_found: Optional[List[dict]] = Field(None, description="For citation_entanglement: detected citations")
+    # Document-aware parameters
+    # 全篇感知参数
+    paragraph_index: Optional[int] = Field(None, description="For document_aware: 0-based index of paragraph in document")
+    total_paragraphs: Optional[int] = Field(None, description="For document_aware: total number of paragraphs in document")
 
 
 class RestructureChange(BaseModel):
@@ -233,7 +240,9 @@ async def restructure_paragraph(request: ParagraphRestructureRequest):
     - ani: Assertion-Nuance-Implication structure
     - subject_diversity: Vary sentence subjects
     - implicit_connector: Replace explicit connectors with semantic flow
-    - rhythm: Vary sentence lengths for human-like rhythm
+    - rhythm: Logic-driven sentence length variation (逻辑关系驱动的句长规划)
+    - citation_entanglement: Transform citations to break AI pattern
+    - document_aware: Position-aware restructuring (全篇感知重组)
     - all: Apply all relevant strategies
     """
     paragraph = request.paragraph.strip()
@@ -312,6 +321,17 @@ async def restructure_paragraph(request: ParagraphRestructureRequest):
                 # 从分析中提取引用
                 citations = _analyzer.get_citations_for_entanglement(sentences)
                 prompt_kwargs["citations_found"] = citations
+        elif request.strategy == "document_aware":
+            # Document-aware restructuring based on paragraph position
+            # 基于段落位置的全篇感知重组
+            prompt_kwargs["paragraph_index"] = request.paragraph_index or 0
+            prompt_kwargs["total_paragraphs"] = request.total_paragraphs or 1
+            prompt_kwargs["detected_issues"] = request.detected_issues or original_analysis.get("issues", [])
+        elif request.strategy == "sentence_fusion":
+            # Sentence fusion - LLM autonomously judges semantic relationships
+            # 句子融合 - LLM自主判断语义关系
+            # Only needs tone_level, already set in prompt_kwargs
+            pass
         elif request.strategy == "all":
             prompt_kwargs["detected_issues"] = request.detected_issues or original_analysis.get("issues", [])
 
@@ -414,7 +434,29 @@ async def _call_llm_for_restructure(
     content = None
 
     try:
-        if settings.llm_provider == "volcengine" and settings.volcengine_api_key:
+        if settings.llm_provider == "dashscope" and settings.dashscope_api_key:
+            # Call DashScope (阿里云灵积) API - Qwen models
+            # 调用阿里云灵积 API - 通义千问模型
+            async with httpx.AsyncClient(
+                base_url=settings.dashscope_base_url,
+                headers={
+                    "Authorization": f"Bearer {settings.dashscope_api_key}",
+                    "Content-Type": "application/json"
+                },
+                timeout=120.0,
+                trust_env=False
+            ) as client:
+                response = await client.post("/chat/completions", json={
+                    "model": settings.dashscope_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 2000,
+                    "temperature": 0.4
+                })
+                response.raise_for_status()
+                data = response.json()
+                content = data["choices"][0]["message"]["content"].strip()
+
+        elif settings.llm_provider == "volcengine" and settings.volcengine_api_key:
             # Call Volcengine (火山引擎) DeepSeek API - faster
             # 调用火山引擎 DeepSeek API - 更快
             async with httpx.AsyncClient(
@@ -546,6 +588,24 @@ async def _call_llm_for_restructure(
                     original=t.get("original"),
                     result=t.get("new_form")
                 ))
+        elif strategy == "sentence_fusion":
+            # Parse fusion_applied array
+            # 解析融合应用数组
+            for f in result.get("fusion_applied", []):
+                changes.append(RestructureChange(
+                    type=f.get("type", "fusion"),
+                    description=f.get("result", f.get("content", "")),
+                    original=str(f.get("original_sentences", [])),
+                    result=f.get("result", f.get("content", ""))
+                ))
+            # Also include semantic analysis summary
+            # 也包含语义分析摘要
+            for sa in result.get("semantic_analysis", [])[:3]:  # First 3 only
+                if sa.get("decision") == "merge":
+                    changes.append(RestructureChange(
+                        type="semantic_merge",
+                        description=f"{sa.get('relationship', 'unknown')}: {sa.get('reason', '')}"
+                    ))
         elif strategy == "all":
             for c in result.get("changes_summary", []):
                 changes.append(RestructureChange(
@@ -559,3 +619,201 @@ async def _call_llm_for_restructure(
         return (restructured, changes, explanation, explanation_zh)
 
     raise Exception("Empty LLM response")
+
+
+# =============================================================================
+# Paragraph Logic Framework Analysis (Step 2 Enhancement)
+# 段落逻辑框架分析（Step 2 增强）
+# =============================================================================
+
+class SentenceRoleItem(BaseModel):
+    """Response model for a single sentence role"""
+    index: int
+    role: str
+    roleZh: str
+    confidence: float
+    brief: str
+
+
+class LogicFrameworkItem(BaseModel):
+    """Response model for logic framework detection"""
+    pattern: str
+    patternZh: str
+    isAiLike: bool
+    riskLevel: str
+    description: str
+    descriptionZh: str
+
+
+class BurstinessAnalysisItem(BaseModel):
+    """Response model for burstiness analysis"""
+    sentenceLengths: List[int]
+    meanLength: float
+    stdDev: float
+    cv: float
+    burstinessLevel: str
+    burstinessZh: str
+    hasDramaticVariation: bool
+    longestSentence: dict
+    shortestSentence: dict
+
+
+class ImprovementSuggestionItem(BaseModel):
+    """Response model for improvement suggestion"""
+    type: str
+    suggestion: str = Field(default="")
+    suggestionZh: str = Field(alias="suggestion_zh", default="")
+    priority: int = Field(default=3)
+    example: Optional[str] = None
+
+    class Config:
+        populate_by_name = True
+
+
+class ParagraphLogicFrameworkRequest(BaseModel):
+    """Request model for paragraph logic framework analysis"""
+    paragraph: str = Field(..., description="The paragraph text to analyze")
+    paragraphPosition: Optional[str] = Field(None, description="Position in document e.g. '1(2)'")
+
+
+class ParagraphLogicFrameworkResponse(BaseModel):
+    """Response model for paragraph logic framework analysis (Step 2 enhancement)"""
+    sentenceRoles: List[SentenceRoleItem]
+    roleDistribution: dict
+    logicFramework: LogicFrameworkItem
+    burstinessAnalysis: BurstinessAnalysisItem
+    missingElements: dict
+    improvementSuggestions: List[dict]
+    overallAssessment: dict
+    basicAnalysis: dict
+    sentences: List[str]
+
+
+@router.post("/analyze-logic-framework", response_model=ParagraphLogicFrameworkResponse)
+async def analyze_paragraph_logic_framework_endpoint(request: ParagraphLogicFrameworkRequest):
+    """
+    Analyze paragraph logic framework with sentence role detection (Step 2 Enhancement)
+    分析段落逻辑框架和句子角色检测（Step 2 增强）
+
+    This endpoint provides:
+    此端点提供：
+    - Sentence role analysis (论点/证据/分析/批判/让步/综合等)
+    - Logic framework pattern detection (linear/dynamic)
+    - Burstiness analysis (sentence length variation)
+    - Missing element identification
+    - Improvement suggestions
+
+    Used in Step 2 to help users understand and improve paragraph structure.
+    在 Step 2 中使用，帮助用户理解和改进段落结构。
+    """
+    paragraph = request.paragraph.strip()
+
+    if not paragraph:
+        raise HTTPException(status_code=400, detail="Paragraph text is required")
+
+    # Split paragraph into sentences
+    # 将段落分割为句子
+    sentences = _split_into_sentences(paragraph)
+
+    if len(sentences) < 2:
+        # Return minimal result for very short paragraphs
+        # 为非常短的段落返回最小结果
+        return ParagraphLogicFrameworkResponse(
+            sentenceRoles=[
+                SentenceRoleItem(
+                    index=0,
+                    role="UNKNOWN",
+                    roleZh="未知",
+                    confidence=0.0,
+                    brief="Paragraph too short"
+                )
+            ] if sentences else [],
+            roleDistribution={},
+            logicFramework=LogicFrameworkItem(
+                pattern="INSUFFICIENT_DATA",
+                patternZh="数据不足",
+                isAiLike=False,
+                riskLevel="unknown",
+                description="Paragraph too short for framework analysis",
+                descriptionZh="段落过短，无法进行框架分析"
+            ),
+            burstinessAnalysis=BurstinessAnalysisItem(
+                sentenceLengths=[len(s.split()) for s in sentences],
+                meanLength=0.0,
+                stdDev=0.0,
+                cv=0.0,
+                burstinessLevel="unknown",
+                burstinessZh="未知",
+                hasDramaticVariation=False,
+                longestSentence={"index": 0, "length": 0},
+                shortestSentence={"index": 0, "length": 0}
+            ),
+            missingElements={"roles": [], "description": "", "descriptionZh": ""},
+            improvementSuggestions=[],
+            overallAssessment={
+                "aiRiskScore": 0,
+                "mainIssues": [],
+                "summary": "Paragraph too short",
+                "summaryZh": "段落过短"
+            },
+            basicAnalysis={},
+            sentences=sentences
+        )
+
+    try:
+        # Call the comprehensive analysis function
+        # 调用综合分析函数
+        result = await analyze_paragraph_logic_framework(
+            paragraph=paragraph,
+            sentences=sentences,
+            paragraph_position=request.paragraphPosition
+        )
+
+        # Convert to response format
+        # 转换为响应格式
+        result_dict = result.to_dict()
+
+        return ParagraphLogicFrameworkResponse(
+            sentenceRoles=[
+                SentenceRoleItem(
+                    index=sr["index"],
+                    role=sr["role"],
+                    roleZh=sr["roleZh"],
+                    confidence=sr["confidence"],
+                    brief=sr["brief"]
+                )
+                for sr in result_dict["sentenceRoles"]
+            ],
+            roleDistribution=result_dict["roleDistribution"],
+            logicFramework=LogicFrameworkItem(
+                pattern=result_dict["logicFramework"]["pattern"],
+                patternZh=result_dict["logicFramework"]["patternZh"],
+                isAiLike=result_dict["logicFramework"]["isAiLike"],
+                riskLevel=result_dict["logicFramework"]["riskLevel"],
+                description=result_dict["logicFramework"]["description"],
+                descriptionZh=result_dict["logicFramework"]["descriptionZh"]
+            ),
+            burstinessAnalysis=BurstinessAnalysisItem(
+                sentenceLengths=result_dict["burstinessAnalysis"]["sentenceLengths"],
+                meanLength=result_dict["burstinessAnalysis"]["meanLength"],
+                stdDev=result_dict["burstinessAnalysis"]["stdDev"],
+                cv=result_dict["burstinessAnalysis"]["cv"],
+                burstinessLevel=result_dict["burstinessAnalysis"]["burstinessLevel"],
+                burstinessZh=result_dict["burstinessAnalysis"]["burstinessZh"],
+                hasDramaticVariation=result_dict["burstinessAnalysis"]["hasDramaticVariation"],
+                longestSentence=result_dict["burstinessAnalysis"]["longestSentence"],
+                shortestSentence=result_dict["burstinessAnalysis"]["shortestSentence"]
+            ),
+            missingElements=result_dict["missingElements"],
+            improvementSuggestions=result_dict["improvementSuggestions"],
+            overallAssessment=result_dict["overallAssessment"],
+            basicAnalysis=result_dict["basicAnalysis"],
+            sentences=sentences
+        )
+
+    except Exception as e:
+        logger.error(f"Paragraph logic framework analysis failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Analysis failed: {str(e)}"
+        )

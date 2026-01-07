@@ -360,6 +360,27 @@ export default function Intervention() {
     await applySuggestion(source);
   };
 
+  // Handle reselect suggestion for already processed sentence
+  // 处理已处理句子的重新选择改写方案
+  const handleReselect = useCallback(async () => {
+    if (!session?.currentSentence) return;
+
+    console.log('[Intervention] Reselecting suggestion for:', session.currentSentence.id);
+
+    // Update local state to mark sentence as "pending" again
+    // 更新本地状态，将句子标记为"待处理"
+    setAllSentences(prev => prev.map(s =>
+      s.id === session.currentSentence?.id
+        ? { ...s, status: 'pending' as const }
+        : s
+    ));
+
+    // Force reload suggestions (bypass the "already processed" check)
+    // 强制重新加载建议（绕过"已处理"检查）
+    setLastLoadedIndex(null);  // Reset lastLoadedIndex to trigger reload
+    loadSuggestions(session.currentSentence, colloquialismLevel);
+  }, [session?.currentSentence, colloquialismLevel, loadSuggestions]);
+
   // Handle jump to sentence
   // 处理跳转到句子
   const handleGotoSentence = async (index: number) => {
@@ -783,6 +804,7 @@ export default function Intervention() {
                   sentenceProcessed={isCurrentSentenceProcessed || (!suggestions && !isLoadingSuggestions && (session?.processed ?? 0) > 0)}
                   sentenceProcessedType={currentSentenceStatus as 'processed' | 'skip' | 'flag' | undefined}
                   sentenceId={session?.currentSentence?.id}
+                  onReselect={handleReselect}
                   analysisState={analysisState}
                   onAnalysisStateChange={handleAnalysisStateChange}
                   customText={customText}

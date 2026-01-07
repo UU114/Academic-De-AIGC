@@ -667,3 +667,417 @@ def analyze_paragraph_sentences(
     analyzer = ParagraphLogicAnalyzer()
     result = analyzer.analyze_paragraph(sentences)
     return result.to_dict()
+
+
+# =============================================================================
+# LLM-based Sentence Role Analysis (Step 2 Enhancement)
+# 基于LLM的句子角色分析（Step 2 增强）
+# =============================================================================
+
+@dataclass
+class SentenceRole:
+    """Represents a sentence's role in the paragraph 表示句子在段落中的角色"""
+    index: int
+    role: str
+    role_zh: str
+    confidence: float
+    brief: str
+
+
+@dataclass
+class LogicFramework:
+    """Represents the detected logic framework pattern 表示检测到的逻辑框架模式"""
+    pattern: str
+    pattern_zh: str
+    is_ai_like: bool
+    risk_level: str
+    description: str
+    description_zh: str
+
+
+@dataclass
+class BurstinessAnalysis:
+    """Analysis of sentence length burstiness 句子长度爆发度分析"""
+    sentence_lengths: List[int]
+    mean_length: float
+    std_dev: float
+    cv: float
+    burstiness_level: str
+    burstiness_zh: str
+    has_dramatic_variation: bool
+    longest_sentence: Dict[str, int]
+    shortest_sentence: Dict[str, int]
+
+
+@dataclass
+class ParagraphLogicFrameworkResult:
+    """
+    Complete result of paragraph logic framework analysis (LLM-based)
+    段落逻辑框架分析的完整结果（基于LLM）
+    """
+    sentence_roles: List[SentenceRole]
+    role_distribution: Dict[str, int]
+    logic_framework: LogicFramework
+    burstiness_analysis: BurstinessAnalysis
+    missing_elements: Dict[str, Any]
+    improvement_suggestions: List[Dict[str, Any]]
+    overall_assessment: Dict[str, Any]
+    # Include basic analysis results as well
+    # 同时包含基本分析结果
+    basic_analysis: Dict[str, Any]
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization"""
+        return {
+            "sentenceRoles": [
+                {
+                    "index": sr.index,
+                    "role": sr.role,
+                    "roleZh": sr.role_zh,
+                    "confidence": sr.confidence,
+                    "brief": sr.brief
+                }
+                for sr in self.sentence_roles
+            ],
+            "roleDistribution": self.role_distribution,
+            "logicFramework": {
+                "pattern": self.logic_framework.pattern,
+                "patternZh": self.logic_framework.pattern_zh,
+                "isAiLike": self.logic_framework.is_ai_like,
+                "riskLevel": self.logic_framework.risk_level,
+                "description": self.logic_framework.description,
+                "descriptionZh": self.logic_framework.description_zh
+            },
+            "burstinessAnalysis": {
+                "sentenceLengths": self.burstiness_analysis.sentence_lengths,
+                "meanLength": self.burstiness_analysis.mean_length,
+                "stdDev": self.burstiness_analysis.std_dev,
+                "cv": self.burstiness_analysis.cv,
+                "burstinessLevel": self.burstiness_analysis.burstiness_level,
+                "burstinessZh": self.burstiness_analysis.burstiness_zh,
+                "hasDramaticVariation": self.burstiness_analysis.has_dramatic_variation,
+                "longestSentence": self.burstiness_analysis.longest_sentence,
+                "shortestSentence": self.burstiness_analysis.shortest_sentence
+            },
+            "missingElements": self.missing_elements,
+            "improvementSuggestions": self.improvement_suggestions,
+            "overallAssessment": self.overall_assessment,
+            "basicAnalysis": self.basic_analysis
+        }
+
+
+async def analyze_paragraph_logic_framework(
+    paragraph: str,
+    sentences: List[str],
+    paragraph_position: Optional[str] = None
+) -> ParagraphLogicFrameworkResult:
+    """
+    Analyze paragraph logic framework using LLM for sentence role detection
+    使用LLM分析段落逻辑框架和句子角色检测
+
+    This is the main analysis function for Step 2 enhancement.
+    这是 Step 2 增强功能的主要分析函数。
+
+    Args:
+        paragraph: Full paragraph text
+        sentences: List of sentences in the paragraph
+        paragraph_position: Optional position info (e.g., "1(2)" for section 1, paragraph 2)
+
+    Returns:
+        ParagraphLogicFrameworkResult with comprehensive analysis
+    """
+    import json
+    from src.prompts.paragraph_logic import get_sentence_role_analysis_prompt
+    from src.core.analyzer.smart_structure import SmartStructureAnalyzer
+
+    # 1. Run basic statistical analysis first
+    # 首先运行基本统计分析
+    basic_result = analyze_paragraph_sentences(sentences)
+
+    # 2. If paragraph is too short, skip LLM analysis
+    # 如果段落太短，跳过LLM分析
+    if len(sentences) < 3:
+        return _create_minimal_result(sentences, basic_result)
+
+    # 3. Generate prompt for LLM
+    # 为LLM生成提示词
+    prompt = get_sentence_role_analysis_prompt(paragraph, sentences)
+
+    try:
+        # 4. Call LLM using SmartStructureAnalyzer's method
+        # 使用 SmartStructureAnalyzer 的方法调用LLM
+        analyzer = SmartStructureAnalyzer()
+        response_text = await analyzer._call_llm(prompt)
+
+        # 5. Parse LLM response
+        # 解析LLM响应
+        llm_result = analyzer._parse_llm_response(response_text)
+
+        # 6. Convert to structured result
+        # 转换为结构化结果
+        return _parse_llm_analysis_result(llm_result, sentences, basic_result)
+
+    except Exception as e:
+        logger.error(f"[ParagraphLogicFramework] LLM analysis failed: {e}")
+        # Return fallback result with basic analysis only
+        # 返回仅包含基本分析的后备结果
+        return _create_fallback_result(sentences, basic_result)
+
+
+def _create_minimal_result(
+    sentences: List[str],
+    basic_result: Dict[str, Any]
+) -> ParagraphLogicFrameworkResult:
+    """Create minimal result for very short paragraphs 为很短的段落创建最小结果"""
+    lengths = [len(s.split()) for s in sentences]
+    mean_len = sum(lengths) / len(lengths) if lengths else 0
+
+    return ParagraphLogicFrameworkResult(
+        sentence_roles=[
+            SentenceRole(
+                index=i,
+                role="UNKNOWN",
+                role_zh="未知",
+                confidence=0.0,
+                brief="Paragraph too short for analysis"
+            )
+            for i in range(len(sentences))
+        ],
+        role_distribution={},
+        logic_framework=LogicFramework(
+            pattern="INSUFFICIENT_DATA",
+            pattern_zh="数据不足",
+            is_ai_like=False,
+            risk_level="unknown",
+            description="Paragraph too short for framework analysis",
+            description_zh="段落过短，无法进行框架分析"
+        ),
+        burstiness_analysis=BurstinessAnalysis(
+            sentence_lengths=lengths,
+            mean_length=mean_len,
+            std_dev=0.0,
+            cv=0.0,
+            burstiness_level="unknown",
+            burstiness_zh="未知",
+            has_dramatic_variation=False,
+            longest_sentence={"index": 0, "length": max(lengths) if lengths else 0},
+            shortest_sentence={"index": 0, "length": min(lengths) if lengths else 0}
+        ),
+        missing_elements={"roles": [], "description": "", "description_zh": ""},
+        improvement_suggestions=[],
+        overall_assessment={
+            "aiRiskScore": 0,
+            "mainIssues": [],
+            "summary": "Paragraph too short for comprehensive analysis",
+            "summaryZh": "段落过短，无法进行综合分析"
+        },
+        basic_analysis=basic_result
+    )
+
+
+def _create_fallback_result(
+    sentences: List[str],
+    basic_result: Dict[str, Any]
+) -> ParagraphLogicFrameworkResult:
+    """Create fallback result when LLM fails 当LLM失败时创建后备结果"""
+    lengths = [len(s.split()) for s in sentences]
+    mean_len = sum(lengths) / len(lengths) if lengths else 0
+    std_dev = statistics.stdev(lengths) if len(lengths) > 1 else 0
+    cv = std_dev / mean_len if mean_len > 0 else 0
+
+    # Determine burstiness level from CV
+    # 根据CV确定爆发度级别
+    if cv < 0.15:
+        burstiness_level = "very_low"
+        burstiness_zh = "非常低（强AI特征）"
+    elif cv < 0.25:
+        burstiness_level = "low"
+        burstiness_zh = "低（AI特征）"
+    elif cv < 0.35:
+        burstiness_level = "medium"
+        burstiness_zh = "中等"
+    else:
+        burstiness_level = "high"
+        burstiness_zh = "高（人类特征）"
+
+    # Check for dramatic variation
+    # 检查是否有戏剧性变化
+    has_dramatic = False
+    for i in range(len(lengths) - 1):
+        if abs(lengths[i+1] - lengths[i]) > 15:
+            has_dramatic = True
+            break
+
+    max_idx = lengths.index(max(lengths)) if lengths else 0
+    min_idx = lengths.index(min(lengths)) if lengths else 0
+
+    return ParagraphLogicFrameworkResult(
+        sentence_roles=[
+            SentenceRole(
+                index=i,
+                role="UNKNOWN",
+                role_zh="未知",
+                confidence=0.0,
+                brief="LLM analysis unavailable"
+            )
+            for i in range(len(sentences))
+        ],
+        role_distribution={},
+        logic_framework=LogicFramework(
+            pattern="ANALYSIS_FAILED",
+            pattern_zh="分析失败",
+            is_ai_like=basic_result.get("logic_structure") == "linear",
+            risk_level="medium" if basic_result.get("overall_risk", 0) > 20 else "low",
+            description="LLM analysis failed, using basic statistics only",
+            description_zh="LLM分析失败，仅使用基本统计数据"
+        ),
+        burstiness_analysis=BurstinessAnalysis(
+            sentence_lengths=lengths,
+            mean_length=mean_len,
+            std_dev=std_dev,
+            cv=cv,
+            burstiness_level=burstiness_level,
+            burstiness_zh=burstiness_zh,
+            has_dramatic_variation=has_dramatic,
+            longest_sentence={"index": max_idx, "length": max(lengths) if lengths else 0},
+            shortest_sentence={"index": min_idx, "length": min(lengths) if lengths else 0}
+        ),
+        missing_elements={"roles": [], "description": "", "description_zh": ""},
+        improvement_suggestions=_generate_basic_suggestions(basic_result),
+        overall_assessment={
+            "aiRiskScore": basic_result.get("overall_risk", 0),
+            "mainIssues": [issue["type"] for issue in basic_result.get("issues", [])],
+            "summary": "Basic analysis completed, LLM analysis unavailable",
+            "summaryZh": "基本分析完成，LLM分析不可用"
+        },
+        basic_analysis=basic_result
+    )
+
+
+def _generate_basic_suggestions(basic_result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Generate basic suggestions from statistical analysis 根据统计分析生成基本建议"""
+    suggestions = []
+
+    for issue in basic_result.get("issues", []):
+        if issue["type"] == "uniform_length":
+            suggestions.append({
+                "type": "vary_length",
+                "suggestion": issue["suggestion"],
+                "suggestionZh": issue["suggestion_zh"],
+                "priority": 1
+            })
+        elif issue["type"] == "linear_structure":
+            suggestions.append({
+                "type": "restructure",
+                "suggestion": issue["suggestion"],
+                "suggestionZh": issue["suggestion_zh"],
+                "priority": 1
+            })
+        elif issue["type"] == "subject_repetition":
+            suggestions.append({
+                "type": "vary_subject",
+                "suggestion": issue["suggestion"],
+                "suggestionZh": issue["suggestion_zh"],
+                "priority": 2
+            })
+
+    return suggestions
+
+
+def _parse_llm_analysis_result(
+    llm_result: Dict[str, Any],
+    sentences: List[str],
+    basic_result: Dict[str, Any]
+) -> ParagraphLogicFrameworkResult:
+    """Parse LLM analysis result into structured format 将LLM分析结果解析为结构化格式"""
+
+    # Parse sentence roles
+    # 解析句子角色
+    sentence_roles = []
+    for sr in llm_result.get("sentence_roles", []):
+        sentence_roles.append(SentenceRole(
+            index=sr.get("index", 0),
+            role=sr.get("role", "UNKNOWN"),
+            role_zh=sr.get("role_zh", "未知"),
+            confidence=sr.get("confidence", 0.0),
+            brief=sr.get("brief", "")
+        ))
+
+    # Ensure we have roles for all sentences
+    # 确保所有句子都有角色
+    existing_indices = {sr.index for sr in sentence_roles}
+    for i in range(len(sentences)):
+        if i not in existing_indices:
+            sentence_roles.append(SentenceRole(
+                index=i,
+                role="UNKNOWN",
+                role_zh="未知",
+                confidence=0.0,
+                brief=""
+            ))
+    sentence_roles.sort(key=lambda x: x.index)
+
+    # Parse logic framework
+    # 解析逻辑框架
+    lf = llm_result.get("logic_framework", {})
+    logic_framework = LogicFramework(
+        pattern=lf.get("pattern", "UNKNOWN"),
+        pattern_zh=lf.get("pattern_zh", "未知"),
+        is_ai_like=lf.get("is_ai_like", False),
+        risk_level=lf.get("risk_level", "low"),
+        description=lf.get("description", ""),
+        description_zh=lf.get("description_zh", "")
+    )
+
+    # Parse burstiness analysis
+    # 解析爆发度分析
+    ba = llm_result.get("burstiness_analysis", {})
+    lengths = ba.get("sentence_lengths", [len(s.split()) for s in sentences])
+    mean_len = ba.get("mean_length", sum(lengths) / len(lengths) if lengths else 0)
+    std_dev = ba.get("std_dev", statistics.stdev(lengths) if len(lengths) > 1 else 0)
+    cv = ba.get("cv", std_dev / mean_len if mean_len > 0 else 0)
+
+    burstiness_analysis = BurstinessAnalysis(
+        sentence_lengths=lengths,
+        mean_length=mean_len,
+        std_dev=std_dev,
+        cv=cv,
+        burstiness_level=ba.get("burstiness_level", "medium"),
+        burstiness_zh=ba.get("burstiness_zh", "中等"),
+        has_dramatic_variation=ba.get("has_dramatic_variation", False),
+        longest_sentence=ba.get("longest_sentence", {"index": 0, "length": 0}),
+        shortest_sentence=ba.get("shortest_sentence", {"index": 0, "length": 0})
+    )
+
+    # Parse missing elements
+    # 解析缺失元素
+    missing_elements = llm_result.get("missing_elements", {
+        "roles": [],
+        "description": "",
+        "description_zh": ""
+    })
+
+    # Parse improvement suggestions
+    # 解析改进建议
+    improvement_suggestions = llm_result.get("improvement_suggestions", [])
+
+    # Parse overall assessment
+    # 解析整体评估
+    overall = llm_result.get("overall_assessment", {})
+    overall_assessment = {
+        "aiRiskScore": overall.get("ai_risk_score", basic_result.get("overall_risk", 0)),
+        "mainIssues": overall.get("main_issues", []),
+        "summary": overall.get("summary", ""),
+        "summaryZh": overall.get("summary_zh", "")
+    }
+
+    return ParagraphLogicFrameworkResult(
+        sentence_roles=sentence_roles,
+        role_distribution=llm_result.get("role_distribution", {}),
+        logic_framework=logic_framework,
+        burstiness_analysis=burstiness_analysis,
+        missing_elements=missing_elements,
+        improvement_suggestions=improvement_suggestions,
+        overall_assessment=overall_assessment,
+        basic_analysis=basic_result
+    )

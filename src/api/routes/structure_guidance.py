@@ -523,9 +523,31 @@ async def _call_llm_for_guidance(prompt: str, settings) -> str:
     Call LLM API for guidance generation
     调用 LLM API 生成指引
     """
-    # Use Volcengine (preferred)
-    # 使用火山引擎（首选）
-    if settings.llm_provider == "volcengine" and settings.volcengine_api_key:
+    # Use DashScope (Aliyun)
+    # 使用阿里云灵积
+    if settings.llm_provider == "dashscope" and settings.dashscope_api_key:
+        async with httpx.AsyncClient(
+            base_url=settings.dashscope_base_url,
+            headers={
+                "Authorization": f"Bearer {settings.dashscope_api_key}",
+                "Content-Type": "application/json"
+            },
+            timeout=90.0,
+            trust_env=False
+        ) as client:
+            response = await client.post("/chat/completions", json={
+                "model": settings.dashscope_model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 3000,
+                "temperature": 0.3
+            })
+            response.raise_for_status()
+            data = response.json()
+            return data["choices"][0]["message"]["content"]
+
+    # Use Volcengine
+    # 使用火山引擎
+    elif settings.llm_provider == "volcengine" and settings.volcengine_api_key:
         async with httpx.AsyncClient(
             base_url=settings.volcengine_base_url,
             headers={

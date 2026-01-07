@@ -10,9 +10,182 @@ Strategies:
 2. Subject Diversity
 3. Implicit Connector
 4. Rhythm Variation
+
+Analysis Features:
+1. Sentence Role Analysis (句子角色分析)
+2. Logic Framework Detection (逻辑框架检测)
+3. Burstiness Analysis (爆发度分析)
 """
 
 from typing import Optional, List, Dict, Any
+
+
+# =============================================================================
+# Sentence Role Analysis Prompt (Step 2 Enhancement)
+# 句子角色分析Prompt（Step 2 增强）
+# =============================================================================
+
+SENTENCE_ROLE_ANALYSIS_PROMPT = """## Task: Analyze Sentence Roles and Logic Framework in Academic Paragraph
+## 任务：分析学术段落中的句子角色与逻辑框架
+
+You are an expert at analyzing academic writing structure. Analyze the given paragraph to identify the role of each sentence and detect any AI-like rigid framework patterns.
+
+## Paragraph to Analyze:
+{paragraph}
+
+## Sentence List (for reference):
+{sentence_list}
+
+## STEP 1: Identify Each Sentence's Role (句子角色识别)
+
+Classify each sentence into ONE of these roles:
+
+| Role | English Name | 中文名 | Description |
+|------|--------------|--------|-------------|
+| CLAIM | Claim/Thesis | 论点/主张 | States the main argument or position |
+| EVIDENCE | Evidence | 证据 | Presents data, citations, or factual support |
+| ANALYSIS | Analysis | 分析 | Interprets data or explains relationships |
+| CRITIQUE | Critique | 批判 | Challenges, questions, or identifies limitations |
+| CONCESSION | Concession | 让步 | Acknowledges counter-arguments or complexity |
+| SYNTHESIS | Synthesis | 综合 | Integrates multiple ideas or perspectives |
+| TRANSITION | Transition | 过渡 | Bridges between ideas or sections |
+| CONTEXT | Context | 背景 | Provides background or situates the topic |
+| IMPLICATION | Implication | 含义推导 | Draws broader conclusions or significance |
+| ELABORATION | Elaboration | 展开细化 | Adds details to a previous point |
+
+## STEP 2: Detect Logic Framework Pattern (逻辑框架检测)
+
+Identify the overall framework pattern:
+
+### AI-Like Rigid Patterns (AI式刚性模式) - HIGH RISK:
+- **LINEAR_TEMPLATE**: Context→Evidence→Analysis→Conclusion (线性模板)
+- **ADDITIVE_STACK**: Point A + Point B + Point C + Point D (叠加堆砌)
+- **UNIFORM_RHYTHM**: All sentences serve similar roles (角色均匀分布)
+
+### Human-Like Dynamic Patterns (人类化动态模式) - LOW RISK:
+- **ANI_STRUCTURE**: Assertion→Nuance→Implication (断言-细微-含义)
+- **CRITICAL_DEPTH**: Claim↔Critique→Synthesis (批判深度)
+- **NON_LINEAR**: Starts with critique/question, backtracks to evidence (非线性)
+- **VARIED_RHYTHM**: Mix of short assertions and long elaborations (节奏变化)
+
+## STEP 3: Analyze Burstiness (爆发度分析)
+
+Evaluate sentence length variation pattern:
+- Calculate length of each sentence (words)
+- Identify rhythm pattern: Is there dramatic variation (long→short→long)?
+- Human writing has HIGH burstiness (长短句交替明显)
+- AI writing has LOW burstiness (句子长度均匀)
+
+## STEP 4: Generate Improvement Suggestions (改进建议)
+
+If AI-like patterns detected, suggest specific improvements:
+1. Which sentences could be reordered?
+2. Which roles are missing (e.g., no CRITIQUE)?
+3. Where could non-linear thinking be injected?
+4. How to increase length variation?
+
+## Output (JSON only, no markdown):
+{{
+    "sentence_roles": [
+        {{"index": 0, "role": "CONTEXT", "role_zh": "背景", "confidence": 0.9, "brief": "Sets up the research problem"}},
+        {{"index": 1, "role": "CLAIM", "role_zh": "论点", "confidence": 0.85, "brief": "States main argument"}},
+        {{"index": 2, "role": "EVIDENCE", "role_zh": "证据", "confidence": 0.95, "brief": "Cites supporting data"}}
+    ],
+    "role_distribution": {{
+        "CLAIM": 1,
+        "EVIDENCE": 2,
+        "ANALYSIS": 1,
+        "CRITIQUE": 0,
+        "other": 1
+    }},
+    "logic_framework": {{
+        "pattern": "LINEAR_TEMPLATE",
+        "pattern_zh": "线性模板",
+        "is_ai_like": true,
+        "risk_level": "high",
+        "description": "Follows rigid Context→Evidence→Analysis→Conclusion structure",
+        "description_zh": "遵循刚性的 背景→证据→分析→结论 结构"
+    }},
+    "burstiness_analysis": {{
+        "sentence_lengths": [22, 25, 23, 21, 24],
+        "mean_length": 23.0,
+        "std_dev": 1.58,
+        "cv": 0.07,
+        "burstiness_level": "low",
+        "burstiness_zh": "低（AI特征）",
+        "has_dramatic_variation": false,
+        "longest_sentence": {{"index": 1, "length": 25}},
+        "shortest_sentence": {{"index": 3, "length": 21}}
+    }},
+    "missing_elements": {{
+        "roles": ["CRITIQUE", "CONCESSION"],
+        "description": "No critical perspective or acknowledgment of limitations",
+        "description_zh": "缺少批判视角或对局限性的承认"
+    }},
+    "improvement_suggestions": [
+        {{
+            "type": "add_critique",
+            "suggestion": "Add a sentence questioning the evidence or acknowledging limitations",
+            "suggestion_zh": "添加质疑证据或承认局限性的句子",
+            "priority": 1,
+            "example": "However, these findings must be interpreted cautiously given the sample limitations."
+        }},
+        {{
+            "type": "reorder",
+            "suggestion": "Start with a provocative question or critique instead of context",
+            "suggestion_zh": "以引发思考的问题或批判开头，而非背景",
+            "priority": 2,
+            "example": "Move sentence 3 (analysis) to the beginning, then backtrack to evidence"
+        }},
+        {{
+            "type": "vary_length",
+            "suggestion": "Add a short emphatic sentence after evidence",
+            "suggestion_zh": "在证据后添加短促有力的强调句",
+            "priority": 2,
+            "example": "The pattern is clear."
+        }}
+    ],
+    "overall_assessment": {{
+        "ai_risk_score": 75,
+        "main_issues": ["linear_structure", "low_burstiness", "missing_critique"],
+        "summary": "Paragraph shows typical AI writing patterns: linear structure, uniform sentence lengths, and lacks critical depth",
+        "summary_zh": "段落呈现典型AI写作特征：线性结构、句子长度均匀、缺乏批判深度"
+    }}
+}}
+"""
+
+
+# =============================================================================
+# Paragraph Logic Analysis with Sentence Roles (New Function)
+# 带句子角色的段落逻辑分析（新函数）
+# =============================================================================
+
+def get_sentence_role_analysis_prompt(
+    paragraph: str,
+    sentences: List[str]
+) -> str:
+    """
+    Generate prompt for sentence role analysis and logic framework detection
+    生成句子角色分析和逻辑框架检测的Prompt
+
+    Args:
+        paragraph: Full paragraph text
+        sentences: List of individual sentences
+
+    Returns:
+        Formatted prompt for LLM
+    """
+    # Build numbered sentence list
+    # 构建编号句子列表
+    sentence_list = "\n".join([
+        f"{i}. [{len(s.split())} words] {s}"
+        for i, s in enumerate(sentences)
+    ])
+
+    return SENTENCE_ROLE_ANALYSIS_PROMPT.format(
+        paragraph=paragraph,
+        sentence_list=sentence_list
+    )
 
 
 # =============================================================================
@@ -56,6 +229,12 @@ STRATEGY_DESCRIPTIONS = {
         "name_zh": "全篇感知重组",
         "description": "Apply different structure patterns based on paragraph position in the full document (opening/body/closing).",
         "description_zh": "根据段落在全文中的位置（开篇/正文/结尾）应用不同的结构模式。",
+    },
+    "sentence_fusion": {
+        "name": "Sentence Fusion",
+        "name_zh": "句子融合",
+        "description": "Analyze semantic relationships between sentences. Merge closely related sentences into complex forms (relative clauses, subordinate clauses) while adding short emphatic sentences. LLM judges autonomously.",
+        "description_zh": "分析句子间的语义关系。将语义关系密切的句子合并为复杂句式（关系从句、从属从句等），同时添加短句用于强调。由LLM自主判断。",
     },
 }
 
@@ -1078,6 +1257,142 @@ def _format_forbidden_patterns(forbidden: List[str]) -> str:
 
 
 # =============================================================================
+# Sentence Fusion Prompt
+# 句子融合Prompt
+# =============================================================================
+
+def get_sentence_fusion_prompt(
+    paragraph: str,
+    tone_level: int = 4
+) -> str:
+    """
+    Generate prompt for sentence fusion - LLM autonomously judges semantic relationships
+    生成句子融合的Prompt - LLM自主判断语义关系
+
+    Key principles:
+    1. LLM analyzes semantic relationships between adjacent sentences
+    2. Closely related sentences can be merged into complex forms
+    3. Short emphatic sentences are added for rhythm
+    4. Semantics must be preserved
+    """
+    return f"""## Task: Sentence Fusion - Analyze and Restructure Based on Semantic Relationships
+## 任务：句子融合 - 基于语义关系分析并重构
+
+You are an expert at restructuring academic paragraphs to appear human-written.
+你是重构学术段落使其看起来像人类写作的专家。
+
+## Original Paragraph:
+{paragraph}
+
+## Your Task: Autonomous Semantic Analysis and Restructuring
+## 你的任务：自主语义分析与重构
+
+Analyze the semantic relationships between adjacent sentences in this paragraph. Based on your analysis:
+
+### Step 1: Identify Semantic Relationships (识别语义关系)
+
+For each pair of adjacent sentences, determine their relationship:
+
+**TIGHT RELATIONSHIPS (语义紧密 → Consider MERGING):**
+- CAUSE_EFFECT: One sentence causes/explains the other
+- ELABORATION: One sentence elaborates/specifies the other
+- DEFINITION_EXAMPLE: One defines, the other exemplifies
+- CONDITION_RESULT: One is the condition, the other is the result
+- PARALLEL_CONCEPT: Two closely related parallel ideas
+
+**LOOSE RELATIONSHIPS (语义松散 → Keep SEPARATE):**
+- TOPIC_SHIFT: Different aspects or sub-topics
+- CONTRAST: Opposing or contrasting ideas
+- TEMPORAL_SEQUENCE: Time-ordered but independent events
+- INDEPENDENT: Loosely related statements
+
+### Step 2: Apply Fusion Strategies (应用融合策略)
+
+**For TIGHT relationships - MERGE into complex sentences:**
+
+1. **Relative Clause Fusion (关系从句融合)**
+   - Use: which, that, where, whereby, whose
+   - Example: "The model performs well. It uses attention mechanisms."
+   → "The model, which uses attention mechanisms, performs well."
+
+2. **Subordinate Clause Fusion (从属从句融合)**
+   - Use: because, since, although, while, when, if, as
+   - Example: "Results improved. We increased the sample size."
+   → "Results improved because we increased the sample size."
+
+3. **Participial Phrase Fusion (分词短语融合)**
+   - Use: -ing/-ed phrases
+   - Example: "The algorithm processes data. It identifies patterns."
+   → "Processing data, the algorithm identifies patterns."
+
+4. **Appositive Fusion (同位语融合)**
+   - Example: "Smith proposed a theory. The theory explains X."
+   → "Smith proposed a theory explaining X." OR "Smith's theory, which explains X, has gained acceptance."
+
+5. **Conditional Fusion (条件融合)**
+   - Use: provided that, given that, assuming that
+   - Example: "The method works. Certain conditions must be met."
+   → "The method works provided that certain conditions are met."
+
+**For LOOSE relationships - ADD VARIETY:**
+
+1. **Add Short Emphatic Sentences (添加短句强调)**
+   - 8-14 words for key conclusions or emphasis
+   - Example: "This distinction matters." / "The evidence is clear."
+
+2. **Keep as Separate Sentences with Implicit Connection**
+   - Remove explicit connectors (Furthermore, However, Additionally)
+   - Let semantic flow create the connection
+
+### Step 3: Balance Requirements (平衡要求)
+
+Your restructured paragraph MUST have:
+
+1. **Sentence Length Variety:**
+   - At least 1-2 LONG complex sentences (25-40+ words) from merging
+   - At least 1-2 SHORT emphatic sentences (8-14 words)
+   - Remaining MEDIUM sentences (15-24 words)
+   - Target CV (coefficient of variation) > 0.30
+
+2. **Semantic Preservation:**
+   - ALL original meaning must be preserved
+   - NO information loss from merging
+   - Technical terms and data remain intact
+
+3. **Natural Flow:**
+   - Merged sentences must read naturally
+   - Avoid over-complex nested structures (max 2 levels of nesting)
+   - Short sentences provide breathing room
+
+## Critical Rules (关键规则):
+
+1. **YOU DECIDE** which sentences to merge based on YOUR semantic analysis
+2. **NOT ALL sentences should be merged** - maintain variety
+3. **Preserve ALL meaning** - merging should not lose information
+4. **Use diverse clause types** - don't repeat the same fusion pattern
+5. **Add short sentences** for rhythm and emphasis (at least 1-2)
+6. Tone level: {tone_level}/10 (0=formal academic, 10=casual)
+
+## Output (JSON only, no markdown):
+{{
+    "semantic_analysis": [
+        {{"sentence_pair": [0, 1], "relationship": "CAUSE_EFFECT", "decision": "merge", "reason": "Sentence 1 explains cause of sentence 0"}},
+        {{"sentence_pair": [1, 2], "relationship": "TOPIC_SHIFT", "decision": "keep_separate", "reason": "Different aspects discussed"}},
+        {{"sentence_pair": [2, 3], "relationship": "ELABORATION", "decision": "merge", "reason": "Sentence 3 elaborates on sentence 2"}}
+    ],
+    "restructured": "The complete rewritten paragraph with fused sentences and short emphatic sentences",
+    "fusion_applied": [
+        {{"type": "relative_clause", "original_sentences": [0, 1], "result": "Combined sentence using 'which'"}},
+        {{"type": "short_emphasis", "position": "after_fusion_1", "content": "This finding matters."}}
+    ],
+    "sentence_lengths": [35, 10, 22, 28, 12],
+    "cv_achieved": 0.42,
+    "explanation": "How semantic relationships guided the restructuring",
+    "explanation_zh": "语义关系如何指导重构"
+}}"""
+
+
+# =============================================================================
 # Prompt Selector
 # Prompt选择器
 # =============================================================================
@@ -1089,6 +1404,7 @@ STRATEGY_PROMPTS = {
     "rhythm": get_rhythm_variation_prompt,
     "citation_entanglement": get_citation_entanglement_prompt,
     "document_aware": get_document_aware_restructure_prompt,
+    "sentence_fusion": get_sentence_fusion_prompt,
     "all": get_all_strategies_prompt,
 }
 
@@ -1159,6 +1475,11 @@ def get_paragraph_logic_prompt(
             paragraph_index=kwargs.get("paragraph_index", 0),
             total_paragraphs=kwargs.get("total_paragraphs", 1),
             detected_issues=kwargs.get("detected_issues"),
+            tone_level=kwargs.get("tone_level", 4)
+        )
+    elif strategy == "sentence_fusion":
+        return prompt_generator(
+            paragraph,
             tone_level=kwargs.get("tone_level", 4)
         )
     elif strategy == "all":

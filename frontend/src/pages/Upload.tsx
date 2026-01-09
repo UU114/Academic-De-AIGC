@@ -69,12 +69,15 @@ export default function Upload() {
 
   // Validate and set file
   // 验证并设置文件
+  // SECURITY: Must match backend config.py max_file_size_mb (default 5MB)
+  // 安全: 必须与后端 config.py 的 max_file_size_mb 一致（默认5MB）
   const validateAndSetFile = (selectedFile: File) => {
     const allowedTypes = [
       'text/plain',
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     ];
-    const maxSize = 10 * 1024 * 1024; // 10MB
+    const maxSizeMB = 5;  // Must match backend max_file_size_mb
+    const maxSize = maxSizeMB * 1024 * 1024;
 
     if (!allowedTypes.includes(selectedFile.type)) {
       setError('仅支持 TXT 和 DOCX 格式');
@@ -82,7 +85,7 @@ export default function Upload() {
     }
 
     if (selectedFile.size > maxSize) {
-      setError('文件大小不能超过 10MB');
+      setError(`文件大小不能超过 ${maxSizeMB}MB`);
       return;
     }
 
@@ -343,7 +346,7 @@ export default function Upload() {
                   </span>
                 </label>
                 <p className="text-sm text-gray-500 mt-2">
-                  支持 TXT、DOCX 格式，最大 10MB
+                  支持 TXT、DOCX 格式，最大 5MB
                 </p>
               </>
             )}

@@ -1,6 +1,9 @@
 """
 LLM-based suggestion track (Track A)
 基于LLM的建议轨道（轨道A）
+
+Integrates with Step 1.0 Term Locking to protect locked terms during rewriting.
+集成步骤1.0词汇锁定，在改写过程中保护锁定的术语。
 """
 
 import json
@@ -12,6 +15,32 @@ from src.config import get_settings, ColloquialismConfig
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+def get_locked_terms_from_session(session_id: Optional[str]) -> List[str]:
+    """
+    Get locked terms from session for prompt injection
+    从会话中获取锁定术语以注入提示词
+
+    Args:
+        session_id: Session identifier (optional)
+
+    Returns:
+        List of locked terms, or empty list if none
+    """
+    if not session_id:
+        return []
+
+    try:
+        # Import here to avoid circular imports
+        from src.api.routes.analysis.term_lock import get_session_locked_terms
+        return get_session_locked_terms(session_id)
+    except ImportError:
+        logger.warning("Could not import term_lock module")
+        return []
+    except Exception as e:
+        logger.warning(f"Could not get locked terms: {e}")
+        return []
 
 
 @dataclass
@@ -129,16 +158,24 @@ Style: Casual Informal (Discussion Level)
         }
     }
 
-    def __init__(self, colloquialism_level: int = 4):
+    def __init__(self, colloquialism_level: int = 4, session_id: Optional[str] = None):
         """
         Initialize LLM track
 
         Args:
             colloquialism_level: Target formality level (0-10)
+            session_id: Optional session ID for accessing locked terms from Step 1.0
         """
         self.level = colloquialism_level
+        self.session_id = session_id
         self.style_guide = self._get_style_guide()
         self.word_preferences = self._get_word_preferences()
+
+        # Load locked terms from session (Step 1.0)
+        # 从会话加载锁定术语（步骤1.0）
+        self.session_locked_terms = get_locked_terms_from_session(session_id)
+        if self.session_locked_terms:
+            logger.info(f"Loaded {len(self.session_locked_terms)} locked terms from session {session_id}")
 
     def _get_style_guide(self) -> str:
         """Get style guide for current level"""
@@ -327,14 +364,20 @@ ONLY rewrite the NON-CITATION parts of the sentence.
         Args:
             sentence: Original sentence
             issues: Detected issues
-            locked_terms: Terms to protect
+            locked_terms: Terms to protect (in addition to session locked terms)
             target_lang: Target language for explanations
             is_paraphrase: Whether sentence is a paraphrase
 
         Returns:
             LLMSuggestionResult or None if failed
         """
-        prompt = self._build_prompt(sentence, issues, locked_terms, target_lang, is_paraphrase)
+        # Merge session locked terms with passed locked_terms (Step 1.0 integration)
+        # 合并会话锁定术语与传入的锁定术语（步骤1.0集成）
+        all_locked_terms = list(set(self.session_locked_terms + (locked_terms or [])))
+        if all_locked_terms and len(all_locked_terms) != len(locked_terms or []):
+            logger.debug(f"Merged locked terms: {len(locked_terms or [])} passed + {len(self.session_locked_terms)} session = {len(all_locked_terms)} total")
+
+        prompt = self._build_prompt(sentence, issues, all_locked_terms, target_lang, is_paraphrase)
 
         try:
             # Try to use configured LLM provider
@@ -367,7 +410,7 @@ ONLY rewrite the NON-CITATION parts of the sentence.
                 # Fallback to rule-based simulation for MVP
                 # MVP阶段回退到基于规则的模拟
                 logger.warning("No LLM API configured, using fallback")
-                return self._fallback_suggestion(sentence, issues, locked_terms)
+                return self._fallback_suggestion(sentence, issues, all_locked_terms)
 
             # Parse response
             # 解析响应
@@ -375,7 +418,7 @@ ONLY rewrite the NON-CITATION parts of the sentence.
 
         except Exception as e:
             logger.error(f"LLM suggestion generation failed: {e}")
-            return self._fallback_suggestion(sentence, issues, locked_terms)
+            return self._fallback_suggestion(sentence, issues, all_locked_terms)
 
     async def _call_anthropic(self, prompt: str) -> str:
         """Call Anthropic API"""

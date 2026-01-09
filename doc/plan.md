@@ -735,3 +735,484 @@ multifaceted, leverage, robust, seamless, cutting-edge
 > 文档维护 Document Maintenance:
 > 本文档为项目唯一计划文档，所有规划变更需同步更新此文件。
 > This is the sole planning document. All planning changes must be synced here.
+
+---
+
+## 十二、检测逻辑重构计划 | Detection Logic Refactoring Plan
+
+> 状态 Status: ✅ 已完成 / Completed
+> 详细文档 Detailed Document: `doc/refactoring-plan.md`
+> 创建日期 Created: 2026-01-07
+> 完成日期 Completed: 2026-01-07
+
+### 12.1 重构目标 | Refactoring Goals
+
+将当前分散的检测逻辑重构为统一的**5层架构**，实现从粗到细的颗粒度检测。
+
+Refactor scattered detection logic into a unified **5-layer architecture** with coarse-to-fine granularity.
+
+### 12.2 新5层架构 | New 5-Layer Architecture
+
+```
+Layer 5: Document (文章层)     → Step 1.x series
+Layer 4: Section (章节层)      → Step 2.x series  [NEW]
+Layer 3: Paragraph (段落层)    → Step 3.x series
+Layer 2: Sentence (句子层)     → Step 4.x series
+Layer 1: Lexical (词汇层)      → Step 5.x series  [NEW]
+```
+
+### 12.3 各层步骤分配 | Step Allocation by Layer
+
+| 层级 Layer | 步骤 Steps | 主要功能 Main Functions |
+|------------|-----------|-------------------------|
+| Document | 1.1 结构分析, 1.2 全局风险 | 全文结构模式检测，风险评估 |
+| Section | 2.1 逻辑流, 2.2 章节衔接, 2.3 长度分布 | 章节关系、过渡、均衡性 |
+| Paragraph | 3.1 角色, 3.2 连贯性, 3.3 锚点, 3.4 句长分布 | 段落功能、内聚性、锚点密度 |
+| Sentence | 4.1 模式, 4.2 空洞, 4.3 角色, 4.4 润色 | 句式检测、空洞检测、句子改写 |
+| Lexical | 5.1 指纹词, 5.2 连接词, 5.3 词级风险 | 词汇级别检测与替换 |
+
+### 12.4 关键设计原则 | Key Design Principles
+
+1. **从粗到细 Coarse to Fine**: Document → Section → Paragraph → Sentence → Word
+2. **句子段落化 Sentence-in-Paragraph**: 句子层分析必须在段落上下文中进行
+3. **段落级句子指标**: 句子长度分布分析属于段落层（Step 3.4）而非句子层
+4. **上下文传递 Context Passing**: 每层接收上层传递的上下文信息
+5. **灵活步骤 Flexible Steps**: 层内步骤可根据检测问题动态调整
+
+### 12.5 待集成模块 | Modules to Integrate
+
+| 模块 Module | 目标层 Target Layer | 功能 Function |
+|-------------|-------------------|---------------|
+| `syntactic_void.py` | Sentence (4.2) | 句法空洞检测 (spaCy) |
+| `structure_predictability.py` | Document (1.1) | 5维结构可预测性评分 |
+| `anchor_density.py` | Paragraph (3.3) | 13类锚点密度分析 |
+
+### 12.6 实施阶段 | Implementation Phases
+
+| 阶段 Phase | 内容 Content | 状态 Status |
+|------------|-------------|-------------|
+| Phase 1 | 后端重构 Backend Restructure | ✅ 已完成 (2026-01-07) |
+| Phase 2 | API重构 API Refactoring | ✅ 已完成 (2026-01-07) |
+| Phase 3 | 前端重构 Frontend Refactoring | ✅ 已完成 (2026-01-07) |
+| Phase 4 | 集成测试 Integration Testing | ✅ 已完成 (2026-01-07) |
+
+**5层架构重构已全部完成！详见 `doc/refactoring-plan.md` 和 `doc/process.md`**
+**5-Layer Architecture Refactoring Complete! See `doc/refactoring-plan.md` and `doc/process.md` for details**
+
+---
+
+## 十三、Layer 5 子步骤系统设计 | Layer 5 Sub-Step System Design
+
+> 状态 Status: 🚧 设计完成，待实现 / Design Complete, Pending Implementation
+> 详细文档 Detailed Document: `doc/layer5-substep-design.md`
+> 创建日期 Created: 2026-01-07
+
+### 13.1 设计目标 | Design Goals
+
+将 Layer 5 (文档层) 的检测功能细化为5个有序的子步骤，整合所有已有和待集成的检测器。
+
+Subdivide Layer 5 (Document Layer) detection into 5 ordered sub-steps, integrating all existing and pending detectors.
+
+### 13.2 子步骤概览 | Sub-Step Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    Layer 5: Document Level Analysis                  │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  Step 1.0: 词汇锁定 Term Locking ⭐ NEW                             │
+│  ├── LLM提取专业名词和高频实义词 Extract Technical Terms            │
+│  ├── 用户多选确认锁定词汇 User Multi-select Confirmation            │
+│  └── 锁定词汇规则应用到后续所有LLM步骤                              │
+│                          ↓                                           │
+│  ═══════════════════════════════════════════════════════════════    │
+│  ║  locked_terms 传递到所有后续步骤的LLM Prompt中  ║                │
+│  ═══════════════════════════════════════════════════════════════    │
+│                          ↓                                           │
+│  Step 1.1: 结构框架检测 Structure Framework Detection               │
+│  ├── 章节对称性 Section Symmetry                                    │
+│  ├── 章节顺序可预测性 Section Order Predictability                  │
+│  └── 全局逻辑流动 Global Logic Flow (linear_flow)                   │
+│                          ↓                                           │
+│  Step 1.2: 段落长度规律性 Paragraph Length Regularity               │
+│  ├── 段落长度均匀性 Length Uniformity (CV analysis)                 │
+│  ├── 章节内段落数量均匀性 Section Paragraph Count                   │
+│  └── 段落功能均匀性 Function Uniformity                             │
+│                          ↓                                           │
+│  Step 1.3: 推进模式与闭合 Progression & Closure Detection           │
+│  ├── 单调推进模式 Monotonic Progression Pattern                     │
+│  ├── 重复结构模式 Repetitive Pattern                                │
+│  └── 闭合强度 Closure Strength                                      │
+│                          ↓                                           │
+│  Step 1.4: 连接词与衔接 Connectors & Transitions                    │
+│  ├── 显性连接词检测 Explicit Connector Detection                    │
+│  ├── 连接词显性度分析 Connector Explicitness                        │
+│  ├── 段落衔接模式 Transition Patterns                               │
+│  └── 词汇回声分析 Lexical Echo Analysis                             │
+│                          ↓                                           │
+│  Step 1.5: 内容实质性 Content Substantiveness                       │
+│  ├── 学术锚点密度 Anchor Density                                    │
+│  └── 幻觉风险评估 Hallucination Risk                                │
+│                          ↓                                           │
+│              传递修改后的文本到 Layer 4 (Section)                    │
+│              (locked_terms 继续传递到所有后续Layer)                  │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### 13.3 检测器集成方案 | Detector Integration Plan
+
+| 子步骤 Sub-Step | 检测器 Detectors | 集成状态 Status |
+|----------------|-----------------|-----------------|
+| **Step 1.0** | **LLM Term Extractor (新建)** | **⏳ 待开发** |
+| Step 1.1 | SmartStructureAnalyzer + StructurePredictabilityAnalyzer | ⚠️ 部分集成 |
+| Step 1.2 | ParagraphLengthAnalysis + StructurePredictabilityAnalyzer | ⚠️ 部分集成 |
+| Step 1.3 | StructurePredictabilityAnalyzer | ⚠️ 待集成 |
+| Step 1.4 | TransitionAnalyzer + StructurePredictabilityAnalyzer | ✅ 已集成 |
+| Step 1.5 | AnchorDensityAnalyzer | ⚠️ 待集成 |
+
+### 13.4 用户交互模式 | User Interaction Pattern
+
+```
+每个子步骤的交互流程 Interaction Flow for Each Sub-Step:
+1. 检测 Detection → 显示问题列表 Display Issue List
+2. 用户点击问题 User Clicks Issue → 触发AI分析 Trigger AI Analysis
+3. AI提供 AI Provides:
+   - 改进建议 Improvement Suggestions
+   - 改写提示词 Rewrite Prompts
+   - 合并处理选项 Batch Processing Options
+4. 用户选择 User Chooses:
+   - 接受AI建议自动修改 Accept AI Auto-modify
+   - 手动修改 Manual Edit
+   - 跳过 Skip
+5. 完成后 After Completion → 传递给下一子步骤 Pass to Next Sub-Step
+```
+
+### 13.5 实现优先级 | Implementation Priority
+
+| 优先级 Priority | 子步骤 Sub-Step | 原因 Reason |
+|----------------|----------------|-------------|
+| **P0** | **Step 1.0 词汇锁定** | **必须首先完成，锁定词汇传递到所有后续LLM步骤** |
+| P1 | Step 1.4 连接词与衔接 | TransitionAnalyzer 已有，用户感知最强 |
+| P1 | Step 1.2 段落长度 | ParagraphLengthAnalysis 已有，实现简单 |
+| P2 | Step 1.3 推进模式与闭合 | 需完整集成 StructurePredictabilityAnalyzer |
+| P2 | Step 1.1 结构框架 | 需合并多个检测器 |
+| P3 | Step 1.5 内容实质性 | 需集成 AnchorDensityAnalyzer |
+
+> **Step 1.0 词汇锁定的核心功能**：
+> - LLM提取专业术语、专有名词、缩写词、高频核心词、关键词组
+> - 用户多选确认哪些词汇需要锁定
+> - 锁定词汇自动注入到后续所有LLM调用的Prompt中
+> - 支持跨Layer传递（Layer 5 → 4 → 3 → 2 → 1）
+
+**详细设计请参考 `doc/layer5-substep-design.md`**
+**For detailed design, see `doc/layer5-substep-design.md`**
+
+---
+
+## 十四、Layer 3 子步骤系统设计 | Layer 3 Sub-Step System Design
+
+> 状态 Status: 📋 设计完成，待实现 / Design Complete, Pending Implementation
+> 详细文档 Detailed Document: `doc/layer3-substep-design.md`
+> 创建日期 Created: 2026-01-07
+
+### 14.1 设计目标 | Design Goals
+
+将 Layer 3 (段落层) 的检测功能细化为6个有序的子步骤，整合所有已有的段落级检测器。
+
+Subdivide Layer 3 (Paragraph Layer) detection into 6 ordered sub-steps, integrating all existing paragraph-level detectors.
+
+### 14.2 子步骤概览 | Sub-Step Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    Layer 3: Paragraph Level Analysis                 │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  Step 3.0: 段落识别与分割 Paragraph Identification & Segmentation   │
+│  ├── 接收Section上下文 Receive section context from Layer 4        │
+│  ├── 正确识别段落边界 Identify paragraph boundaries                 │
+│  └── 过滤非正文内容 Filter non-body content                         │
+│                          ↓                                           │
+│  Step 3.1: 段落角色识别 Paragraph Role Detection                     │
+│  ├── 识别每个段落的功能角色 Identify functional role                 │
+│  └── 检测角色分布异常 Detect role distribution anomalies             │
+│                          ↓                                           │
+│  Step 3.2: 段落内部连贯性 Internal Coherence Analysis                │
+│  ├── 主语多样性分析 Subject diversity analysis                       │
+│  ├── 逻辑结构检测 Logic structure detection                          │
+│  └── 连接词密度分析 Connector density analysis                       │
+│                          ↓                                           │
+│  Step 3.3: 锚点密度分析 Anchor Density Analysis                      │
+│  ├── 13类学术锚点检测 Detect 13 types of academic anchors           │
+│  └── 幻觉风险评估 Hallucination risk assessment                      │
+│                          ↓                                           │
+│  Step 3.4: 段内句长分布 Sentence Length Distribution                 │
+│  ├── 计算段内句长变异系数 Calculate within-paragraph length CV       │
+│  └── 突发性分析 Burstiness analysis                                  │
+│                          ↓                                           │
+│  Step 3.5: 段落间过渡检测 Paragraph Transition Analysis              │
+│  ├── 相邻段落衔接分析 Adjacent paragraph transition analysis         │
+│  └── 提供语义桥接建议 Provide semantic bridging suggestions          │
+│                          ↓                                           │
+│              传递段落上下文到 Layer 2 (Sentence)                      │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### 14.3 检测器集成方案 | Detector Integration Plan
+
+| 子步骤 Sub-Step | 检测器 Detectors | 集成状态 Status |
+|----------------|-----------------|-----------------|
+| Step 3.0 | SentenceSegmenter (content type detection) | ✅ 已有 |
+| Step 3.1 | LLM Role Classifier + Keyword patterns | ⚠️ 部分集成 |
+| Step 3.2 | ParagraphLogicAnalyzer | ✅ 已集成 |
+| Step 3.3 | AnchorDensityAnalyzer | ✅ 已集成 |
+| Step 3.4 | Statistical CV + BurstinessAnalyzer | ✅ 已集成 |
+| Step 3.5 | TransitionAnalyzer + LLM suggestions | ✅ 已集成 |
+
+### 14.4 与Layer 5/Layer 4的对比 | Comparison
+
+| 层级 Layer | 基础步骤 (X.0) | 主要步骤 | 关注点 Focus |
+|-----------|---------------|---------|-------------|
+| **Layer 5** | 1.0 词汇锁定 | 1.1-1.5 | 全文结构、章节顺序、段落长度、连接词 |
+| **Layer 4** | 2.0 章节识别 | 2.1-2.5 | 章节顺序、长度分布、相似性、过渡、逻辑 |
+| **Layer 3** | 3.0 段落识别 | 3.1-3.5 | 段落角色、连贯性、锚点、句长、过渡 |
+
+### 14.5 实现优先级 | Implementation Priority
+
+| 优先级 Priority | 子步骤 Sub-Step | 原因 Reason |
+|----------------|----------------|-------------|
+| **P0** | Step 3.0 段落识别 | 基础步骤，所有后续步骤依赖 |
+| **P1** | Step 3.2 内部连贯性 | ParagraphLogicAnalyzer已有 |
+| **P1** | Step 3.3 锚点密度 | AnchorDensityAnalyzer已有 |
+| **P2** | Step 3.4 句长分布 | 统计计算简单 |
+| **P2** | Step 3.1 段落角色 | 需要LLM支持 |
+| **P3** | Step 3.5 过渡检测 | TransitionAnalyzer已有 |
+
+**详细设计请参考 `doc/layer3-substep-design.md`**
+**For detailed design, see `doc/layer3-substep-design.md`**
+
+---
+
+## 十五、Layer 2 子步骤系统设计 | Layer 2 Sub-Step System Design
+
+> 状态 Status: 📋 设计完成，待实现 / Design Complete, Pending Implementation
+> 详细文档 Detailed Document: `doc/layer2-substep-design.md`
+> 创建日期 Created: 2026-01-08
+
+### 15.1 设计目标 | Design Goals
+
+将 Layer 2 (句子层) 的检测与改写功能细化为6个有序的子步骤。**核心理念**：不是单独分析某一个句子，而是在**段落尺度**上分析每个句子的句式、逻辑、长短、框架等，实现句子级的合并、拆分、多样化改写。
+
+Subdivide Layer 2 (Sentence Layer) detection and rewriting into 6 ordered sub-steps. **Core Philosophy**: Analyze each sentence within the **paragraph context**, not in isolation. Perform sentence merging, splitting, and diversification to reduce AIGC detection.
+
+### 15.2 子步骤概览 | Sub-Step Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    Layer 2: Sentence Level Analysis                   │
+│                    句子级分析（基于段落上下文，非孤立分析）            │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  Step 4.0: 句子识别与标注 Sentence Identification & Labeling        │
+│  ├── 接收段落上下文 Receive paragraph context from Layer 3          │
+│  ├── 分割段落为句子 Split paragraphs into sentences                 │
+│  └── 标注句子类型和功能 Label sentence type and function            │
+│                          ↓                                           │
+│  Step 4.1: 句式结构分析 Sentence Pattern Analysis                    │
+│  ├── 分析句式类型分布 Analyze sentence type distribution            │
+│  ├── 检测句首词汇重复 Detect sentence opener repetition             │
+│  ├── 分析语态分布 Analyze voice distribution (active/passive)       │
+│  └── 检测从句嵌套深度 Detect subordinate clause depth               │
+│                          ↓                                           │
+│  Step 4.2: 段内句长分析 In-Paragraph Length Analysis                 │
+│  ├── 计算每段内的句长分布 Calculate length distribution per para    │
+│  ├── 检测句长均匀性 Detect length uniformity (CV < 0.25)           │
+│  └── 生成合并/拆分候选 Generate merge/split candidates              │
+│                          ↓                                           │
+│  Step 4.3: 句子合并建议 Sentence Merger Suggestions                  │
+│  ├── 识别语义相近的相邻句子 Identify semantically related pairs     │
+│  ├── 生成嵌套从句合并方案 Generate nested clause combinations       │
+│  └── 评估合并后的可读性 Evaluate readability after merge            │
+│                          ↓                                           │
+│  Step 4.4: 句间连接词优化 Inter-Sentence Connector Optimization      │
+│  ├── 检测句间显性连接词 Detect explicit sentence connectors         │
+│  ├── 提供隐性连接替代方案 Provide implicit alternatives             │
+│  └── 删除冗余连接词 Remove redundant connectors                     │
+│                          ↓                                           │
+│  Step 4.5: 句式多样化改写 Pattern Diversification & Rewriting        │
+│  ├── 变换句子开头 Transform sentence openers                        │
+│  ├── 调整语态 Switch voice (active↔passive)                         │
+│  ├── 添加倒装/强调结构 Add inversion/emphasis structures            │
+│  └── 综合改写建议 Comprehensive rewrite suggestions                 │
+│                          ↓                                           │
+│              传递句子上下文到 Layer 1 (Lexical)                       │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### 15.3 检测维度与阈值 | Detection Dimensions & Thresholds
+
+| 检测维度 Dimension | AI特征阈值 | 人类特征目标 | 说明 |
+|-------------------|-----------|-------------|------|
+| 简单句比例 | > 60% | 40-60% | 句式类型分布 |
+| 句长CV (段内) | < 0.25 | ≥ 0.35 | 句长变异系数 |
+| 句首词重复率 | > 30% | < 20% | 同一开头词频率 |
+| "The" 开头比例 | > 40% | < 25% | 定冠词开头 |
+| 显性连接词比例 | > 40% | < 25% | Furthermore等 |
+| 被动句比例 | < 10% | 15-30% | 语态平衡 |
+| 从句嵌套深度 | < 1.2 | ≥ 1.5 | 句式复杂度 |
+
+### 15.4 核心操作 | Core Operations
+
+| 操作类型 Operation | 说明 Description | 目标 Goal |
+|-------------------|-----------------|----------|
+| **增加句式多样性** | 打破 SVO 单一模式 | 降低句式检测率 |
+| **调整句子** | 变换句子开头、语态、语序 | 增加随机性 |
+| **合并句子** | 将语义相近的短句合并为复杂长句（嵌套从句） | 增加句长变异 |
+| **拆分句子** | 将过长的句子拆分为短句 | 增加节奏变化 |
+| **修正显性连接词** | 删除或替换 Furthermore/Moreover 等 | 降低连接词检测 |
+
+### 15.5 合并策略 | Merge Strategies
+
+| 合并类型 Merge Type | 使用从句 Subordinate | 示例 Example |
+|--------------------|---------------------|--------------|
+| 因果关系 Causal | because, since, as | "A happens. B results." → "Since A happens, B results." |
+| 对比关系 Contrast | although, while, whereas | "A is true. B differs." → "Although A is true, B differs." |
+| 时序关系 Temporal | when, after, before | "A occurred. Then B." → "After A occurred, B happened." |
+| 补充关系 Addition | which, that, where | "A exists. A has property." → "A, which has property, exists." |
+| 条件关系 Conditional | if, provided, unless | "A is needed. B follows." → "If A is provided, B follows." |
+
+### 15.6 实现优先级 | Implementation Priority
+
+| 优先级 Priority | 子步骤 Sub-Step | 原因 Reason |
+|----------------|----------------|-------------|
+| **P0** | Step 4.0 句子识别 | 基础步骤，所有后续步骤依赖 |
+| **P1** | Step 4.1 句式结构分析 | 核心检测，用户感知强 |
+| **P1** | Step 4.2 段内句长分析 | 与Layer 3关联，数据可复用 |
+| **P2** | Step 4.4 连接词优化 | 规则明确，实现简单 |
+| **P2** | Step 4.3 句子合并 | 需要LLM支持，复杂度高 |
+| **P3** | Step 4.5 多样化改写 | 综合步骤，依赖前面所有步骤 |
+
+### 15.7 与Layer 3的关键区别 | Key Differences from Layer 3
+
+| 特点 Feature | Layer 3 (段落) | Layer 2 (句子) |
+|-------------|---------------|---------------|
+| **分析单元** | 段落作为整体 | 段落内的每个句子 |
+| **上下文** | 章节上下文 | 段落上下文 |
+| **操作类型** | 检测+建议 | 检测+合并/拆分/改写 |
+| **LLM使用** | 分析+建议 | 分析+改写+生成 |
+| **用户交互** | 确认问题 | 确认改写结果 |
+
+**详细设计请参考 `doc/layer2-substep-design.md`**
+**For detailed design, see `doc/layer2-substep-design.md`**
+
+---
+
+## 十六、Layer 1 子步骤系统设计 | Layer 1 Sub-Step System Design
+
+> 状态 Status: 📋 设计完成，待实现 / Design Complete, Pending Implementation
+> 详细文档 Detailed Document: `doc/layer1-substep-design.md`
+> 创建日期 Created: 2026-01-08
+
+### 16.1 设计目标 | Design Goals
+
+将 Layer 1 (词汇层) 的检测与改写功能细化为6个有序的子步骤。**核心理念**：在**段落尺度上**综合分析词汇问题，先分析后改写，同时消除AIGC指纹和增加人类写作特征。
+
+Subdivide Layer 1 (Lexical Layer) detection and rewriting into 6 ordered sub-steps. **Core Philosophy**: Analyze vocabulary issues at the **paragraph level**, analyze first then rewrite, eliminating AIGC fingerprints while adding human writing features.
+
+### 16.2 子步骤概览 | Sub-Step Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    Layer 1: Lexical Level Analysis                   │
+│                    词汇级分析（先分析后改写，段落为单位）              │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  Step 5.0: 词汇环境准备 (Lexical Context Preparation)               │
+│  ├── 接收句子层上下文 Receive sentence context from Layer 2        │
+│  ├── 继承锁定词汇列表 Inherit locked terms from Step 1.0           │
+│  └── 建立段落-词汇映射 Build paragraph-term mapping                │
+│                          ↓                                           │
+│  Step 5.1: AIGC指纹词检测 (AIGC Fingerprint Detection)              │
+│  ├── Type A死证词检测 Detect Dead Giveaway words                   │
+│  ├── Type B学术陈词检测 Detect Academic Cliché words               │
+│  ├── Type C指纹短语检测 Detect Fingerprint phrases                 │
+│  └── 按段落统计分布 Per-paragraph distribution statistics          │
+│                          ↓                                           │
+│  Step 5.2: 人类特征词汇分析 (Human Feature Vocabulary Analysis)     │
+│  ├── 检测人类学术动词覆盖 Detect human academic verb coverage      │
+│  ├── 检测人类形容词覆盖 Detect human adjective coverage            │
+│  ├── 计算人类特征得分 Calculate human feature score                │
+│  └── 识别可注入人类特征的位置 Identify injection points            │
+│                          ↓                                           │
+│  Step 5.3: 替换候选生成 (Replacement Candidate Generation)          │
+│  ├── 为每个AIGC指纹词生成候选 Generate candidates per fingerprint  │
+│  ├── 考虑上下文语义适配 Consider contextual semantic fitness        │
+│  ├── 优先选择人类特征词 Prefer human feature words                 │
+│  └── 生成规则建议(Track B) Generate rule-based suggestions         │
+│                          ↓                                           │
+│  Step 5.4: LLM段落级改写 (LLM Paragraph-Level Rewriting)            │
+│  ├── 按段落为单位批量改写 Batch rewrite by paragraph               │
+│  ├── 传入AIGC问题分析 Pass AIGC issue analysis                     │
+│  ├── 传入人类特征目标 Pass human feature targets                   │
+│  ├── 保护锁定词汇 Protect locked terms                             │
+│  └── 应用学术写作规范 Apply academic writing norms                 │
+│                          ↓                                           │
+│  Step 5.5: 改写结果验证 (Rewrite Result Validation)                 │
+│  ├── 语义相似度验证 Semantic similarity validation (≥0.85)        │
+│  ├── AIGC风险降低评估 AIGC risk reduction assessment               │
+│  ├── 人类特征提升评估 Human feature improvement assessment         │
+│  └── 学术规范检查 Academic norm verification                       │
+│                          ↓                                           │
+│              输出最终文本和分析报告 Output final text & report       │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### 16.3 AIGC与人类词汇特征库 | AIGC vs Human Vocabulary Database
+
+基于 `words.csv` 和 `AIGC_vs_Human_Academic_Lexicon.xlsx` 的统计规律：
+
+| 类别 Category | 词汇示例 Examples | 权重 Weight |
+|--------------|------------------|-------------|
+| **AIGC Type A (死证词)** | delve, tapestry, multifaceted, pivotal, realm | 99-93 |
+| **AIGC Type B (学术陈词)** | comprehensive, robust, leverage, facilitate | 91-84 |
+| **AIGC Phrases (指纹短语)** | "plays a crucial role", "in the realm of" | 92-75 |
+| **Human Verbs (人类动词)** | examine, argue, suggest, demonstrate, identify | 95-82 |
+| **Human Adjectives (人类形容词)** | significant, empirical, specific, consistent | 98-85 |
+| **Human Phrases (人类短语)** | "results indicate", "in contrast to", "data suggest" | 95-82 |
+
+### 16.4 检测指标阈值 | Detection Metric Thresholds
+
+| 指标 Metric | AI特征阈值 | 人类特征目标 | 说明 |
+|------------|-----------|-------------|------|
+| Type A指纹词数量 | > 0 | = 0 | 死证词必须清除 |
+| Type B指纹词密度 | > 2% | < 1% | 每100词中的占比 |
+| 人类动词覆盖率 | < 10% | ≥ 15% | 目标词汇覆盖 |
+| 人类形容词覆盖率 | < 5% | ≥ 10% | 目标词汇覆盖 |
+| 人类短语出现率 | < 2% | ≥ 5% | 目标短语出现 |
+
+### 16.5 实现优先级 | Implementation Priority
+
+| 优先级 Priority | 子步骤 Sub-Step | 原因 Reason |
+|----------------|----------------|-------------|
+| **P0** | Step 5.0 词汇环境准备 | 基础步骤，所有后续步骤依赖 |
+| **P0** | Step 5.1 AIGC指纹检测 | 核心检测，已有基础实现 |
+| **P1** | Step 5.4 LLM段落级改写 | 核心改写功能，用户感知最强 |
+| **P1** | Step 5.5 改写结果验证 | 质量保障，必须与改写同步 |
+| **P2** | Step 5.2 人类特征分析 | 增强功能，提升改写质量 |
+| **P2** | Step 5.3 替换候选生成 | 支持双轨建议，可渐进实现 |
+
+### 16.6 与现有系统的关系 | Relationship with Existing System
+
+| 组件 Component | 集成方式 Integration |
+|----------------|---------------------|
+| `lexical_orchestrator.py` | Step 5.1 复用现有指纹检测逻辑 |
+| `llm_track.py` | Step 5.4 使用 LLMTrack 生成建议 |
+| `rule_track.py` | Step 5.3/5.4 使用 RuleTrack 生成候选 |
+| 锁定词汇系统 | 从 `get_locked_terms_from_session()` 获取 |
+
+**详细设计请参考 `doc/layer1-substep-design.md`**
+**For detailed design, see `doc/layer1-substep-design.md`**

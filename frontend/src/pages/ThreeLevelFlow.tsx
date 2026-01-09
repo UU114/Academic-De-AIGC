@@ -1,3 +1,25 @@
+/**
+ * ============================================
+ * DEPRECATED: Legacy ThreeLevelFlow Page
+ * 已废弃：旧版三级流程页面
+ * ============================================
+ *
+ * This page uses the OLD API structure:
+ * - /api/v1/structure (structureApi)
+ * - /api/v1/transition (transitionApi)
+ * - /api/v1/flow (flowApi)
+ * - /api/v1/paragraph (paragraphApi)
+ *
+ * Users should use the NEW 5-layer architecture instead:
+ * - Entry: /flow/term-lock/:documentId
+ * - Then: /flow/layer5-step1-1/:documentId and subsequent steps
+ * - API: /api/v1/analysis
+ *
+ * DO NOT DELETE - kept for backward compatibility
+ * 请勿删除 - 保留用于向后兼容
+ * ============================================
+ */
+
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {

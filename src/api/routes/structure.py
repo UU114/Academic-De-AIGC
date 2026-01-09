@@ -1,4 +1,21 @@
 """
+============================================
+DEPRECATED: Legacy Structure Analysis API
+已废弃：旧版结构分析API
+============================================
+
+This module uses the OLD API structure and is superseded by:
+- New 5-Layer Analysis API: /api/v1/analysis/document/*
+- Located at: src/api/routes/analysis/document.py
+
+Frontend should use:
+- LayerStep1_1.tsx through LayerStep1_5.tsx
+- documentLayerApi from analysisApi.ts
+
+DO NOT DELETE - kept for backward compatibility
+请勿删除 - 保留用于向后兼容
+============================================
+
 Structure Analysis API Routes (Level 1 De-AIGC)
 结构分析 API 路由（Level 1 De-AIGC）
 

@@ -1,0 +1,146 @@
+{
+  "metadata": {
+    "version": "1.0",
+    "description": "Human academic writing feature vocabulary database",
+    "source": "words.csv analysis",
+    "created": "2026-01-08"
+  },
+  "verbs": {
+    "high_frequency": {
+      "examine": {"weight": 95, "usage": "specific investigation"},
+      "argue": {"weight": 92, "usage": "stating position"},
+      "suggest": {"weight": 90, "usage": "hedging conclusion"},
+      "conduct": {"weight": 88, "usage": "doing research"},
+      "demonstrate": {"weight": 87, "usage": "showing proof"},
+      "observe": {"weight": 86, "usage": "noting data"},
+      "report": {"weight": 85, "usage": "stating findings"},
+      "identify": {"weight": 84, "usage": "pinpointing"},
+      "imply": {"weight": 82, "usage": "indirect suggestion"},
+      "address": {"weight": 80, "usage": "dealing with topic"},
+      "investigate": {"weight": 88, "usage": "researching"},
+      "measure": {"weight": 85, "usage": "quantifying"},
+      "calculate": {"weight": 85, "usage": "math operation"},
+      "analyze": {"weight": 88, "usage": "examining data"},
+      "compare": {"weight": 80, "usage": "looking at differences"},
+      "contrast": {"weight": 80, "usage": "looking at opposites"},
+      "validate": {"weight": 82, "usage": "confirming"},
+      "corroborate": {"weight": 85, "usage": "supporting evidence"},
+      "postulate": {"weight": 80, "usage": "hypothesizing"},
+      "interpret": {"weight": 82, "usage": "explaining meaning"},
+      "assess": {"weight": 84, "usage": "evaluating"},
+      "determine": {"weight": 83, "usage": "finding out"},
+      "evaluate": {"weight": 82, "usage": "judging value"},
+      "propose": {"weight": 80, "usage": "suggesting plan"},
+      "establish": {"weight": 78, "usage": "setting up proof"}
+    },
+    "target_coverage": 0.15
+  },
+  "adjectives": {
+    "high_frequency": {
+      "significant": {"weight": 98, "usage": "statistical meaning"},
+      "associated": {"weight": 96, "usage": "correlation"},
+      "specific": {"weight": 94, "usage": "precise"},
+      "empirical": {"weight": 92, "usage": "data-based"},
+      "consistent": {"weight": 90, "usage": "matching"},
+      "distinct": {"weight": 88, "usage": "separate"},
+      "respective": {"weight": 86, "usage": "order-based"},
+      "preliminary": {"weight": 85, "usage": "initial stage"},
+      "potential": {"weight": 84, "usage": "possible hedging"},
+      "particular": {"weight": 88, "usage": "specific instance"},
+      "quantitative": {"weight": 90, "usage": "numerical"},
+      "qualitative": {"weight": 90, "usage": "non-numerical"},
+      "longitudinal": {"weight": 85, "usage": "over time"},
+      "cross-sectional": {"weight": 85, "usage": "one point in time"},
+      "limited": {"weight": 88, "usage": "scope restriction"},
+      "valid": {"weight": 85, "usage": "logically sound"},
+      "reliable": {"weight": 85, "usage": "consistent results"},
+      "subsequent": {"weight": 82, "usage": "following"},
+      "prior": {"weight": 85, "usage": "previous"},
+      "given": {"weight": 80, "usage": "assuming"},
+      "apparent": {"weight": 75, "usage": "seeming"},
+      "plausible": {"weight": 80, "usage": "reasonable"}
+    },
+    "target_coverage": 0.10
+  },
+  "adverbs": {
+    "high_frequency": {
+      "conversely": {"weight": 82, "usage": "on the other hand"},
+      "notably": {"weight": 80, "usage": "worth mention"},
+      "respectively": {"weight": 85, "usage": "order listing"}
+    },
+    "target_coverage": 0.05
+  },
+  "nouns": {
+    "high_frequency": {
+      "evidence": {"weight": 97, "usage": "proof"},
+      "findings": {"weight": 96, "usage": "results"},
+      "limitation": {"weight": 95, "usage": "weakness of study"},
+      "discrepancy": {"weight": 92, "usage": "difference"},
+      "correlation": {"weight": 90, "usage": "statistical link"},
+      "participant": {"weight": 89, "usage": "subject"},
+      "variable": {"weight": 88, "usage": "changed factor"},
+      "hypothesis": {"weight": 87, "usage": "prediction"},
+      "methodology": {"weight": 86, "usage": "how it was done"},
+      "extent": {"weight": 84, "usage": "scope/degree"},
+      "analysis": {"weight": 90, "usage": "review of data"},
+      "cohort": {"weight": 85, "usage": "group of subjects"},
+      "deviation": {"weight": 88, "usage": "variance"},
+      "variance": {"weight": 88, "usage": "difference"},
+      "implication": {"weight": 85, "usage": "consequence"},
+      "scope": {"weight": 82, "usage": "range"},
+      "protocol": {"weight": 84, "usage": "procedure"},
+      "literature": {"weight": 85, "usage": "previous work"},
+      "phenomenon": {"weight": 80, "usage": "occurrence"},
+      "mechanism": {"weight": 82, "usage": "how it works"},
+      "effect": {"weight": 85, "usage": "result"},
+      "causality": {"weight": 88, "usage": "cause and effect"},
+      "bias": {"weight": 85, "usage": "skew"},
+      "validity": {"weight": 85, "usage": "accuracy"}
+    },
+    "target_coverage": 0.08
+  },
+  "phrases": {
+    "high_frequency": {
+      "results indicate": {"weight": 95, "usage": "data driven"},
+      "in contrast to": {"weight": 94, "usage": "comparison"},
+      "to our knowledge": {"weight": 92, "usage": "scope limitation"},
+      "it is argued": {"weight": 90, "usage": "theoretical stance"},
+      "data suggest": {"weight": 89, "usage": "evidence based"},
+      "consistent with": {"weight": 88, "usage": "literature alignment"},
+      "future research": {"weight": 87, "usage": "next steps"},
+      "standard deviation": {"weight": 90, "usage": "statistical term"},
+      "on the contrary": {"weight": 80, "usage": "rebuttal"},
+      "in summary": {"weight": 80, "usage": "brief conclusion"},
+      "account for": {"weight": 82, "usage": "explain"},
+      "stem from": {"weight": 80, "usage": "origin"},
+      "subject to": {"weight": 78, "usage": "dependent on"},
+      "within the scope": {"weight": 85, "usage": "limitation"},
+      "focus on": {"weight": 80, "usage": "direction"},
+      "difference between": {"weight": 85, "usage": "comparison"},
+      "relationship between": {"weight": 85, "usage": "correlation"}
+    },
+    "target_coverage": 0.05
+  },
+  "hedging": {
+    "markers": {
+      "may": {"weight": 90, "type": "modal"},
+      "might": {"weight": 85, "type": "modal"},
+      "could": {"weight": 85, "type": "modal"},
+      "would": {"weight": 80, "type": "modal"},
+      "suggests": {"weight": 90, "type": "verb"},
+      "indicates": {"weight": 85, "type": "verb"},
+      "appears": {"weight": 88, "type": "verb"},
+      "seems": {"weight": 85, "type": "verb"},
+      "likely": {"weight": 85, "type": "adverb"},
+      "possibly": {"weight": 80, "type": "adverb"},
+      "potentially": {"weight": 82, "type": "adverb"},
+      "approximately": {"weight": 78, "type": "adverb"},
+      "relatively": {"weight": 75, "type": "adverb"},
+      "somewhat": {"weight": 70, "type": "adverb"},
+      "tend to": {"weight": 85, "type": "phrase"},
+      "appear to": {"weight": 88, "type": "phrase"},
+      "seem to": {"weight": 85, "type": "phrase"}
+    },
+    "target_coverage": 0.08
+  }
+}

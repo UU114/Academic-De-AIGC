@@ -1,6 +1,9 @@
 """
 Rule-based suggestion track (Track B)
 基于规则的建议轨道（轨道B）
+
+Integrates with Step 1.0 Term Locking to protect locked terms during rewriting.
+集成步骤1.0词汇锁定，在改写过程中保护锁定的术语。
 """
 
 import re
@@ -11,6 +14,32 @@ from typing import List, Dict, Any, Optional, Tuple
 from src.config import ColloquialismConfig
 
 logger = logging.getLogger(__name__)
+
+
+def get_locked_terms_from_session(session_id: Optional[str]) -> List[str]:
+    """
+    Get locked terms from session for rule-based processing
+    从会话中获取锁定术语以用于规则处理
+
+    Args:
+        session_id: Session identifier (optional)
+
+    Returns:
+        List of locked terms, or empty list if none
+    """
+    if not session_id:
+        return []
+
+    try:
+        # Import here to avoid circular imports
+        from src.api.routes.analysis.term_lock import get_session_locked_terms
+        return get_session_locked_terms(session_id)
+    except ImportError:
+        logger.warning("Could not import term_lock module")
+        return []
+    except Exception as e:
+        logger.warning(f"Could not get locked terms: {e}")
+        return []
 
 
 @dataclass
@@ -530,15 +559,23 @@ class RuleTrack:
         },
     }
 
-    def __init__(self, colloquialism_level: int = 4):
+    def __init__(self, colloquialism_level: int = 4, session_id: Optional[str] = None):
         """
         Initialize rule track
 
         Args:
             colloquialism_level: Target formality level (0-10)
+            session_id: Optional session ID for accessing locked terms from Step 1.0
         """
         self.level = colloquialism_level
+        self.session_id = session_id
         self.style_category = self._get_style_category()
+
+        # Load locked terms from session (Step 1.0)
+        # 从会话加载锁定术语（步骤1.0）
+        self.session_locked_terms = get_locked_terms_from_session(session_id)
+        if self.session_locked_terms:
+            logger.info(f"RuleTrack loaded {len(self.session_locked_terms)} locked terms from session {session_id}")
 
     def _get_style_category(self) -> str:
         """Get style category based on level"""
@@ -562,28 +599,34 @@ class RuleTrack:
         Args:
             sentence: Original sentence
             issues: Detected issues
-            locked_terms: Terms to protect
+            locked_terms: Terms to protect (in addition to session locked terms)
 
         Returns:
             RuleSuggestionResult with rewritten sentence and changes
         """
+        # Merge session locked terms with passed locked_terms (Step 1.0 integration)
+        # 合并会话锁定术语与传入的锁定术语（步骤1.0集成）
+        all_locked_terms = list(set(self.session_locked_terms + (locked_terms or [])))
+        if all_locked_terms and len(all_locked_terms) != len(locked_terms or []):
+            logger.debug(f"RuleTrack merged locked terms: {len(locked_terms or [])} passed + {len(self.session_locked_terms)} session = {len(all_locked_terms)} total")
+
         rewritten = sentence
         changes = []
 
         # Step 1: Replace phrases first (longer patterns)
         # 步骤1: 首先替换短语（较长的模式）
-        rewritten, phrase_changes = self._replace_phrases(rewritten, locked_terms)
+        rewritten, phrase_changes = self._replace_phrases(rewritten, all_locked_terms)
         changes.extend(phrase_changes)
 
         # Step 2: Replace individual words
         # 步骤2: 替换单个词
-        rewritten, word_changes = self._replace_words(rewritten, locked_terms)
+        rewritten, word_changes = self._replace_words(rewritten, all_locked_terms)
         changes.extend(word_changes)
 
         # Step 3: Apply syntax adjustments if needed
         # 步骤3: 如果需要则应用句法调整
         if self._needs_syntax_adjustment(rewritten, issues):
-            rewritten, syntax_changes = self._adjust_syntax(rewritten, locked_terms)
+            rewritten, syntax_changes = self._adjust_syntax(rewritten, all_locked_terms)
             changes.extend(syntax_changes)
 
         # Calculate predicted risk (simplified)

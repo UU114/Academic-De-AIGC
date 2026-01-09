@@ -625,9 +625,18 @@ async def update_session_step(
     Update current step for a session
     更新会话的当前步骤
 
-    Valid steps: step1-1, step1-2, step2, step3, review
+    Valid steps:
+    - Legacy: step1-1, step1-2, step2, step3, review
+    - 5-Layer: term-lock, layer-document, layer-section, layer-paragraph, layer-sentence, layer-lexical
     """
-    valid_steps = ["step1-1", "step1-2", "step2", "step3", "review"]
+    valid_steps = [
+        # Legacy steps (旧版步骤)
+        "step1-1", "step1-2", "step2", "step3", "review",
+        # 5-Layer architecture steps (5层架构步骤)
+        # Step 1.0: Term Locking (must be first)
+        "term-lock",
+        "layer-document", "layer-section", "layer-paragraph", "layer-sentence", "layer-lexical"
+    ]
     if step not in valid_steps:
         raise HTTPException(
             status_code=400,

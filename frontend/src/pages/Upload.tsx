@@ -191,9 +191,9 @@ export default function Upload() {
         return;
       }
 
-      // Intervention mode: Navigate to Step 1-1 (document structure analysis) with mode and session
-      // 干预模式：导航到 Step 1-1（文档结构分析），带上模式和会话ID
-      navigate(`/flow/step1-1/${documentId}?mode=${sessionMode}&session=${sessionResult.sessionId}`);
+      // Intervention mode: Navigate to Step 1.0 (Term Lock - must run before all layers) with mode and session
+      // 干预模式：导航到步骤1.0（术语锁定 - 必须在所有层之前运行），带上模式和会话ID
+      navigate(`/flow/term-lock/${documentId}?mode=${sessionMode}&session=${sessionResult.sessionId}`);
     } catch (err) {
       setError((err as Error).message || '处理失败，请重试');
       setIsUploading(false);

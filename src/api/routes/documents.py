@@ -3,9 +3,16 @@ Document management API routes
 文档管理API路由
 
 CAASS v2.0 Phase 2: Added paragraph context baseline and whitelist extraction
+
+Security Features:
+- File size limit validation
+- File extension validation
+- MIME type validation (if python-magic is installed)
 """
 
 import uuid
+import io
+import logging
 from datetime import datetime
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,6 +21,26 @@ from typing import List, Dict, Optional
 from pydantic import BaseModel
 
 from src.db.database import get_db
+
+# Try to import python-magic for MIME validation
+# 尝试导入python-magic用于MIME验证
+try:
+    import magic
+    MAGIC_AVAILABLE = True
+except ImportError:
+    MAGIC_AVAILABLE = False
+    logging.warning(
+        "python-magic not installed. MIME type validation disabled. "
+        "Install with: pip install python-magic (Linux/macOS) or pip install python-magic-bin (Windows)"
+    )
+
+# Try to import python-docx for additional .docx validation
+# 尝试导入python-docx进行额外的.docx验证
+try:
+    from docx import Document as DocxDocument
+    DOCX_AVAILABLE = True
+except ImportError:
+    DOCX_AVAILABLE = False
 from src.db.models import Document, Sentence as SentenceModel
 from src.api.schemas import DocumentInfo
 from src.core.preprocessor.segmenter import SentenceSegmenter
@@ -128,6 +155,54 @@ async def upload_document(
                 "message_zh": f"文件大小超过 {settings.max_file_size_mb}MB 限制"
             }
         )
+
+    # Security: MIME type validation (if python-magic is available)
+    # 安全：MIME类型验证（如果python-magic可用）
+    if MAGIC_AVAILABLE:
+        mime_type = magic.from_buffer(content, mime=True)
+        allowed_mimes = {
+            'text/plain',  # .txt files
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',  # .docx files
+            'application/octet-stream',  # Sometimes returned for binary files, will verify extension
+        }
+
+        # Allow application/octet-stream only for .docx files
+        # 仅对.docx文件允许application/octet-stream
+        if mime_type == 'application/octet-stream' and file_ext != '.docx':
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_file_content",
+                    "message": f"File content does not match expected type. Detected: {mime_type}",
+                    "message_zh": f"文件内容与预期类型不匹配。检测到: {mime_type}"
+                }
+            )
+        elif mime_type not in allowed_mimes:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_file_content",
+                    "message": f"Invalid file content type. Detected: {mime_type}",
+                    "message_zh": f"文件内容类型无效。检测到: {mime_type}"
+                }
+            )
+
+    # Security: Validate .docx structure (if python-docx is available)
+    # 安全：验证.docx结构（如果python-docx可用）
+    if file_ext == '.docx' and DOCX_AVAILABLE:
+        try:
+            # Try to parse the docx file to ensure it's valid
+            # 尝试解析docx文件以确保其有效
+            DocxDocument(io.BytesIO(content))
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_docx",
+                    "message": f"Invalid or corrupted DOCX file: {str(e)}",
+                    "message_zh": f"无效或损坏的DOCX文件: {str(e)}"
+                }
+            )
 
     # Try to decode as UTF-8, fallback to latin-1
     # 尝试UTF-8解码，回退到latin-1
@@ -367,7 +442,8 @@ async def get_document(
         high_risk_count=high_count,
         medium_risk_count=medium_count,
         low_risk_count=low_count,
-        created_at=doc.created_at
+        created_at=doc.created_at,
+        original_text=doc.original_text  # Include text for 5-layer analysis
     )
 
 

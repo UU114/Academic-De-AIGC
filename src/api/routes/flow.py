@@ -1,4 +1,22 @@
 """
+============================================
+DEPRECATED: Legacy Three-Level Flow API
+已废弃：旧版三层级流程API
+============================================
+
+This module uses the OLD 3-level flow structure and is superseded by:
+- New 5-Layer Analysis Pipeline: /api/v1/analysis/pipeline/*
+- Located at: src/api/routes/analysis/pipeline.py
+
+Frontend should use:
+- LayerTermLock.tsx as entry point
+- Then LayerStep*_*.tsx pages
+- pipelineApi from analysisApi.ts
+
+DO NOT DELETE - kept for backward compatibility
+请勿删除 - 保留用于向后兼容
+============================================
+
 Three-Level Flow API Routes
 三层级流程 API 路由
 

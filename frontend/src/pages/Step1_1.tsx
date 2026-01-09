@@ -1,3 +1,23 @@
+/**
+ * ============================================
+ * DEPRECATED: Legacy Step1_1 Page
+ * 已废弃：旧版 Step1_1 页面
+ * ============================================
+ *
+ * This page uses the OLD API structure:
+ * - /api/v1/structure (structureApi)
+ * - /api/v1/session (sessionApi)
+ *
+ * Users should use the NEW 5-layer architecture instead:
+ * - Route: /flow/layer5-step1-1/:documentId
+ * - Component: LayerStep1_1
+ * - API: /api/v1/analysis/document/*
+ *
+ * DO NOT DELETE - kept for backward compatibility
+ * 请勿删除 - 保留用于向后兼容
+ * ============================================
+ */
+
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {

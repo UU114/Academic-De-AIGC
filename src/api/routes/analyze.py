@@ -1,4 +1,20 @@
 """
+============================================
+DEPRECATED: Legacy Text Analysis API Routes
+已废弃：旧版文本分析API路由
+============================================
+
+This module uses the OLD API structure and is superseded by:
+- New 5-Layer Analysis API: /api/v1/analysis/*
+- Located at: src/api/routes/analysis/
+
+Frontend should use:
+- analysisApi.ts instead of api.ts for analysis
+
+DO NOT DELETE - kept for backward compatibility
+请勿删除 - 保留用于向后兼容
+============================================
+
 Text analysis API routes
 文本分析API路由
 """

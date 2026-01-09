@@ -1,4 +1,21 @@
 """
+============================================
+DEPRECATED: Legacy Paragraph Analysis API
+已废弃：旧版段落分析API
+============================================
+
+This module uses the OLD API structure and is superseded by:
+- New 5-Layer Analysis API: /api/v1/analysis/paragraph/*
+- Located at: src/api/routes/analysis/paragraph.py
+
+Frontend should use:
+- LayerStep3_0.tsx through LayerStep3_5.tsx
+- paragraphLayerApi from analysisApi.ts
+
+DO NOT DELETE - kept for backward compatibility
+请勿删除 - 保留用于向后兼容
+============================================
+
 Paragraph-level analysis and restructuring API
 段落级分析与重组API
 

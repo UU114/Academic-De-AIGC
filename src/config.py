@@ -158,10 +158,24 @@ class Settings(BaseSettings):
     # ==========================================
     jwt_secret_key: str = Field(
         default="dev-secret-key-change-in-production",
-        description="Secret key for JWT token signing"
+        description="Secret key for JWT token signing. MUST be changed in production!"
     )
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 60 * 24  # 24 hours
+
+    # Internal service authentication secret for microservice communication
+    # 内网服务间通信认证密钥
+    internal_service_secret: Optional[str] = Field(
+        default=None,
+        description="Secret key for internal service-to-service authentication"
+    )
+
+    # Payment webhook verification secret
+    # 支付回调验证密钥
+    payment_webhook_secret: Optional[str] = Field(
+        default=None,
+        description="Secret key for verifying payment webhook signatures"
+    )
 
     # ==========================================
     # Admin Configuration
@@ -207,6 +221,48 @@ class Settings(BaseSettings):
         检查管理员访问是否已配置
         """
         return bool(self.admin_secret_key)
+
+    def is_jwt_key_secure(self) -> bool:
+        """
+        Check if JWT secret key is secure (not using default value)
+        检查JWT密钥是否安全（未使用默认值）
+        """
+        insecure_defaults = [
+            "dev-secret-key-change-in-production",
+            "secret",
+            "changeme",
+            "your-secret-key",
+        ]
+        return (
+            self.jwt_secret_key not in insecure_defaults
+            and len(self.jwt_secret_key) >= 32
+        )
+
+    def validate_production_security(self) -> list:
+        """
+        Validate security configuration for production
+        验证生产环境安全配置
+
+        Returns list of security warnings
+        返回安全警告列表
+        """
+        warnings = []
+
+        if not self.is_debug_mode():
+            # Check JWT key
+            if not self.is_jwt_key_secure():
+                warnings.append(
+                    "JWT_SECRET_KEY is insecure. Generate a strong key with: "
+                    "python -c 'import secrets; print(secrets.token_urlsafe(32))'"
+                )
+
+            # Check admin key
+            if self.is_admin_configured() and len(self.admin_secret_key or "") < 16:
+                warnings.append(
+                    "ADMIN_SECRET_KEY is too short. Use at least 16 characters."
+                )
+
+        return warnings
 
     class Config:
         env_file = ".env"

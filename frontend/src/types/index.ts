@@ -155,6 +155,9 @@ export interface DocumentInfo {
   mediumRiskCount: number;
   lowRiskCount: number;
   createdAt: string;
+  // Original text content (returned by API when available)
+  // 原始文本内容（API 返回时可用）
+  originalText?: string;
 }
 
 // Session step type

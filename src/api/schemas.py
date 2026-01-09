@@ -58,15 +58,17 @@ class SuggestRequest(BaseModel):
     建议生成请求
 
     CAASS v2.0 Phase 2: Added whitelist and context_baseline support
+    Step 1.0 Integration: Added session_id for automatic locked terms lookup
     """
     sentence: str = Field(..., min_length=1, description="Sentence to humanize")
     issues: List[Dict[str, Any]] = Field(default=[], description="Detected issues")
-    locked_terms: List[str] = Field(default=[], description="Terms to protect")
+    locked_terms: List[str] = Field(default=[], description="Terms to protect (in addition to session locked terms)")
     colloquialism_level: int = Field(default=4, ge=0, le=10, description="Colloquialism level 0-10")
     target_lang: str = Field(default="zh", description="Target language for explanations")
     whitelist: List[str] = Field(default=[], description="Domain-specific terms to exempt from scoring")
     context_baseline: int = Field(default=0, ge=0, le=25, description="Paragraph context baseline score")
     is_paraphrase: bool = Field(default=False, description="Whether the sentence is a paraphrase")
+    session_id: Optional[str] = Field(default=None, description="Session ID for loading locked terms from Step 1.0")
 
 
 class SessionStartRequest(BaseModel):
@@ -288,6 +290,7 @@ class DocumentInfo(BaseModel):
     medium_risk_count: int
     low_risk_count: int
     created_at: datetime
+    original_text: Optional[str] = None  # Document text content for analysis
 
 
 class SessionInfo(BaseModel):

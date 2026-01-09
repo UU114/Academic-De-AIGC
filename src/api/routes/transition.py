@@ -1,4 +1,21 @@
 """
+============================================
+DEPRECATED: Legacy Transition Analysis API
+已废弃：旧版衔接分析API
+============================================
+
+This module uses the OLD API structure and is superseded by:
+- New 5-Layer Analysis API: /api/v1/analysis/section/*
+- Located at: src/api/routes/analysis/section.py
+
+Frontend should use:
+- LayerStep2_4.tsx (Section Transition)
+- sectionLayerApi from analysisApi.ts
+
+DO NOT DELETE - kept for backward compatibility
+请勿删除 - 保留用于向后兼容
+============================================
+
 Transition Analysis API Routes (Level 2 De-AIGC)
 衔接分析API路由（Level 2 De-AIGC）
 

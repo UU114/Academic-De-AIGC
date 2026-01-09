@@ -74,10 +74,16 @@ async def get_suggestions(
 
     CAASS v2.0 Phase 2: Uses whitelist and context_baseline for accurate scoring
     """
-    # Initialize suggestion tracks
-    # 初始化建议轨道
-    llm_track = LLMTrack(colloquialism_level=request.colloquialism_level)
-    rule_track = RuleTrack(colloquialism_level=request.colloquialism_level)
+    # Initialize suggestion tracks with session_id for Step 1.0 locked terms
+    # 初始化建议轨道，使用session_id获取步骤1.0的锁定术语
+    llm_track = LLMTrack(
+        colloquialism_level=request.colloquialism_level,
+        session_id=request.session_id
+    )
+    rule_track = RuleTrack(
+        colloquialism_level=request.colloquialism_level,
+        session_id=request.session_id
+    )
 
     # CAASS v2.0 Phase 2: Convert whitelist to set and get context baseline
     # CAASS v2.0 第二阶段：将白名单转换为集合并获取上下文基准

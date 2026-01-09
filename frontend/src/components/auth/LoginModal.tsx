@@ -95,16 +95,24 @@ export default function LoginModal({ isOpen, onClose, onSuccess }: LoginModalPro
     });
 
     if (result.success) {
-      setSuccessMessage('注册成功！请登录');
-      // Switch to login mode after successful registration
-      // 注册成功后切换到登录模式
-      setTimeout(() => {
-        setMode('login');
-        setPassword('');
-        setPasswordConfirm('');
-        setEmail('');
-        setSuccessMessage(null);
-      }, 1500);
+      setSuccessMessage('注册成功！正在自动登录...');
+      // Auto-login after successful registration
+      // 注册成功后自动登录
+      setTimeout(async () => {
+        const loginSuccess = await login(phone, password);
+        if (loginSuccess) {
+          onSuccess?.();
+          onClose();
+        } else {
+          // If auto-login fails, switch to login mode
+          // 如果自动登录失败，切换到登录模式
+          setMode('login');
+          setPassword('');
+          setPasswordConfirm('');
+          setEmail('');
+          setSuccessMessage(null);
+        }
+      }, 800);
     }
   };
 

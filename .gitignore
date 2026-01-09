@@ -77,3 +77,10 @@ Thumbs.db
 # Project specific
 data/uploads/
 exports/
+
+# Temporary test files
+.playwright-mcp/
+.server.pid
+body.txt
+test_results/
+*.output

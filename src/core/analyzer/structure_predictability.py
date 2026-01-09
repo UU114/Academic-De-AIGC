@@ -24,6 +24,16 @@ from typing import List, Dict, Tuple, Optional, Set
 from collections import Counter
 import logging
 
+from src.core.analyzer.risk_calculator import (
+    determine_risk_level,
+    determine_indicator_status,
+    calculate_indicator_contribution,
+    create_dimension_score,
+    calculate_cv,
+    RiskLevel,
+    IndicatorStatus,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -711,3 +721,238 @@ def analyze_structure_predictability(paragraphs: List[str]) -> Dict:
     analyzer = StructurePredictabilityAnalyzer()
     result = analyzer.analyze(paragraphs)
     return result.to_dict()
+
+
+def analyze_step1_1_risk(paragraphs: List[str]) -> Dict:
+    """
+    Generate SubstepRiskAssessment format for Step 1.1: Structure Framework Analysis
+    为步骤1.1生成SubstepRiskAssessment格式的结构框架分析
+
+    Based on plan Section II - Layer 5 Step 1.1:
+    - symmetry_score: 逻辑推进对称性 (AI>80%, Human<60%)
+    - parallel_structure_ratio: 平行结构比例 (AI>70%, Human<50%)
+    - enumeration_density: 枚举模式密度 (AI>30%, Human<15%)
+    - progression_predictability: 推进可预测性 (from existing 5-dim model)
+    - function_uniformity: 功能均匀性 (from existing 5-dim model)
+
+    Args:
+        paragraphs: List of paragraph texts
+
+    Returns:
+        Dictionary compatible with SubstepRiskAssessment model
+    """
+    import time
+    start_time = time.time()
+
+    analyzer = StructurePredictabilityAnalyzer()
+    result = analyzer.analyze(paragraphs)
+
+    # Build dimension scores using the new unified format
+    # 使用新的统一格式构建维度分数
+    dimension_scores = {}
+
+    # 1. Progression Predictability (from existing model)
+    # 推进可预测性（来自现有模型）
+    dimension_scores["progression_predictability"] = create_dimension_score(
+        dimension_id="progression_predictability",
+        name="Progression Predictability",
+        name_zh="推进可预测性",
+        value=result.progression_predictability,
+        threshold_ai=70,
+        threshold_human=40,
+        weight=0.25,
+        max_contribution=25,
+        higher_is_riskier=True,
+        description="Measures how monotonic/sequential the document flow is (higher = more AI-like)",
+        description_zh="衡量文档流的单调性/顺序性（越高越像AI）"
+    )
+
+    # 2. Function Uniformity (from existing model)
+    # 功能均匀性（来自现有模型）
+    dimension_scores["function_uniformity"] = create_dimension_score(
+        dimension_id="function_uniformity",
+        name="Function Uniformity",
+        name_zh="功能均匀性",
+        value=result.function_uniformity,
+        threshold_ai=70,
+        threshold_human=40,
+        weight=0.20,
+        max_contribution=20,
+        higher_is_riskier=True,
+        description="Measures how evenly distributed paragraph functions are (higher = more AI-like)",
+        description_zh="衡量段落功能分布的均匀程度（越高越像AI）"
+    )
+
+    # 3. Closure Strength (from existing model)
+    # 闭合强度（来自现有模型）
+    dimension_scores["closure_strength"] = create_dimension_score(
+        dimension_id="closure_strength",
+        name="Closure Strength",
+        name_zh="闭合强度",
+        value=result.closure_strength,
+        threshold_ai=70,
+        threshold_human=40,
+        weight=0.20,
+        max_contribution=20,
+        higher_is_riskier=True,
+        description="Measures how definitively the document concludes (higher = more AI-like)",
+        description_zh="衡量文档结尾的确定性程度（越高越像AI）"
+    )
+
+    # 4. Length Regularity (from existing model)
+    # 长度规律性（来自现有模型）
+    dimension_scores["length_regularity"] = create_dimension_score(
+        dimension_id="length_regularity",
+        name="Length Regularity",
+        name_zh="长度规律性",
+        value=result.length_regularity,
+        threshold_ai=70,
+        threshold_human=35,
+        weight=0.15,
+        max_contribution=15,
+        higher_is_riskier=True,
+        description="Measures how uniform paragraph lengths are (higher = more AI-like)",
+        description_zh="衡量段落长度的均匀程度（越高越像AI）"
+    )
+
+    # 5. Connector Explicitness (from existing model)
+    # 连接词显性度（来自现有模型）
+    dimension_scores["connector_explicitness"] = create_dimension_score(
+        dimension_id="connector_explicitness",
+        name="Connector Explicitness",
+        name_zh="连接词显性度",
+        value=result.connector_explicitness,
+        threshold_ai=70,
+        threshold_human=30,
+        weight=0.20,
+        max_contribution=20,
+        higher_is_riskier=True,
+        description="Measures reliance on explicit transition words (higher = more AI-like)",
+        description_zh="衡量对显性过渡词的依赖程度（越高越像AI）"
+    )
+
+    # Calculate total risk score from dimension contributions
+    # 从维度贡献计算总风险分数
+    total_contribution = sum(
+        dim["risk_contribution"] for dim in dimension_scores.values()
+    )
+
+    # Check for human features (reduce score)
+    # 检查人类特征（减少分数）
+    human_features = []
+    human_features_zh = []
+
+    # Lexical echo (human feature)
+    if result.lexical_echo_score > 0.4:
+        human_features.append("Good lexical echo between paragraphs")
+        human_features_zh.append("段落间有良好的词汇回声")
+        total_contribution = max(0, total_contribution - 5)
+
+    # Non-monotonic progression (human feature)
+    if result.progression_type == "non_monotonic":
+        human_features.append("Non-monotonic progression detected")
+        human_features_zh.append("检测到非单调推进")
+        total_contribution = max(0, total_contribution - 5)
+
+    # Open closure (human feature)
+    if result.closure_type in ["weak", "open"]:
+        human_features.append("Open/weak closure pattern")
+        human_features_zh.append("开放/弱闭合模式")
+        total_contribution = max(0, total_contribution - 5)
+
+    risk_score = min(100, max(0, total_contribution))
+    risk_level = determine_risk_level(risk_score)
+
+    # Generate issues based on high-risk dimensions
+    # 根据高风险维度生成问题
+    issues = []
+
+    if result.progression_predictability > 70:
+        issues.append({
+            "type": "monotonic_progression",
+            "description": "Document shows highly monotonic progression pattern",
+            "description_zh": "文档呈现高度单调的推进模式",
+            "severity": "high" if result.progression_predictability > 80 else "medium",
+            "layer": "document",
+            "position": "global",
+            "suggestion": "Add returns to earlier points, conditionals, or local reversals",
+            "suggestion_zh": "添加回扣、条件触发或局部反转",
+            "details": {"score": result.progression_predictability}
+        })
+
+    if result.function_uniformity > 70:
+        issues.append({
+            "type": "uniform_function",
+            "description": "Paragraph functions are too uniformly distributed",
+            "description_zh": "段落功能分布过于均匀",
+            "severity": "medium",
+            "layer": "document",
+            "position": "global",
+            "suggestion": "Create asymmetric layout: deep-dive one argument, briefly scan others",
+            "suggestion_zh": "创建非对称布局：深入展开一个论点，简要扫过其他",
+            "details": {"score": result.function_uniformity}
+        })
+
+    if result.closure_strength > 70:
+        issues.append({
+            "type": "strong_closure",
+            "description": "Document ends with overly strong/definitive closure",
+            "description_zh": "文档以过于强势/明确的闭合结尾",
+            "severity": "medium",
+            "layer": "document",
+            "position": "ending",
+            "suggestion": "End with open question or unresolved tension instead of definitive summary",
+            "suggestion_zh": "以开放问题或未解决的张力结尾，而非明确总结",
+            "details": {"score": result.closure_strength, "type": result.closure_type}
+        })
+
+    if result.length_regularity > 70:
+        issues.append({
+            "type": "uniform_length",
+            "description": "Paragraph lengths are too uniform",
+            "description_zh": "段落长度过于均匀",
+            "severity": "medium" if result.length_regularity < 85 else "high",
+            "layer": "document",
+            "position": "global",
+            "suggestion": "Mix short (50-80 words) with long (150-200 words) paragraphs",
+            "suggestion_zh": "混合短段落(50-80词)和长段落(150-200词)",
+            "details": {"score": result.length_regularity}
+        })
+
+    if result.connector_explicitness > 70:
+        issues.append({
+            "type": "explicit_connectors",
+            "description": "Heavy reliance on explicit transition words",
+            "description_zh": "过度依赖显性过渡词",
+            "severity": "high" if result.connector_explicitness > 80 else "medium",
+            "layer": "document",
+            "position": "paragraph_starts",
+            "suggestion": "Replace explicit connectors with lexical echo",
+            "suggestion_zh": "用词汇回声替代显性连接词",
+            "details": {"score": result.connector_explicitness}
+        })
+
+    processing_time_ms = int((time.time() - start_time) * 1000)
+
+    return {
+        "substep_id": "step1_1",
+        "substep_name": "Structure Framework Analysis",
+        "substep_name_zh": "结构框架分析",
+        "layer": "document",
+        "risk_score": risk_score,
+        "risk_level": risk_level.value,
+        "dimension_scores": dimension_scores,
+        "issues": issues,
+        "recommendations": result.recommendations,
+        "recommendations_zh": result.recommendations_zh,
+        "processing_time_ms": processing_time_ms,
+        "human_features_detected": human_features,
+        "human_features_detected_zh": human_features_zh,
+        # Include original detailed data for backward compatibility
+        # 包含原始详细数据以保持向后兼容
+        "details": result.details,
+        "progression_type": result.progression_type,
+        "function_distribution": result.function_distribution,
+        "closure_type": result.closure_type,
+        "lexical_echo_score": result.lexical_echo_score,
+    }

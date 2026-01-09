@@ -103,23 +103,30 @@ export default function History() {
   // Resume a task - navigate to the correct step
   // 恢复任务 - 导航到正确的步骤
   const handleResumeTask = (task: TaskItem) => {
-    // Navigate based on current step
-    // 根据当前步骤导航
+    // Navigate based on current step (5-layer architecture)
+    // 根据当前步骤导航（5层架构）
     const stepRoutes: Record<string, string> = {
-      'step1-1': `/flow/step1-1/${task.documentId}?mode=${task.mode}&session=${task.sessionId}`,
-      'step1-2': `/flow/step1-2/${task.documentId}?mode=${task.mode}&session=${task.sessionId}`,
-      'step2': `/flow/step2/${task.documentId}?mode=${task.mode}&session=${task.sessionId}`,
-      'level2': `/flow/step2/${task.documentId}?mode=${task.mode}&session=${task.sessionId}`,  // Legacy support
+      // New 5-layer routes (Layer 5 → Layer 1)
+      'layer-document': `/flow/layer-document/${task.documentId}?mode=${task.mode}&session=${task.sessionId}`,
+      'layer-section': `/flow/layer-section/${task.documentId}?mode=${task.mode}&session=${task.sessionId}`,
+      'layer-paragraph': `/flow/layer-paragraph/${task.documentId}?mode=${task.mode}&session=${task.sessionId}`,
+      'layer-sentence': `/flow/layer-sentence/${task.documentId}?mode=${task.mode}&session=${task.sessionId}`,
+      'layer-lexical': `/flow/layer-lexical/${task.documentId}?mode=${task.mode}&session=${task.sessionId}`,
+      // Legacy routes (for backward compatibility)
+      'step1-1': `/flow/layer-document/${task.documentId}?mode=${task.mode}&session=${task.sessionId}`,
+      'step1-2': `/flow/layer-section/${task.documentId}?mode=${task.mode}&session=${task.sessionId}`,
+      'step2': `/flow/layer-paragraph/${task.documentId}?mode=${task.mode}&session=${task.sessionId}`,
+      'level2': `/flow/layer-paragraph/${task.documentId}?mode=${task.mode}&session=${task.sessionId}`,
       'step3': task.mode === 'intervention'
         ? `/intervention/${task.sessionId}`
         : `/yolo/${task.sessionId}`,
-      'level3': task.mode === 'intervention'  // Legacy support
+      'level3': task.mode === 'intervention'
         ? `/intervention/${task.sessionId}`
         : `/yolo/${task.sessionId}`,
       'review': `/review/${task.sessionId}`,
     };
 
-    const route = stepRoutes[task.currentStep] || stepRoutes['step1-1'];
+    const route = stepRoutes[task.currentStep] || stepRoutes['layer-document'];
     navigate(route);
   };
 

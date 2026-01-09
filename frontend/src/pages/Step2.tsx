@@ -1,3 +1,24 @@
+/**
+ * ============================================
+ * DEPRECATED: Legacy Step2 Page
+ * 已废弃：旧版 Step2 页面
+ * ============================================
+ *
+ * This page uses the OLD API structure:
+ * - /api/v1/transition (transitionApi)
+ * - /api/v1/structure (structureApi)
+ * - /api/v1/session (sessionApi)
+ *
+ * Users should use the NEW 5-layer architecture instead:
+ * - Routes: /flow/layer4-step2-{0-5}/:documentId
+ * - Components: LayerStep2_0 through LayerStep2_5
+ * - API: /api/v1/analysis/section/
+ *
+ * DO NOT DELETE - kept for backward compatibility
+ * 请勿删除 - 保留用于向后兼容
+ * ============================================
+ */
+
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {

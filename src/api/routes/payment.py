@@ -4,8 +4,16 @@ AcademicGuard 支付API路由
 
 This module provides payment-related endpoints.
 此模块提供支付相关端点。
+
+Security Features:
+- HMAC-SHA256 signature verification for payment callbacks
+- Replay attack prevention with timestamp validation
 """
 
+import hmac
+import hashlib
+import json
+import logging
 from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -18,6 +26,8 @@ from src.db.models import Task, TaskStatus, PaymentStatus
 from src.config import get_settings
 from src.services.payment_service import get_payment_provider, PlatformOrderStatus
 from src.middleware.auth_middleware import get_current_user
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -69,7 +79,58 @@ class PaymentCallbackRequest(BaseModel):
     status: str
     paid_at: Optional[str] = None
     amount: Optional[float] = None
+    timestamp: Optional[int] = None  # Unix timestamp for replay attack prevention
+    nonce: Optional[str] = None  # Random string for replay attack prevention
     signature: Optional[str] = None
+
+
+def verify_payment_signature(payload: PaymentCallbackRequest, secret: str) -> bool:
+    """
+    Verify HMAC-SHA256 signature from payment platform
+    验证支付平台的 HMAC-SHA256 签名
+
+    Signature format: HMAC-SHA256(order_id|status|amount|timestamp|nonce, secret)
+    签名格式: HMAC-SHA256(order_id|status|amount|timestamp|nonce, secret)
+    """
+    if not secret:
+        logger.error("Payment webhook secret not configured!")
+        return False
+
+    if not payload.signature:
+        logger.warning("Payment callback missing signature")
+        return False
+
+    # Check timestamp to prevent replay attacks (5 minute window)
+    # 检查时间戳防止重放攻击（5分钟窗口）
+    if payload.timestamp:
+        current_time = int(datetime.utcnow().timestamp())
+        time_diff = abs(current_time - payload.timestamp)
+        if time_diff > 300:  # 5 minutes
+            logger.warning(f"Payment callback timestamp too old: {time_diff}s")
+            return False
+
+    # Build signature string
+    # 构建签名字符串
+    sign_parts = [
+        payload.order_id,
+        payload.status,
+        str(payload.amount or ""),
+        str(payload.timestamp or ""),
+        payload.nonce or ""
+    ]
+    sign_string = "|".join(sign_parts)
+
+    # Calculate expected signature
+    # 计算预期签名
+    expected_signature = hmac.new(
+        secret.encode('utf-8'),
+        sign_string.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+
+    # Constant-time comparison to prevent timing attacks
+    # 常量时间比较防止时序攻击
+    return hmac.compare_digest(expected_signature, payload.signature)
 
 
 # ==========================================
@@ -320,7 +381,8 @@ async def payment_callback(
     来自中央平台的支付回调
 
     ========================================
-    Reserved Interface | 预留接口
+    Security: HMAC-SHA256 Signature Required
+    安全: 需要 HMAC-SHA256 签名验证
     ========================================
 
     Central platform calls this endpoint after payment status change.
@@ -332,21 +394,50 @@ async def payment_callback(
         "status": "paid",
         "paid_at": "2024-01-01T10:30:00Z",
         "amount": 50.00,
-        "signature": "hmac_sha256_signature"  # For verifying request source
+        "timestamp": 1704067800,  # Unix timestamp
+        "nonce": "random_string_123",  # Random string
+        "signature": "hmac_sha256_signature"  # HMAC-SHA256(order_id|status|amount|timestamp|nonce, secret)
     }
+
+    Signature Generation (for payment platform):
+    签名生成方式（供支付平台参考）:
+        sign_string = f"{order_id}|{status}|{amount}|{timestamp}|{nonce}"
+        signature = hmac.new(secret.encode(), sign_string.encode(), hashlib.sha256).hexdigest()
     """
     settings = get_settings()
 
     # Skip in debug mode
     # 调试模式下跳过
     if settings.is_debug_mode():
+        logger.warning("Payment callback received in DEBUG mode - skipping signature verification")
         return {"status": "skipped", "reason": "debug_mode"}
 
-    # TODO: Verify signature
-    # TODO: 验证签名
-    # This should verify that the request actually came from the platform
-    # 这应该验证请求确实来自平台
+    # CRITICAL: Verify signature - DO NOT trust IP whitelist alone!
+    # 关键: 验证签名 - 不要仅依赖IP白名单!
+    webhook_secret = settings.payment_webhook_secret
+    if not webhook_secret:
+        logger.error("PAYMENT_WEBHOOK_SECRET not configured! Rejecting callback.")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "configuration_error",
+                "message": "Payment webhook not properly configured",
+                "message_zh": "支付回调未正确配置"
+            }
+        )
 
+    if not verify_payment_signature(request, webhook_secret):
+        logger.warning(f"Invalid payment callback signature for order: {request.order_id}")
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": "invalid_signature",
+                "message": "Invalid or missing signature",
+                "message_zh": "签名无效或缺失"
+            }
+        )
+
+    logger.info(f"Payment callback signature verified for order: {request.order_id}")
     order_id = request.order_id
 
     result = await db.execute(

@@ -4,11 +4,18 @@ AcademicGuard - FastAPI 应用主入口
 """
 
 import os
+import sys
+import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from src.config import get_settings
+
+# Configure logging
+# 配置日志
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 from src.db.database import init_db
 from src.api.routes import documents, analyze, suggest, session, export, transition, structure, flow, paragraph, structure_guidance
 from src.api.routes import auth, payment, task, feedback, admin
@@ -22,23 +29,97 @@ from src.middleware.rate_limiter import RateLimitMiddleware
 settings = get_settings()
 
 
+def _security_startup_check():
+    """
+    Perform critical security checks before starting the application
+    在启动应用前执行关键安全检查
+
+    WILL REFUSE TO START if security requirements are not met in operational mode!
+    在运营模式下，如果安全要求未满足将拒绝启动！
+    """
+    is_debug = settings.is_debug_mode()
+    mode_str = "DEBUG" if is_debug else "OPERATIONAL"
+
+    # Prominent mode warning
+    # 醒目的模式警告
+    if is_debug:
+        logger.warning("=" * 60)
+        logger.warning("  WARNING: RUNNING IN DEBUG MODE")
+        logger.warning("  Authentication and payment are DISABLED!")
+        logger.warning("  DO NOT use this mode in production!")
+        logger.warning("=" * 60)
+    else:
+        logger.info("=" * 60)
+        logger.info(f"  OPERATIONAL MODE - Production Security Enabled")
+        logger.info("=" * 60)
+
+        # CRITICAL: Check JWT secret in operational mode
+        # 关键: 运营模式下检查JWT密钥
+        if not settings.is_jwt_key_secure():
+            logger.critical("=" * 60)
+            logger.critical("  FATAL: INSECURE JWT_SECRET_KEY DETECTED!")
+            logger.critical("  You are using a default or weak JWT secret key.")
+            logger.critical("  This is a CRITICAL security vulnerability!")
+            logger.critical("")
+            logger.critical("  Generate a secure key with:")
+            logger.critical("  python -c \"import secrets; print(secrets.token_urlsafe(32))\"")
+            logger.critical("")
+            logger.critical("  Then set JWT_SECRET_KEY in your .env file")
+            logger.critical("=" * 60)
+            sys.exit(1)
+
+        # Check internal service secret
+        # 检查内部服务密钥
+        if not settings.internal_service_secret:
+            logger.critical("=" * 60)
+            logger.critical("  FATAL: INTERNAL_SERVICE_SECRET not configured!")
+            logger.critical("  Internal endpoints require X-Service-Key authentication.")
+            logger.critical("")
+            logger.critical("  Generate a secure key with:")
+            logger.critical("  python -c \"import secrets; print(secrets.token_urlsafe(32))\"")
+            logger.critical("")
+            logger.critical("  Then set INTERNAL_SERVICE_SECRET in your .env file")
+            logger.critical("=" * 60)
+            sys.exit(1)
+
+        # Check payment webhook secret
+        # 检查支付回调密钥
+        if not settings.payment_webhook_secret:
+            logger.warning("=" * 60)
+            logger.warning("  WARNING: PAYMENT_WEBHOOK_SECRET not configured!")
+            logger.warning("  Payment callbacks will be REJECTED until configured.")
+            logger.warning("  Set PAYMENT_WEBHOOK_SECRET in your .env file")
+            logger.warning("=" * 60)
+
+        # Run additional security validations
+        # 运行额外的安全验证
+        warnings = settings.validate_production_security()
+        for warning in warnings:
+            logger.warning(f"Security Warning: {warning}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
     Application lifespan manager
     应用生命周期管理
     """
+    # CRITICAL: Security check before anything else
+    # 关键: 在其他任何事之前进行安全检查
+    _security_startup_check()
+
     # Startup: Initialize database and load models
     # 启动: 初始化数据库和加载模型
-    print(f"Starting {settings.app_name} v{settings.app_version}...")
+    logger.info(f"Starting {settings.app_name} v{settings.app_version}...")
+    logger.info(f"System Mode: {settings.system_mode.value.upper()}")
     await init_db()
-    print("Database initialized")
+    logger.info("Database initialized")
 
     yield
 
     # Shutdown: Cleanup resources
     # 关闭: 清理资源
-    print("Shutting down...")
+    logger.info("Shutting down...")
 
 
 app = FastAPI(
@@ -75,7 +156,12 @@ app.add_middleware(SecurityHeadersMiddleware)
 # Internal Service Middleware - protects internal endpoints from external access
 # 内网服务中间件 - 保护内部端点免受外部访问
 # Verifies that payment callbacks and internal APIs are only accessed from allowed IPs
-app.add_middleware(InternalServiceMiddleware)
+# SECURITY: In operational mode, require X-Service-Key header for internal endpoints
+# 安全: 运营模式下，内部端点需要 X-Service-Key 头
+app.add_middleware(
+    InternalServiceMiddleware,
+    require_secret=not settings.is_debug_mode()  # Require secret in operational mode
+)
 
 # Rate Limit Middleware - prevents API abuse and protects LLM quota
 # 速率限制中间件 - 防止API滥用并保护LLM配额

@@ -139,22 +139,38 @@ async def upload_document(
             }
         )
 
-    # Read file content
-    # 读取文件内容
-    content = await file.read()
-
-    # Security: Validate file size (防止格式炸弹)
-    # 安全：验证文件大小
+    # Security: Stream-read file with size limit to prevent memory exhaustion DoS
+    # 安全：流式读取文件并限制大小，防止内存耗尽DoS攻击
     max_size_bytes = settings.max_file_size_mb * 1024 * 1024
-    if len(content) > max_size_bytes:
-        raise HTTPException(
-            status_code=413,
-            detail={
-                "error": "file_too_large",
-                "message": f"File size exceeds {settings.max_file_size_mb}MB limit",
-                "message_zh": f"文件大小超过 {settings.max_file_size_mb}MB 限制"
-            }
-        )
+    chunk_size = 64 * 1024  # 64KB chunks
+    content_chunks = []
+    total_size = 0
+
+    while True:
+        chunk = await file.read(chunk_size)
+        if not chunk:
+            break
+        total_size += len(chunk)
+
+        # CRITICAL: Check size BEFORE storing in memory
+        # 关键：在存入内存之前检查大小
+        if total_size > max_size_bytes:
+            # Immediately stop reading and reject
+            # 立即停止读取并拒绝
+            raise HTTPException(
+                status_code=413,
+                detail={
+                    "error": "file_too_large",
+                    "message": f"File size exceeds {settings.max_file_size_mb}MB limit",
+                    "message_zh": f"文件大小超过 {settings.max_file_size_mb}MB 限制"
+                }
+            )
+
+        content_chunks.append(chunk)
+
+    # Combine chunks into final content
+    # 将分块组合为最终内容
+    content = b''.join(content_chunks)
 
     # Security: MIME type validation (if python-magic is available)
     # 安全：MIME类型验证（如果python-magic可用）

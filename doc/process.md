@@ -9378,3 +9378,128 @@ def is_jwt_key_secure(self) -> bool:
 - ✅ API速率限制中间件已启用
 - ✅ 文件上传MIME验证增强（可选依赖）
 - ✅ 服务重启验证通过
+
+---
+
+## 2026-01-09: 关键安全漏洞修复 | Critical Security Vulnerability Fixes
+
+### 用户需求 | User Requirement
+
+根据专业安全审计报告修复3个致命漏洞和2个中危漏洞：
+1. 支付回调未验证签名（致命）
+2. 内网服务信任机制薄弱（致命）
+3. 生产环境使用默认密钥（致命）
+4. 文件上传DoS攻击（中危）
+5. 调试模式风险提示不足（中危）
+
+Fix 3 critical and 2 medium vulnerabilities based on professional security audit:
+1. Payment callback signature not verified (Critical)
+2. Weak internal service trust mechanism (Critical)
+3. Production using default keys (Critical)
+4. File upload DoS attack (Medium)
+5. Insufficient debug mode warning (Medium)
+
+### 实现方法 | Implementation Method
+
+#### 1. 支付回调签名验证 | Payment Callback Signature Verification
+
+实现 HMAC-SHA256 签名验证，包含重放攻击防护：
+
+```python
+def verify_payment_signature(payload, secret):
+    # Check timestamp (5 minute window)
+    if abs(current_time - payload.timestamp) > 300:
+        return False
+    # HMAC-SHA256(order_id|status|amount|timestamp|nonce, secret)
+    sign_string = f"{order_id}|{status}|{amount}|{timestamp}|{nonce}"
+    expected = hmac.new(secret, sign_string, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, payload.signature)
+```
+
+#### 2. 强制内网服务密钥 | Enforce Internal Service Secret
+
+运营模式下强制要求 X-Service-Key 头：
+
+```python
+app.add_middleware(
+    InternalServiceMiddleware,
+    require_secret=not settings.is_debug_mode()
+)
+```
+
+#### 3. 启动安全检查 | Startup Security Check
+
+运营模式下检查安全配置，不满足则拒绝启动：
+
+- JWT_SECRET_KEY 必须非默认值且≥32字符
+- INTERNAL_SERVICE_SECRET 必须配置
+- PAYMENT_WEBHOOK_SECRET 警告（支付回调将被拒绝）
+
+#### 4. 流式文件上传 | Streaming File Upload
+
+修改为流式读取，在存入内存前检查大小：
+
+```python
+while True:
+    chunk = await file.read(64 * 1024)  # 64KB chunks
+    total_size += len(chunk)
+    if total_size > max_size_bytes:
+        raise HTTPException(413, "File too large")
+    content_chunks.append(chunk)
+```
+
+#### 5. 醒目模式警告 | Prominent Mode Warning
+
+使用 WARNING 级别日志显示调试模式警告：
+
+```
+WARNING:============================================================
+WARNING:  WARNING: RUNNING IN DEBUG MODE
+WARNING:  Authentication and payment are DISABLED!
+WARNING:  DO NOT use this mode in production!
+WARNING:============================================================
+```
+
+### 新增/修改的文件 | Modified/Added Files
+
+| 文件 File | 操作 Action | 说明 Description |
+|-----------|-------------|------------------|
+| `src/api/routes/payment.py` | 修改 | 添加 HMAC-SHA256 签名验证函数和重放攻击防护 |
+| `src/main.py` | 修改 | 添加启动安全检查函数，运营模式强制密钥，醒目模式警告 |
+| `src/api/routes/documents.py` | 修改 | 流式文件上传，在存入内存前检查大小 |
+| `doc/deployment-notes.md` | 新增 | 生产部署指南，包含微服务集成和LLM配置 |
+
+### 安全机制详情 | Security Mechanism Details
+
+#### 支付回调签名格式 | Payment Callback Signature Format
+
+```
+签名字符串: {order_id}|{status}|{amount}|{timestamp}|{nonce}
+签名算法: HMAC-SHA256
+时间窗口: 5分钟（防止重放攻击）
+```
+
+#### 运营模式启动检查 | Operational Mode Startup Check
+
+| 检查项 | 不通过结果 |
+|--------|-----------|
+| JWT_SECRET_KEY 使用默认值 | sys.exit(1) 拒绝启动 |
+| INTERNAL_SERVICE_SECRET 未配置 | sys.exit(1) 拒绝启动 |
+| PAYMENT_WEBHOOK_SECRET 未配置 | 警告日志，支付回调被拒绝 |
+
+### 验证结果 | Verification Results
+
+- ✅ 服务在DEBUG模式下正常启动并显示醒目警告
+- ✅ 支付回调端点在未配置签名密钥时拒绝请求
+- ✅ 内网中间件在运营模式下强制要求X-Service-Key
+- ✅ 文件上传在超过大小限制时立即拒绝（不等待读取完成）
+- ✅ 部署文档已创建，包含完整的微服务集成指南
+
+### 结果 | Result
+
+- ✅ 支付回调 HMAC-SHA256 签名验证已实现
+- ✅ 运营模式强制 X-Service-Key 认证已启用
+- ✅ 启动安全检查（拒绝默认密钥）已实现
+- ✅ 流式文件上传（防止内存耗尽DoS）已实现
+- ✅ 醒目调试模式警告已添加
+- ✅ 生产部署指南 `doc/deployment-notes.md` 已创建

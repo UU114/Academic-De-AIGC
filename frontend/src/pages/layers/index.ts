@@ -63,6 +63,12 @@ export { default as LayerDocument } from './LayerDocument';
 
 // Layer 1 Sub-steps (Lexical Level)
 // Layer 1 子步骤（词汇层面）
+export { default as LayerStep5_0 } from './LayerStep5_0';
+export { default as LayerStep5_1 } from './LayerStep5_1';
+export { default as LayerStep5_2 } from './LayerStep5_2';
+export { default as LayerStep5_3 } from './LayerStep5_3';
+export { default as LayerStep5_4 } from './LayerStep5_4';
+export { default as LayerStep5_5 } from './LayerStep5_5';
 export { default as LayerLexicalV2 } from './LayerLexicalV2';
 
 // Other layers

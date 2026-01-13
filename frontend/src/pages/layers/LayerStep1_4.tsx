@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ArrowRight,
@@ -12,66 +12,47 @@ import {
   AlertTriangle,
   RefreshCw,
   BarChart3,
-  Merge,
-  Scissors,
-  Maximize2,
-  Minimize2,
+  Sparkles,
+  Upload,
+  FileText,
+  Check,
+  X,
+  Edit3,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import Button from '../../components/common/Button';
 import LoadingMessage from '../../components/common/LoadingMessage';
+import LoadingOverlay from '../../components/common/LoadingOverlay';
 import { documentApi, sessionApi } from '../../services/api';
 import {
   documentLayerApi,
-  ParagraphLengthAnalysisResponse,
+  ConnectorAnalysisResponse,
+  DetectionIssue,
+  IssueSuggestionResponse,
+  ModifyPromptResponse,
+  ApplyModifyResponse,
 } from '../../services/analysisApi';
 
 /**
- * Layer Step 1.4 - Paragraph Length Uniformity Detection
- * 步骤 1.4 - 段落长度均匀性检测
+ * Layer Step 1.4 - Connector & Transition Analysis
+ * 步骤 1.4 - 连接词与衔接分析
  *
  * Detects:
- * - E: Uniform Paragraph Length (全文段落长度是否过于均匀)
+ * - H: Explicit Connector Overuse (显性连接词过度使用)
+ * - I: Missing Semantic Echo (缺乏语义回声)
+ * - J: Logic Break Points (逻辑断裂点)
  *
- * Priority: ★★☆☆☆ (Depends on all previous structure being stable)
- * 优先级: ★★☆☆☆ (依赖前面所有结构稳定)
+ * Priority: ★★☆☆☆ (Depends on paragraph structure being stable)
+ * 优先级: ★★☆☆☆ (依赖段落结构稳定)
  *
- * Conflict Note: Must process after Step 1.3, to avoid breaking logic pattern results.
- * 冲突说明: 必须在1.3之后处理，避免破坏逻辑模式处理的结果。
+ * Uses LLM to analyze paragraph transitions for AI-like patterns.
+ * 使用LLM分析段落过渡中的AI风格模式。
  */
 
-// Strategy type display config
-// 策略类型显示配置
-const STRATEGY_CONFIG: Record<string, { label: string; labelZh: string; icon: typeof Merge; color: string }> = {
-  merge: {
-    label: 'Merge',
-    labelZh: '合并',
-    icon: Merge,
-    color: 'text-blue-600 bg-blue-50',
-  },
-  split: {
-    label: 'Split',
-    labelZh: '拆分',
-    icon: Scissors,
-    color: 'text-purple-600 bg-purple-50',
-  },
-  expand: {
-    label: 'Expand',
-    labelZh: '扩展',
-    icon: Maximize2,
-    color: 'text-green-600 bg-green-50',
-  },
-  compress: {
-    label: 'Compress',
-    labelZh: '压缩',
-    icon: Minimize2,
-    color: 'text-orange-600 bg-orange-50',
-  },
-};
 
 interface LayerStep1_4Props {
   documentIdProp?: string;
-  onComplete?: (result: ParagraphLengthAnalysisResponse) => void;
+  onComplete?: (result: ConnectorAnalysisResponse) => void;
   showNavigation?: boolean;
 }
 
@@ -81,12 +62,51 @@ export default function LayerStep1_4({
   showNavigation = true,
 }: LayerStep1_4Props) {
   const { documentId: documentIdParam } = useParams<{ documentId: string }>();
-  const documentId = documentIdProp || documentIdParam;
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
   const mode = searchParams.get('mode') || 'intervention';
   const sessionId = searchParams.get('session');
+
+  // Helper function to check if documentId is valid
+  const isValidDocumentId = (id: string | undefined): boolean => {
+    return !!(id && id !== 'undefined' && id !== 'null');
+  };
+
+  const getInitialDocumentId = (): string | undefined => {
+    if (isValidDocumentId(documentIdProp)) return documentIdProp;
+    if (isValidDocumentId(documentIdParam)) return documentIdParam;
+    return undefined;
+  };
+
+  const [documentId, setDocumentId] = useState<string | undefined>(getInitialDocumentId());
+  const [sessionFetchAttempted, setSessionFetchAttempted] = useState(
+    isValidDocumentId(documentIdProp) || isValidDocumentId(documentIdParam)
+  );
+
+  useEffect(() => {
+    const fetchDocumentIdFromSession = async () => {
+      if (!isValidDocumentId(documentId) && sessionId) {
+        try {
+          const sessionState = await sessionApi.getCurrent(sessionId);
+          if (sessionState.documentId) {
+            setDocumentId(sessionState.documentId);
+          }
+        } catch (err) {
+          console.error('Failed to get documentId from session:', err);
+        }
+      }
+      setSessionFetchAttempted(true);
+    };
+
+    if (!sessionId) {
+      setSessionFetchAttempted(true);
+    } else if (!isValidDocumentId(documentId)) {
+      fetchDocumentIdFromSession();
+    } else {
+      setSessionFetchAttempted(true);
+    }
+  }, [documentId, sessionId]);
 
   useEffect(() => {
     if (sessionId) {
@@ -95,21 +115,60 @@ export default function LayerStep1_4({
   }, [sessionId]);
 
   // State
-  const [result, setResult] = useState<ParagraphLengthAnalysisResponse | null>(null);
+  const [result, setResult] = useState<ConnectorAnalysisResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [documentText, setDocumentText] = useState<string>('');
   const [expandedParagraphIndex, setExpandedParagraphIndex] = useState<number | null>(null);
 
+  // Issues derived from analysis result
+  // 从分析结果派生的问题列表
+  const [lengthIssues, setLengthIssues] = useState<DetectionIssue[]>([]);
+
+  // Issue selection for merge modify
+  // 用于合并修改的问题选择
+  const [selectedIssueIndices, setSelectedIssueIndices] = useState<Set<number>>(new Set());
+
+  // Issue suggestion state (LLM-based detailed suggestions)
+  // 问题建议状态（基于LLM的详细建议）
+  const [issueSuggestion, setIssueSuggestion] = useState<IssueSuggestionResponse | null>(null);
+  const [isLoadingSuggestion, setIsLoadingSuggestion] = useState(false);
+  const [suggestionError, setSuggestionError] = useState<string | null>(null);
+
+  // Merge modify state
+  // 合并修改状态
+  const [showMergeConfirm, setShowMergeConfirm] = useState(false);
+  const [mergeMode, setMergeMode] = useState<'prompt' | 'apply'>('prompt');
+  const [mergeUserNotes, setMergeUserNotes] = useState('');
+  const [isMerging, setIsMerging] = useState(false);
+  const [mergeResult, setMergeResult] = useState<ModifyPromptResponse | ApplyModifyResponse | null>(null);
+
+  // Skip confirmation state
+  // 跳过确认状态
+  const [showSkipConfirm, setShowSkipConfirm] = useState(false);
+
+  // Document modification state
+  // 文档修改状态
+  const [modifyMode, setModifyMode] = useState<'file' | 'text'>('file');
+  const [newFile, setNewFile] = useState<File | null>(null);
+  const [newText, setNewText] = useState('');
+  const [isUploading, setIsUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const isAnalyzingRef = useRef(false);
 
   // Load document
+  // 加载文档
   useEffect(() => {
-    if (documentId) {
-      loadDocumentText(documentId);
+    if (!sessionFetchAttempted) return;
+    if (isValidDocumentId(documentId)) {
+      loadDocumentText(documentId!);
+    } else {
+      setError('Document ID not found. Please start from the document upload page. / 未找到文档ID，请从文档上传页面开始。');
+      setIsLoading(false);
     }
-  }, [documentId]);
+  }, [documentId, sessionFetchAttempted]);
 
   const loadDocumentText = async (docId: string) => {
     try {
@@ -141,8 +200,29 @@ export default function LayerStep1_4({
     setError(null);
 
     try {
-      const analysisResult = await documentLayerApi.analyzeParagraphLength(documentText, sessionId || undefined);
+      // Call connector analysis API (LLM-based)
+      // 调用连接词分析API（基于LLM）
+      const analysisResult = await documentLayerApi.analyzeConnectors(documentText, sessionId || undefined);
       setResult(analysisResult);
+
+      // Use issues directly from LLM analysis result
+      // 直接使用LLM分析结果中的问题列表
+      const issues: DetectionIssue[] = analysisResult.issues || [];
+
+      // Add overall connector density issue if too high
+      // 如果连接词密度过高，添加整体问题
+      const hasConnectorIssue = analysisResult.connectorDensity > 0.3 || analysisResult.totalExplicitConnectors > 5;
+      if (hasConnectorIssue && !issues.some(i => i.type === 'explicit_connector_overuse')) {
+        issues.unshift({
+          type: 'explicit_connector_overuse',
+          description: `High explicit connector density (${(analysisResult.connectorDensity * 100).toFixed(1)}%, ${analysisResult.totalExplicitConnectors} connectors)`,
+          descriptionZh: `显性连接词密度过高 (${(analysisResult.connectorDensity * 100).toFixed(1)}%, ${analysisResult.totalExplicitConnectors}个连接词)`,
+          severity: 'high',
+          layer: 'document',
+        });
+      }
+
+      setLengthIssues(issues);
 
       if (onComplete) {
         onComplete(analysisResult);
@@ -155,6 +235,159 @@ export default function LayerStep1_4({
       isAnalyzingRef.current = false;
     }
   };
+
+  // Load detailed suggestion for selected issues (LLM-based)
+  // 为选中的问题加载详细建议（基于LLM）
+  const loadIssueSuggestion = useCallback(async () => {
+    if (selectedIssueIndices.size === 0 || !documentText) return;
+
+    setIsLoadingSuggestion(true);
+    setSuggestionError(null);
+
+    try {
+      const selectedIssues = Array.from(selectedIssueIndices).map(i => lengthIssues[i]);
+      const response = await documentLayerApi.getIssueSuggestion(
+        documentText,
+        selectedIssues,
+        'step1_4',
+        sessionId || undefined
+      );
+      setIssueSuggestion(response);
+    } catch (err) {
+      console.error('Failed to load suggestion:', err);
+      setSuggestionError('Failed to load detailed suggestion / 加载详细建议失败');
+    } finally {
+      setIsLoadingSuggestion(false);
+    }
+  }, [selectedIssueIndices, documentText, lengthIssues, sessionId]);
+
+  // Handle issue selection toggle
+  // 处理问题选择切换
+  const handleIssueClick = useCallback((index: number) => {
+    setSelectedIssueIndices(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(index)) {
+        newSet.delete(index);
+      } else {
+        newSet.add(index);
+      }
+      return newSet;
+    });
+    // Clear previous suggestion when selection changes
+    // 当选择变化时清除之前的建议
+    setIssueSuggestion(null);
+    setMergeResult(null);
+  }, []);
+
+  // Execute merge modify (generate prompt or apply modification)
+  // 执行合并修改（生成提示或应用修改）
+  const executeMergeModify = useCallback(async () => {
+    if (selectedIssueIndices.size === 0 || !documentText) return;
+
+    setIsMerging(true);
+    setShowMergeConfirm(false);
+
+    try {
+      const selectedIssues = Array.from(selectedIssueIndices).map(i => lengthIssues[i]);
+
+      if (mergeMode === 'prompt') {
+        // Generate prompt only
+        // 仅生成提示
+        const response = await documentLayerApi.generateModifyPrompt(
+          documentId!,
+          selectedIssues,
+          {
+            sessionId: sessionId || undefined,
+            userNotes: mergeUserNotes || undefined,
+          }
+        );
+        setMergeResult(response);
+      } else {
+        // Apply modification directly
+        // 直接应用修改
+        const response = await documentLayerApi.applyModify(
+          documentId!,
+          selectedIssues,
+          {
+            sessionId: sessionId || undefined,
+            userNotes: mergeUserNotes || undefined,
+          }
+        );
+        setMergeResult(response);
+      }
+    } catch (err) {
+      console.error('Merge modify failed:', err);
+      setError('Merge modify failed / 合并修改失败');
+    } finally {
+      setIsMerging(false);
+    }
+  }, [selectedIssueIndices, documentId, lengthIssues, mergeMode, mergeUserNotes, sessionId]);
+
+  // Handle regenerate (retry AI modification)
+  // 处理重新生成（重试AI修改）
+  const handleRegenerate = useCallback(() => {
+    setMergeResult(null);
+    setShowMergeConfirm(true);
+    setMergeMode('apply');
+  }, []);
+
+  // Handle accept modification (copy to text input)
+  // 处理接受修改（复制到文本输入）
+  const handleAcceptModification = useCallback(() => {
+    if (mergeResult && 'modifiedText' in mergeResult && mergeResult.modifiedText) {
+      setNewText(mergeResult.modifiedText);
+      setModifyMode('text');
+      setMergeResult(null);
+    }
+  }, [mergeResult]);
+
+  // Handle file selection
+  // 处理文件选择
+  const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setNewFile(file);
+    }
+  }, []);
+
+  // Handle confirm modification and navigate to next step
+  // 处理确认修改并导航到下一步
+  const handleConfirmModify = useCallback(async () => {
+    setIsUploading(true);
+    setError(null);
+
+    try {
+      let newDocId: string;
+
+      if (modifyMode === 'file' && newFile) {
+        // Upload new file
+        // 上传新文件
+        const result = await documentApi.upload(newFile);
+        newDocId = result.documentId;
+      } else if (modifyMode === 'text' && newText.trim()) {
+        // Upload text as document
+        // 将文本作为文档上传
+        const result = await documentApi.uploadText(newText, `step1_4_modified_${Date.now()}.txt`);
+        newDocId = result.documentId;
+      } else {
+        setError('Please select a file or enter text / 请选择文件或输入文本');
+        setIsUploading(false);
+        return;
+      }
+
+      // Navigate to next step with new document
+      // 使用新文档导航到下一步
+      const params = new URLSearchParams();
+      if (mode) params.set('mode', mode);
+      if (sessionId) params.set('session', sessionId);
+      navigate(`/flow/layer5-step1-5/${newDocId}?${params.toString()}`);
+    } catch (err) {
+      console.error('Upload failed:', err);
+      setError('Failed to upload modified document / 上传修改后的文档失败');
+    } finally {
+      setIsUploading(false);
+    }
+  }, [modifyMode, newFile, newText, mode, sessionId, navigate]);
 
   // Navigation
   const handleBack = () => {
@@ -175,11 +408,6 @@ export default function LayerStep1_4({
     setExpandedParagraphIndex(expandedParagraphIndex === index ? null : index);
   };
 
-  // Get bar width for visualization
-  const getBarWidth = (value: number, max: number) => {
-    return `${Math.min((value / max) * 100, 100)}%`;
-  };
-
   // Loading state
   if (isLoading) {
     return (
@@ -190,7 +418,7 @@ export default function LayerStep1_4({
   }
 
   // Error state
-  if (error) {
+  if (error && !result) {
     return (
       <div className="p-6">
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 flex items-start gap-3">
@@ -217,24 +445,32 @@ export default function LayerStep1_4({
     );
   }
 
-  const isUniform = result?.cv !== undefined && result.cv < 0.3;
-  const maxLength = Math.max(...(result?.paragraphs?.map(p => p.wordCount) || [1]));
+  const hasConnectorIssue = (result?.connectorDensity || 0) > 0.3 || (result?.totalExplicitConnectors || 0) > 5;
+  const hasSelectedIssues = selectedIssueIndices.size > 0;
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
+      {/* Loading Overlay for LLM operations */}
+      {/* LLM操作加载遮罩 */}
+      <LoadingOverlay
+        isVisible={isMerging}
+        operationType={mergeMode}
+        issueCount={selectedIssueIndices.size}
+      />
+
       {/* Header */}
       <div className="mb-6">
         <div className="flex items-center gap-2 text-sm text-gray-500 mb-2">
           <Layers className="w-4 h-4" />
           <span>Layer 5 / 第5层</span>
           <span className="mx-1">›</span>
-          <span className="text-gray-900 font-medium">Step 1.4 段落长度</span>
+          <span className="text-gray-900 font-medium">Step 1.4 连接词与衔接</span>
         </div>
         <h1 className="text-2xl font-bold text-gray-900">
-          Paragraph Length Uniformity Detection
+          Connector & Transition Analysis
         </h1>
         <p className="text-gray-600 mt-1">
-          段落长度均匀性检测 - 检测全文段落长度是否过于均匀（CV &lt; 0.3 = AI特征）
+          连接词与衔接分析 - 使用LLM检测显性连接词、语义回声和逻辑断裂点
         </p>
       </div>
 
@@ -244,8 +480,8 @@ export default function LayerStep1_4({
           <div className="flex items-center gap-3">
             <Loader2 className="w-5 h-5 text-blue-600 animate-spin" />
             <div>
-              <p className="text-blue-800 font-medium">Analyzing paragraph lengths... / 分析段落长度中...</p>
-              <p className="text-blue-600 text-sm">Calculating CV and suggesting strategies</p>
+              <p className="text-blue-800 font-medium">Analyzing connectors and transitions... / 分析连接词与衔接中...</p>
+              <p className="text-blue-600 text-sm">Using LLM to detect AI-like transition patterns / 使用LLM检测AI风格过渡模式</p>
             </div>
           </div>
         </div>
@@ -254,195 +490,608 @@ export default function LayerStep1_4({
       {/* Results */}
       {result && !isAnalyzing && (
         <>
-          {/* CV Score Summary */}
+          {/* Connector Analysis Summary */}
           <div className="mb-6 grid grid-cols-1 md:grid-cols-3 gap-4">
-            {/* CV Score */}
+            {/* Smoothness Score */}
             <div className={clsx(
               'p-4 rounded-lg border',
-              isUniform ? 'bg-red-50 border-red-200' : 'bg-green-50 border-green-200'
+              hasConnectorIssue ? 'bg-red-50 border-red-200' : 'bg-green-50 border-green-200'
             )}>
               <div className="flex items-center gap-2 mb-2">
-                <BarChart3 className={clsx('w-5 h-5', isUniform ? 'text-red-600' : 'text-green-600')} />
-                <span className="font-medium text-gray-900">CV (Coefficient of Variation)</span>
+                <BarChart3 className={clsx('w-5 h-5', hasConnectorIssue ? 'text-red-600' : 'text-green-600')} />
+                <span className="font-medium text-gray-900">Smoothness Score / 平滑度</span>
               </div>
               <div className={clsx(
                 'text-3xl font-bold',
-                isUniform ? 'text-red-600' : 'text-green-600'
+                hasConnectorIssue ? 'text-red-600' : 'text-green-600'
               )}>
-                {((result.cv || 0) * 100).toFixed(1)}%
+                {result.overallSmoothnessScore || 0}
               </div>
               <p className={clsx(
                 'text-sm mt-1',
-                isUniform ? 'text-red-600' : 'text-green-600'
+                hasConnectorIssue ? 'text-red-600' : 'text-green-600'
               )}>
-                {isUniform ? 'Too uniform (< 30%) / 过于均匀' : 'Natural variation / 自然变化'}
+                {hasConnectorIssue ? 'High risk / 高风险' : 'Natural transitions / 自然过渡'}
               </p>
             </div>
 
-            {/* Average Length (meanLength from API) */}
-            <div className="p-4 rounded-lg border bg-gray-50 border-gray-200">
+            {/* Explicit Connectors Count */}
+            <div className={clsx(
+              'p-4 rounded-lg border',
+              (result.totalExplicitConnectors || 0) > 5 ? 'bg-yellow-50 border-yellow-200' : 'bg-gray-50 border-gray-200'
+            )}>
               <div className="flex items-center gap-2 mb-2">
-                <span className="font-medium text-gray-900">Average Length / 平均长度</span>
+                <span className="font-medium text-gray-900">Explicit Connectors / 显性连接词</span>
               </div>
-              <div className="text-3xl font-bold text-gray-700">
-                {Math.round(result.meanLength || 0)}
+              <div className={clsx(
+                'text-3xl font-bold',
+                (result.totalExplicitConnectors || 0) > 5 ? 'text-yellow-600' : 'text-gray-700'
+              )}>
+                {result.totalExplicitConnectors || 0}
               </div>
               <p className="text-sm text-gray-500 mt-1">
-                words per paragraph / 词/段落
+                {(result.connectorDensity * 100).toFixed(1)}% density / 密度
               </p>
             </div>
 
-            {/* Total Paragraphs (paragraphCount from API) */}
+            {/* Total Transitions */}
             <div className="p-4 rounded-lg border bg-gray-50 border-gray-200">
               <div className="flex items-center gap-2 mb-2">
-                <span className="font-medium text-gray-900">Total Paragraphs / 总段落数</span>
+                <span className="font-medium text-gray-900">Transitions Analyzed / 过渡分析</span>
               </div>
               <div className="text-3xl font-bold text-gray-700">
-                {result.paragraphCount || result.paragraphs?.length || 0}
+                {result.totalTransitions || 0}
               </div>
               <p className="text-sm text-gray-500 mt-1">
-                paragraphs analyzed / 已分析段落
+                {result.problematicTransitions || 0} problematic / 有问题的
               </p>
             </div>
           </div>
 
           {/* Risk Alert */}
-          {isUniform && (
+          {hasConnectorIssue && (
             <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg flex items-start gap-3">
               <AlertTriangle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
               <div>
                 <h3 className="font-medium text-red-800">
-                  High AI Risk: Uniform Paragraph Length Detected
+                  High AI Risk: Excessive Explicit Connectors Detected
                 </h3>
                 <p className="text-red-600 mt-1">
-                  高AI风险：段落长度过于均匀。目标CV应≥40%。
-                  建议合并短段落、拆分长段落以创造自然的长度变化。
+                  高AI风险：检测到过多显性连接词。AI生成文本常使用"Furthermore"、"Moreover"等显性连接词。
+                  建议使用语义回声（引用上段关键概念）替代显性连接词，使过渡更自然。
                 </p>
               </div>
             </div>
           )}
 
-          {/* Paragraph Length Visualization */}
-          <div className="mb-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-3 flex items-center gap-2">
-              <BarChart3 className="w-5 h-5" />
-              Paragraph Length Distribution / 段落长度分布
-            </h3>
-            <div className="space-y-2">
-              {result.paragraphs?.map((para, idx) => {
-                const isExpanded = expandedParagraphIndex === idx;
-                const strategyConfig = para.suggestedStrategy
-                  ? STRATEGY_CONFIG[para.suggestedStrategy]
-                  : null;
-                const StrategyIcon = strategyConfig?.icon || BarChart3;
-
-                return (
-                  <div
+          {/* Issues Section with Selection */}
+          {/* 问题部分（带选择功能） */}
+          {lengthIssues.length > 0 && (
+            <div className="mb-6">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                  <AlertTriangle className="w-5 h-5 text-yellow-600" />
+                  Detected Issues / 检测到的问题
+                  <span className="text-sm font-normal text-gray-500">
+                    (Click to select / 点击选择)
+                  </span>
+                </h3>
+                {hasSelectedIssues && (
+                  <span className="text-sm text-blue-600">
+                    {selectedIssueIndices.size} selected / 已选择
+                  </span>
+                )}
+              </div>
+              <div className="space-y-2">
+                {lengthIssues.map((issue, idx) => (
+                  <button
                     key={idx}
-                    className="bg-white border rounded-lg overflow-hidden"
+                    onClick={() => handleIssueClick(idx)}
+                    className={clsx(
+                      'w-full text-left p-3 rounded-lg border transition-all',
+                      selectedIssueIndices.has(idx)
+                        ? 'bg-blue-50 border-blue-300 ring-2 ring-blue-200'
+                        : 'bg-white border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+                    )}
                   >
-                    <button
-                      onClick={() => toggleParagraph(idx)}
-                      className="w-full px-4 py-3 flex items-center gap-4 hover:bg-gray-50 transition-colors"
-                    >
-                      {/* Index */}
-                      <span className="w-8 h-8 flex items-center justify-center bg-gray-100 rounded-full text-sm font-medium text-gray-600 flex-shrink-0">
-                        {idx + 1}
-                      </span>
-
-                      {/* Bar */}
-                      <div className="flex-1">
-                        <div className="h-6 bg-gray-100 rounded-full overflow-hidden">
-                          <div
-                            className={clsx(
-                              'h-full rounded-full transition-all',
-                              para.suggestedStrategy ? 'bg-yellow-400' : 'bg-blue-400'
-                            )}
-                            style={{ width: getBarWidth(para.wordCount, maxLength) }}
-                          />
-                        </div>
+                    <div className="flex items-start gap-3">
+                      <div className={clsx(
+                        'w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 mt-0.5',
+                        selectedIssueIndices.has(idx)
+                          ? 'bg-blue-600 border-blue-600'
+                          : 'border-gray-300'
+                      )}>
+                        {selectedIssueIndices.has(idx) && (
+                          <Check className="w-3 h-3 text-white" />
+                        )}
                       </div>
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className={clsx(
+                            'px-2 py-0.5 rounded text-xs font-medium',
+                            issue.severity === 'high' ? 'bg-red-100 text-red-700' :
+                            issue.severity === 'medium' ? 'bg-yellow-100 text-yellow-700' :
+                            'bg-gray-100 text-gray-700'
+                          )}>
+                            {issue.severity === 'high' ? 'High / 高' :
+                             issue.severity === 'medium' ? 'Medium / 中' : 'Low / 低'}
+                          </span>
+                          <span className="text-xs text-gray-500">{issue.layer}</span>
+                        </div>
+                        <p className="text-gray-900 mt-1">{issue.description}</p>
+                        <p className="text-gray-600 text-sm">{issue.descriptionZh}</p>
+                        {issue.location && (
+                          <p className="text-gray-500 text-xs mt-1 font-mono">{issue.location}</p>
+                        )}
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
-                      {/* Word count */}
-                      <span className="text-sm text-gray-600 w-16 text-right">
-                        {para.wordCount} words
-                      </span>
+          {/* Action Buttons for Selected Issues */}
+          {/* 选中问题的操作按钮 */}
+          {lengthIssues.length > 0 && (
+            <div className="mb-6 pb-6 border-b">
+              <div className="flex items-center justify-between">
+                <div className="text-sm text-gray-600">
+                  {selectedIssueIndices.size} selected / 已选择 {selectedIssueIndices.size} 个问题
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={loadIssueSuggestion}
+                    disabled={selectedIssueIndices.size === 0 || isLoadingSuggestion}
+                  >
+                    {isLoadingSuggestion ? (
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    ) : (
+                      <Sparkles className="w-4 h-4 mr-2" />
+                    )}
+                    Load Suggestions / 加载建议
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => {
+                      setMergeMode('prompt');
+                      setShowMergeConfirm(true);
+                    }}
+                    disabled={selectedIssueIndices.size === 0}
+                  >
+                    <Edit3 className="w-4 h-4 mr-2" />
+                    Generate Prompt / 生成提示
+                  </Button>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={() => {
+                      setMergeMode('apply');
+                      setShowMergeConfirm(true);
+                    }}
+                    disabled={selectedIssueIndices.size === 0}
+                  >
+                    <Sparkles className="w-4 h-4 mr-2" />
+                    AI Modify / AI修改
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
 
-                      {/* Strategy badge */}
-                      {strategyConfig && (
+          {/* Suggestion Error */}
+          {suggestionError && (
+            <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="text-red-600">{suggestionError}</p>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="mt-2"
+                  onClick={() => setSuggestionError(null)}
+                >
+                  Dismiss / 关闭
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* Issue Suggestion Display (LLM-based) */}
+          {/* 问题建议展示（基于LLM） */}
+          {issueSuggestion && (
+            <div className="mb-6 p-4 bg-purple-50 border border-purple-200 rounded-lg">
+              <h4 className="font-semibold text-purple-900 mb-3 flex items-center gap-2">
+                <Sparkles className="w-5 h-5" />
+                AI Suggestions / AI建议
+              </h4>
+              <div className="space-y-3">
+                <div>
+                  <h5 className="text-sm font-medium text-purple-800">Analysis / 分析:</h5>
+                  <p className="text-purple-700 mt-1">{issueSuggestion.analysis}</p>
+                </div>
+                {issueSuggestion.suggestions && issueSuggestion.suggestions.length > 0 && (
+                  <div>
+                    <h5 className="text-sm font-medium text-purple-800">Suggestions / 建议:</h5>
+                    <ul className="list-disc list-inside mt-1 space-y-1">
+                      {issueSuggestion.suggestions.map((s, i) => (
+                        <li key={i} className="text-purple-700">{s}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {issueSuggestion.exampleFix && (
+                  <div>
+                    <h5 className="text-sm font-medium text-purple-800">Example Fix / 示例修复:</h5>
+                    <pre className="mt-1 p-2 bg-white rounded text-sm text-gray-800 overflow-x-auto">
+                      {issueSuggestion.exampleFix}
+                    </pre>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Merge Confirm Dialog */}
+          {/* 合并确认对话框 */}
+          {showMergeConfirm && (
+            <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+              <h4 className="font-semibold text-yellow-900 mb-3">
+                {mergeMode === 'prompt' ? 'Generate Modification Prompt / 生成修改提示' : 'Apply AI Modification / 应用AI修改'}
+              </h4>
+              <p className="text-yellow-800 text-sm mb-3">
+                {mergeMode === 'prompt'
+                  ? 'Generate a prompt that you can use to modify the document manually / 生成一个提示，您可以用它来手动修改文档'
+                  : 'AI will automatically modify the document based on selected issues / AI将根据选中的问题自动修改文档'}
+              </p>
+              <div className="mb-3">
+                <label className="block text-sm font-medium text-yellow-800 mb-1">
+                  Additional Notes (Optional) / 附加说明（可选）
+                </label>
+                <textarea
+                  value={mergeUserNotes}
+                  onChange={(e) => setMergeUserNotes(e.target.value)}
+                  placeholder="Add any specific instructions for modification... / 添加任何特定的修改指示..."
+                  className="w-full px-3 py-2 border border-yellow-300 rounded-lg focus:ring-2 focus:ring-yellow-500 focus:border-yellow-500"
+                  rows={2}
+                />
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={executeMergeModify}
+                  disabled={isMerging}
+                >
+                  {isMerging ? (
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  ) : (
+                    <Check className="w-4 h-4 mr-2" />
+                  )}
+                  Confirm / 确认
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setShowMergeConfirm(false)}
+                >
+                  <X className="w-4 h-4 mr-2" />
+                  Cancel / 取消
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* Merge Result Display */}
+          {/* 合并结果展示 */}
+          {mergeResult && (
+            <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-lg">
+              <h4 className="font-semibold text-green-900 mb-3 flex items-center gap-2">
+                <CheckCircle className="w-5 h-5" />
+                {'modifiedText' in mergeResult ? 'AI Modification Result / AI修改结果' : 'Generated Prompt / 生成的提示'}
+              </h4>
+
+              {'prompt' in mergeResult && mergeResult.prompt && (
+                <div className="mb-3">
+                  <h5 className="text-sm font-medium text-green-800">Prompt / 提示:</h5>
+                  <pre className="mt-1 p-3 bg-white rounded text-sm text-gray-800 overflow-x-auto whitespace-pre-wrap">
+                    {mergeResult.prompt}
+                  </pre>
+                </div>
+              )}
+
+              {'modifiedText' in mergeResult && mergeResult.modifiedText && (
+                <div className="mb-3">
+                  {/* Modified text display - full content with scrollable area */}
+                  {/* 修改后内容显示 - 完整内容可滚动 */}
+                  <h5 className="text-sm font-medium text-green-800">
+                    Modified Text / 修改后的文本 ({mergeResult.modifiedText?.length || 0} 字符):
+                  </h5>
+                  <pre className="mt-1 p-3 bg-white rounded text-sm text-gray-800 overflow-x-auto whitespace-pre-wrap max-h-96 overflow-y-auto">
+                    {mergeResult.modifiedText}
+                  </pre>
+                </div>
+              )}
+
+              {'changesSummary' in mergeResult && mergeResult.changesSummary && (
+                <div className="mb-3">
+                  <h5 className="text-sm font-medium text-green-800">Changes Summary / 修改摘要:</h5>
+                  <p className="mt-1 text-green-700">{mergeResult.changesSummary}</p>
+                </div>
+              )}
+
+              {/* Action buttons for merge result */}
+              {/* 合并结果的操作按钮 */}
+              {'modifiedText' in mergeResult && (
+                <div className="flex gap-2 mt-4">
+                  <Button variant="primary" size="sm" onClick={handleAcceptModification}>
+                    <Check className="w-4 h-4 mr-2" />
+                    Accept / 接受
+                  </Button>
+                  <Button variant="secondary" size="sm" onClick={handleRegenerate}>
+                    <RefreshCw className="w-4 h-4 mr-2" />
+                    Regenerate / 重新生成
+                  </Button>
+                  <Button variant="secondary" size="sm" onClick={() => setMergeResult(null)}>
+                    <X className="w-4 h-4 mr-2" />
+                    Cancel / 取消
+                  </Button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Connector List */}
+          {result.connectorList && result.connectorList.length > 0 && (
+            <div className="mb-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-3 flex items-center gap-2">
+                <BarChart3 className="w-5 h-5" />
+                Detected Connectors / 检测到的连接词
+              </h3>
+              <div className="flex flex-wrap gap-2">
+                {result.connectorList.map((connector, idx) => (
+                  <span
+                    key={idx}
+                    className="px-3 py-1 bg-yellow-50 border border-yellow-200 rounded-full text-sm text-yellow-700"
+                  >
+                    {connector}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Transition Analysis */}
+          {result.transitions && result.transitions.length > 0 && (
+            <div className="mb-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-3 flex items-center gap-2">
+                <BarChart3 className="w-5 h-5" />
+                Transition Analysis / 过渡分析
+              </h3>
+              <div className="space-y-2">
+                {result.transitions.map((trans, idx) => {
+                  const isExpanded = expandedParagraphIndex === idx;
+                  const hasIssues = trans.issues && trans.issues.length > 0;
+
+                  return (
+                    <div
+                      key={idx}
+                      className="bg-white border rounded-lg overflow-hidden"
+                    >
+                      <button
+                        onClick={() => toggleParagraph(idx)}
+                        className="w-full px-4 py-3 flex items-center gap-4 hover:bg-gray-50 transition-colors"
+                      >
+                        {/* Index */}
                         <span className={clsx(
-                          'px-2 py-1 rounded text-xs font-medium flex items-center gap-1',
-                          strategyConfig.color
+                          'w-8 h-8 flex items-center justify-center rounded-full text-sm font-medium flex-shrink-0',
+                          hasIssues ? 'bg-yellow-100 text-yellow-700' : 'bg-gray-100 text-gray-600'
                         )}>
-                          <StrategyIcon className="w-3 h-3" />
-                          {strategyConfig.labelZh}
+                          {idx + 1}
                         </span>
-                      )}
 
-                      {/* Expand icon */}
-                      {isExpanded ? (
-                        <ChevronUp className="w-5 h-5 text-gray-400 flex-shrink-0" />
-                      ) : (
-                        <ChevronDown className="w-5 h-5 text-gray-400 flex-shrink-0" />
-                      )}
-                    </button>
-
-                    {isExpanded && (
-                      <div className="px-4 py-3 bg-gray-50 border-t">
-                        <div className="space-y-3">
-                          {/* Preview */}
-                          <div>
-                            <h4 className="text-sm font-medium text-gray-700 mb-1">
-                              Preview / 预览
-                            </h4>
-                            <p className="text-sm text-gray-600 line-clamp-3">
-                              {para.preview || 'No preview available'}
+                        {/* Transition description */}
+                        <div className="flex-1 text-left">
+                          <p className="text-sm text-gray-900">
+                            Para {trans.paraAIndex + 1} → Para {trans.paraBIndex + 1}
+                          </p>
+                          {trans.explicitConnectors && trans.explicitConnectors.length > 0 && (
+                            <p className="text-xs text-yellow-600 mt-0.5">
+                              Connectors: {trans.explicitConnectors.join(', ')}
                             </p>
-                          </div>
+                          )}
+                        </div>
 
-                          {/* Strategy suggestion (strategyReasonZh from API) */}
-                          {para.strategyReasonZh && (
+                        {/* Smoothness score */}
+                        <span className={clsx(
+                          'text-sm w-16 text-right',
+                          trans.riskLevel === 'high' ? 'text-red-600' :
+                          trans.riskLevel === 'medium' ? 'text-yellow-600' : 'text-green-600'
+                        )}>
+                          {trans.smoothnessScore}
+                        </span>
+
+                        {/* Expand icon */}
+                        {isExpanded ? (
+                          <ChevronUp className="w-5 h-5 text-gray-400 flex-shrink-0" />
+                        ) : (
+                          <ChevronDown className="w-5 h-5 text-gray-400 flex-shrink-0" />
+                        )}
+                      </button>
+
+                      {isExpanded && (
+                        <div className="px-4 py-3 bg-gray-50 border-t">
+                          <div className="space-y-3">
+                            {/* Para A ending */}
                             <div>
                               <h4 className="text-sm font-medium text-gray-700 mb-1">
-                                Suggestion / 建议
+                                Paragraph {trans.paraAIndex + 1} ending / 段落结尾
                               </h4>
-                              <p className="text-sm text-gray-600">
-                                {para.strategyReasonZh}
+                              <p className="text-sm text-gray-600 italic">
+                                "...{trans.paraAEnding}"
                               </p>
                             </div>
-                          )}
 
-                          {/* AI Analysis button */}
-                          {para.suggestedStrategy && (
-                            <div className="pt-2">
-                              <Button variant="primary" size="sm">
-                                AI Analysis / AI分析
-                              </Button>
+                            {/* Para B opening */}
+                            <div>
+                              <h4 className="text-sm font-medium text-gray-700 mb-1">
+                                Paragraph {trans.paraBIndex + 1} opening / 段落开头
+                              </h4>
+                              <p className="text-sm text-gray-600 italic">
+                                "{trans.paraBOpening}..."
+                              </p>
                             </div>
-                          )}
+
+                            {/* Issues */}
+                            {trans.issues && trans.issues.length > 0 && (
+                              <div>
+                                <h4 className="text-sm font-medium text-gray-700 mb-1">
+                                  Issues / 问题
+                                </h4>
+                                <ul className="list-disc list-inside text-sm text-gray-600">
+                                  {trans.issues.map((issue, i) => (
+                                    <li key={i}>{issue.descriptionZh || issue.description}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
-          </div>
+          )}
 
           {/* No issues */}
-          {!isUniform && (
+          {!hasConnectorIssue && lengthIssues.length === 0 && (
             <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-lg flex items-start gap-3">
               <CheckCircle className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
               <div>
                 <h3 className="font-medium text-green-800">
-                  Natural Paragraph Length Variation
+                  Natural Transitions Detected
                 </h3>
                 <p className="text-green-600 mt-1">
-                  段落长度变化自然。CV值表明这不是典型的AI生成文本特征。
+                  段落过渡自然。没有检测到过多的显性连接词或AI风格的过渡模式。
                 </p>
               </div>
             </div>
           )}
+
+          {/* Document Modification Section */}
+          {/* 文档修改部分 */}
+          <div className="mb-6 p-4 bg-gray-50 border border-gray-200 rounded-lg">
+            <h3 className="text-lg font-semibold text-gray-900 mb-3 flex items-center gap-2">
+              <FileText className="w-5 h-5" />
+              Document Modification / 文档修改
+            </h3>
+            <p className="text-gray-600 text-sm mb-4">
+              Upload a modified file or paste modified text to continue to the next step.
+              上传修改后的文件或粘贴修改后的文本以继续下一步。
+            </p>
+
+            {/* Mode Toggle */}
+            <div className="flex gap-2 mb-4">
+              <button
+                onClick={() => setModifyMode('file')}
+                className={clsx(
+                  'px-4 py-2 rounded-lg text-sm font-medium transition-colors',
+                  modifyMode === 'file'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-white border border-gray-300 text-gray-700 hover:bg-gray-50'
+                )}
+              >
+                <Upload className="w-4 h-4 inline mr-2" />
+                Upload File / 上传文件
+              </button>
+              <button
+                onClick={() => setModifyMode('text')}
+                className={clsx(
+                  'px-4 py-2 rounded-lg text-sm font-medium transition-colors',
+                  modifyMode === 'text'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-white border border-gray-300 text-gray-700 hover:bg-gray-50'
+                )}
+              >
+                <Edit3 className="w-4 h-4 inline mr-2" />
+                Input Text / 输入文本
+              </button>
+            </div>
+
+            {/* File Upload Mode */}
+            {modifyMode === 'file' && (
+              <div>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".txt,.md,.doc,.docx"
+                  onChange={handleFileSelect}
+                  className="hidden"
+                />
+                <div
+                  onClick={() => fileInputRef.current?.click()}
+                  className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center cursor-pointer hover:border-blue-400 hover:bg-blue-50 transition-colors"
+                >
+                  <Upload className="w-8 h-8 text-gray-400 mx-auto mb-2" />
+                  <p className="text-gray-600">
+                    {newFile ? newFile.name : 'Click to select file / 点击选择文件'}
+                  </p>
+                  <p className="text-gray-400 text-sm mt-1">
+                    Supported: .txt, .md, .doc, .docx
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Text Input Mode */}
+            {modifyMode === 'text' && (
+              <div>
+                <textarea
+                  value={newText}
+                  onChange={(e) => setNewText(e.target.value)}
+                  placeholder="Paste modified text here... / 在此粘贴修改后的文本..."
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 min-h-[200px]"
+                />
+                <p className="text-gray-500 text-sm mt-1">
+                  {newText.length} characters / 字符
+                </p>
+              </div>
+            )}
+
+            {/* Apply and Continue Button */}
+            <div className="mt-4 flex items-center justify-between">
+              <p className="text-sm text-gray-500">
+                {modifyMode === 'file'
+                  ? (newFile ? 'File selected, ready to apply / 文件已选择，可以应用' : 'Please select a file first / 请先选择文件')
+                  : (newText.trim() ? 'Content entered, ready to apply / 内容已输入，可以应用' : 'Please enter content first / 请先输入内容')}
+              </p>
+              <Button
+                variant="primary"
+                onClick={handleConfirmModify}
+                disabled={isUploading || (modifyMode === 'file' && !newFile) || (modifyMode === 'text' && !newText.trim())}
+              >
+                {isUploading ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <ArrowRight className="w-4 h-4 mr-2" />
+                )}
+                Apply and Continue / 应用并继续
+              </Button>
+            </div>
+
+            {/* Error Display */}
+            {error && (
+              <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 text-red-600 flex-shrink-0 mt-0.5" />
+                <p className="text-red-600 text-sm">{error}</p>
+              </div>
+            )}
+          </div>
 
           {/* Processing time */}
           {result.processingTimeMs && (
@@ -453,6 +1102,46 @@ export default function LayerStep1_4({
         </>
       )}
 
+      {/* Skip Confirmation Dialog */}
+      {/* 跳过确认对话框 */}
+      {showSkipConfirm && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-md mx-4 shadow-xl">
+            <div className="flex items-start gap-3 mb-4">
+              <AlertTriangle className="w-6 h-6 text-yellow-600 flex-shrink-0" />
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">
+                  Skip without modifying? / 跳过不修改？
+                </h3>
+                <p className="text-gray-600 mt-2">
+                  You have not applied any modifications on this page. Are you sure you want to skip to the next step?
+                </p>
+                <p className="text-gray-600 mt-1">
+                  您尚未在此页面应用任何修改。确定要跳过到下一步吗？
+                </p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-3">
+              <Button
+                variant="secondary"
+                onClick={() => setShowSkipConfirm(false)}
+              >
+                Cancel / 取消
+              </Button>
+              <Button
+                variant="primary"
+                onClick={() => {
+                  setShowSkipConfirm(false);
+                  handleNext();
+                }}
+              >
+                Confirm Skip / 确认跳过
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Navigation */}
       {showNavigation && (
         <div className="flex items-center justify-between pt-6 border-t">
@@ -460,8 +1149,8 @@ export default function LayerStep1_4({
             <ArrowLeft className="w-4 h-4 mr-2" />
             Back: Logic Pattern / 上一步：逻辑模式
           </Button>
-          <Button variant="primary" onClick={handleNext} disabled={isAnalyzing}>
-            Next: Transitions / 下一步：段落过渡
+          <Button variant="primary" onClick={() => setShowSkipConfirm(true)} disabled={isAnalyzing}>
+            Skip and Continue / 跳过并继续
             <ArrowRight className="w-4 h-4 ml-2" />
           </Button>
         </div>

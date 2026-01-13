@@ -65,6 +65,28 @@ export interface DetectionIssue {
   details?: Record<string, unknown>;
 }
 
+// Issue Suggestion Response (for Load Suggestions feature)
+// 问题建议响应（用于加载建议功能）
+export interface IssueSuggestionResponse {
+  diagnosisZh: string;
+  strategies: Array<{
+    nameZh: string;
+    descriptionZh: string;
+    exampleBefore?: string;
+    exampleAfter?: string;
+    difficulty: string;
+    effectiveness: number;
+  }>;
+  modificationPrompt: string;
+  priorityTipsZh: string[];
+  cautionZh: string;
+  // Frontend-friendly aliases
+  // 前端友好的别名
+  analysis?: string;
+  suggestions?: string[];
+  exampleFix?: string;
+}
+
 export interface LayerAnalysisResult {
   layer: LayerLevel;
   riskScore: number;
@@ -279,6 +301,7 @@ export interface SectionIdentificationResponse {
   totalParagraphs: number;
   totalWords: number;
   roleDistribution: Record<string, number>;
+  issues?: DetectionIssue[];
   recommendations: string[];
   recommendationsZh: string[];
   processingTimeMs?: number;
@@ -870,6 +893,133 @@ export interface LexicalAnalysisResponse extends LayerAnalysisResult {
   pplAnalysis?: PPLAnalysisResult;
 }
 
+// Step 5.0: Lexical Context Preparation Types
+// 步骤 5.0：词汇环境准备类型
+export interface WordFrequency {
+  word: string;
+  count: number;
+  percentage: number;
+}
+
+export interface LockedTermStatus {
+  term: string;
+  found: boolean;
+  count: number;
+}
+
+export interface LexicalContextResponse extends LayerAnalysisResult {
+  vocabularyStats: {
+    totalWords: number;
+    uniqueWords: number;
+    vocabularyRichness: number;
+    ttr: number;
+  };
+  topWords: WordFrequency[];
+  overusedWords: string[];
+  lockedTermsStatus: LockedTermStatus[];
+}
+
+// Step 5.1: Fingerprint Detection Types
+// 步骤 5.1：AI指纹检测类型
+export interface FingerprintMatch {
+  word?: string;
+  phrase?: string;
+  count: number;
+  positions: string[];
+  severity: IssueSeverity;
+}
+
+export interface FingerprintDetectionResponse extends LayerAnalysisResult {
+  typeAWords: FingerprintMatch[];
+  typeBWords: FingerprintMatch[];
+  typeCPhrases: FingerprintMatch[];
+  totalFingerprints: number;
+  fingerprintDensity: number;
+  pplScore?: number;
+  pplRiskLevel?: RiskLevel;
+}
+
+// Step 5.2: Human Feature Analysis Types
+// 步骤 5.2：人类特征分析类型
+export interface HumanFeature {
+  type: 'colloquialism' | 'personal_voice' | 'imperfection' | 'emotion' | 'idiosyncratic' | 'conversational';
+  text: string;
+  position: string;
+  strength: 'strong' | 'moderate' | 'weak';
+}
+
+export interface HumanFeatureResponse extends LayerAnalysisResult {
+  humanFeatures: HumanFeature[];
+  featureScore: number;
+  featureDensity: number;
+  missingFeatures: string[];
+}
+
+// Step 5.3: Replacement Generation Types
+// 步骤 5.3：替换词生成类型
+export interface ReplacementSuggestion {
+  original: string;
+  position: string;
+  reason: 'ai_fingerprint' | 'variety' | 'formality' | 'collocation';
+  suggestions: string[];
+  recommended: string;
+  context: string;
+}
+
+export interface ReplacementGenerationResponse extends LayerAnalysisResult {
+  replacements: ReplacementSuggestion[];
+  replacementCount: number;
+  byCategory: {
+    aiFingerprint: number;
+    variety: number;
+    formality: number;
+    collocation: number;
+  };
+}
+
+// Step 5.4: Paragraph Rewriting Types
+// 步骤 5.4：段落级改写类型
+export interface ParagraphRewriteInfo {
+  index: number;
+  needsRewrite: boolean;
+  fingerprintDensity: number;
+  vocabularyVariety: number;
+  formalityScore: number;
+  humanFeatures: number;
+  issues: string[];
+}
+
+export interface ParagraphRewriteResponse extends LayerAnalysisResult {
+  paragraphs: ParagraphRewriteInfo[];
+  paragraphsToRewrite: number[];
+}
+
+// Step 5.5: Validation Types
+// 步骤 5.5：验证类型
+export interface ValidationResult {
+  lockedTermsCheck: {
+    passed: boolean;
+    missingTerms: string[];
+    alteredTerms: string[];
+  };
+  semanticSimilarity: number;
+  qualityScore: number;
+  remainingIssues: Array<{
+    type: string;
+    description: string;
+    descriptionZh: string;
+    position: string;
+  }>;
+  validationPassed: boolean;
+}
+
+export interface ValidationResponse extends LayerAnalysisResult {
+  originalRiskScore: number;
+  finalRiskScore: number;
+  improvement: number;
+  validation: ValidationResult;
+}
+
 // Pipeline Types
 // 流水线类型
 export interface PipelineAnalysisRequest {
@@ -1004,8 +1154,11 @@ export const documentLayerApi = {
    * Step 1.1: Structure Analysis
    * 步骤 1.1：结构分析
    */
-  analyzeStructure: async (text: string): Promise<DocumentAnalysisResponse> => {
-    const response = await api.post('/document/structure', { text });
+  analyzeStructure: async (text: string, sessionId?: string): Promise<DocumentAnalysisResponse> => {
+    const response = await api.post('/document/structure', {
+      text,
+      session_id: sessionId  // Add session_id for caching
+    });
     return transformKeys<DocumentAnalysisResponse>(response.data);
   },
 
@@ -1108,6 +1261,126 @@ export const documentLayerApi = {
       session_id: sessionId,
     });
     return transformKeys<ContentSubstantialityResponse>(response.data);
+  },
+
+  /**
+   * Get detailed suggestion for a specific issue (calls legacy API)
+   * 获取针对特定问题的详细建议（调用旧版API）
+   * Note: Uses legacy API at /api/v1/structure, not /api/v1/analysis
+   */
+  getIssueSuggestion: async (
+    documentId: string,
+    issue: DetectionIssue,
+    quickMode: boolean = false
+  ): Promise<{
+    diagnosisZh: string;
+    strategies: Array<{
+      nameZh: string;
+      descriptionZh: string;
+      exampleBefore?: string;
+      exampleAfter?: string;
+      difficulty: string;
+      effectiveness: number;
+    }>;
+    modificationPrompt: string;
+    priorityTipsZh: string[];
+    cautionZh: string;
+  }> => {
+    // Use legacy API endpoint (baseURL is /api/v1/analysis, so we need ../structure)
+    const response = await api.post('../structure/issue-suggestion', {
+      documentId,
+      issueType: issue.type,
+      issueDescription: issue.description,
+      issueDescriptionZh: issue.descriptionZh,
+      severity: issue.severity,
+      affectedPositions: issue.position ? [issue.position] : [],
+      quickMode,
+    });
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Generate modification prompt for selected issues (calls legacy API)
+   * 为选定问题生成修改提示词（调用旧版API）
+   * Note: Uses legacy API at /api/v1/structure, not /api/v1/analysis
+   */
+  generateModifyPrompt: async (
+    documentId: string,
+    selectedIssues: DetectionIssue[],
+    options?: {
+      sessionId?: string;
+      userNotes?: string;
+    }
+  ): Promise<{
+    prompt: string;
+    promptZh: string;
+    issuesSummaryZh: string;
+    colloquialismLevel: number;
+    estimatedChanges: number;
+  }> => {
+    // Use legacy API endpoint
+    // Note: Use location string for affected_positions, not position object
+    // 使用 location 字符串作为 affected_positions，而不是 position 对象
+    const response = await api.post('../structure/merge-modify/prompt', {
+      document_id: documentId,
+      selected_issues: selectedIssues.map(issue => {
+        const issueAny = issue as Record<string, unknown>;
+        const locationStr = typeof issueAny.location === 'string' ? issueAny.location : '';
+        return {
+          type: issue.type,
+          description: issue.description || '',
+          description_zh: issue.descriptionZh || '',
+          severity: issue.severity || 'medium',
+          affected_positions: locationStr ? [locationStr] : [],
+        };
+      }),
+      session_id: options?.sessionId,
+      user_notes: options?.userNotes,
+    });
+    return transformKeys(response.data);
+  },
+
+  /**
+   * Apply AI modification directly (calls legacy API)
+   * AI直接修改（调用旧版API）
+   * Note: Uses legacy API at /api/v1/structure, not /api/v1/analysis
+   */
+  applyModify: async (
+    documentId: string,
+    selectedIssues: DetectionIssue[],
+    options?: {
+      sessionId?: string;
+      userNotes?: string;
+    }
+  ): Promise<{
+    modifiedText: string;
+    changesSummaryZh: string;
+    changesCount: number;
+    remainingAttempts: number;
+    colloquialismLevel: number;
+  }> => {
+    // Use legacy API endpoint
+    // Note: Use location string for affected_positions, not position object
+    // 使用 location 字符串作为 affected_positions，而不是 position 对象
+    const response = await api.post('../structure/merge-modify/apply', {
+      document_id: documentId,
+      selected_issues: selectedIssues.map(issue => {
+        // Get location string from issue - check multiple possible fields
+        // 从 issue 获取位置字符串 - 检查多个可能的字段
+        const issueAny = issue as Record<string, unknown>;
+        const locationStr = typeof issueAny.location === 'string' ? issueAny.location : '';
+        return {
+          type: issue.type,
+          description: issue.description || '',
+          description_zh: issue.descriptionZh || '',
+          severity: issue.severity || 'medium',
+          affected_positions: locationStr ? [locationStr] : [],
+        };
+      }),
+      session_id: options?.sessionId,
+      user_notes: options?.userNotes,
+    });
+    return transformKeys(response.data);
   },
 };
 
@@ -1383,11 +1656,13 @@ export const paragraphLayerApi = {
    */
   analyzeAnchor: async (
     text: string,
-    sectionContext?: Record<string, unknown>
+    sectionContext?: Record<string, unknown>,
+    sessionId?: string
   ): Promise<ParagraphAnalysisResponse> => {
     const response = await api.post('/paragraph/anchor', {
       text,
       section_context: sectionContext,
+      session_id: sessionId,
     });
     return transformKeys<ParagraphAnalysisResponse>(response.data);
   },
@@ -1854,53 +2129,112 @@ export const sentenceLayerApi = {
 // ============================================
 export const lexicalLayerApi = {
   /**
+   * Step 5.0: Lexical Context Preparation
+   * 步骤 5.0：词汇环境准备
+   */
+  prepareContext: async (
+    text: string,
+    sessionId?: string,
+    lockedTerms?: string[]
+  ): Promise<LexicalContextResponse> => {
+    const response = await api.post('/lexical/step5-0/context', {
+      text,
+      session_id: sessionId,
+      locked_terms: lockedTerms,
+    });
+    return transformKeys<LexicalContextResponse>(response.data);
+  },
+
+  /**
    * Step 5.1: Fingerprint Detection
-   * 步骤 5.1：指纹词检测
+   * 步骤 5.1：AI指纹检测
    */
-  analyzeFingerprint: async (
+  detectFingerprints: async (
     text: string,
-    sentences?: string[]
-  ): Promise<LexicalAnalysisResponse> => {
-    const response = await api.post('/lexical/fingerprint', {
+    sessionId?: string,
+    lockedTerms?: string[]
+  ): Promise<FingerprintDetectionResponse> => {
+    const response = await api.post('/lexical/step5-1/fingerprint', {
       text,
-      sentences,
+      session_id: sessionId,
+      locked_terms: lockedTerms,
     });
-    return transformKeys<LexicalAnalysisResponse>(response.data);
+    return transformKeys<FingerprintDetectionResponse>(response.data);
   },
 
   /**
-   * Step 5.2: Connector Analysis
-   * 步骤 5.2：连接词分析
+   * Step 5.2: Human Feature Analysis
+   * 步骤 5.2：人类特征分析
    */
-  analyzeConnector: async (
+  analyzeHumanFeatures: async (
     text: string,
-    sentences?: string[]
-  ): Promise<LexicalAnalysisResponse> => {
-    const response = await api.post('/lexical/connector', {
+    sessionId?: string,
+    lockedTerms?: string[]
+  ): Promise<HumanFeatureResponse> => {
+    const response = await api.post('/lexical/step5-2/human-features', {
       text,
-      sentences,
+      session_id: sessionId,
+      locked_terms: lockedTerms,
     });
-    return transformKeys<LexicalAnalysisResponse>(response.data);
+    return transformKeys<HumanFeatureResponse>(response.data);
   },
 
   /**
-   * Step 5.3: Word-Level Risk
-   * 步骤 5.3：词级风险
+   * Step 5.3: Replacement Generation
+   * 步骤 5.3：替换词生成
    */
-  analyzeWordRisk: async (
+  generateReplacements: async (
     text: string,
-    sentences?: string[]
-  ): Promise<LexicalAnalysisResponse> => {
-    const response = await api.post('/lexical/word-risk', {
+    sessionId?: string,
+    lockedTerms?: string[]
+  ): Promise<ReplacementGenerationResponse> => {
+    const response = await api.post('/lexical/step5-3/replacements', {
       text,
-      sentences,
+      session_id: sessionId,
+      locked_terms: lockedTerms,
     });
-    return transformKeys<LexicalAnalysisResponse>(response.data);
+    return transformKeys<ReplacementGenerationResponse>(response.data);
   },
 
   /**
-   * Combined Lexical Analysis
-   * 综合词汇分析
+   * Step 5.4: Paragraph Rewriting Analysis
+   * 步骤 5.4：段落级改写分析
+   * Note: Uses substeps API at /api/v1/layer1
+   */
+  analyzeParagraphRewrite: async (
+    text: string,
+    sessionId?: string,
+    lockedTerms?: string[]
+  ): Promise<ParagraphRewriteResponse> => {
+    const response = await api.post('../layer1/step5-4/analyze', {
+      text,
+      session_id: sessionId,
+      locked_terms: lockedTerms,
+    });
+    return transformKeys<ParagraphRewriteResponse>(response.data);
+  },
+
+  /**
+   * Step 5.5: Validation
+   * 步骤 5.5：验证
+   * Note: Uses substeps API at /api/v1/layer1
+   */
+  validate: async (
+    text: string,
+    sessionId?: string,
+    lockedTerms?: string[]
+  ): Promise<ValidationResponse> => {
+    const response = await api.post('../layer1/step5-5/validate', {
+      text,
+      session_id: sessionId,
+      locked_terms: lockedTerms,
+    });
+    return transformKeys<ValidationResponse>(response.data);
+  },
+
+  /**
+   * Legacy: Combined Lexical Analysis
+   * 旧版：综合词汇分析
    */
   analyze: async (
     text: string,
@@ -1916,8 +2250,23 @@ export const lexicalLayerApi = {
   },
 
   /**
-   * Get Replacement Suggestions
-   * 获取替换建议
+   * Legacy: Fingerprint Detection (old endpoint)
+   * 旧版：指纹词检测（旧端点）
+   */
+  analyzeFingerprint: async (
+    text: string,
+    sentences?: string[]
+  ): Promise<LexicalAnalysisResponse> => {
+    const response = await api.post('/lexical/fingerprint', {
+      text,
+      sentences,
+    });
+    return transformKeys<LexicalAnalysisResponse>(response.data);
+  },
+
+  /**
+   * Legacy: Get Replacement Suggestions
+   * 旧版：获取替换建议
    */
   getReplacements: async (
     text: string,

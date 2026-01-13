@@ -2,8 +2,11 @@
  * Auth Store - Authentication state management
  * 认证存储 - 认证状态管理
  *
- * Supports registration with phone + password + email
- * 支持手机号 + 密码 + 邮箱注册
+ * Now integrates with user microservice at /api/user/*
+ * 现在与用户微服务集成 /api/user/*
+ *
+ * Supports registration with phone + password + email (via SMS verification)
+ * 支持手机号 + 密码 + 邮箱注册（通过短信验证）
  */
 
 import { create } from 'zustand';
@@ -14,12 +17,20 @@ import { persist } from 'zustand/middleware';
 // 类型定义
 // ==========================================
 
+/**
+ * User info from microservice
+ * 来自微服务的用户信息
+ */
 export interface UserInfo {
   userId: string;
+  phone: string;
+  email?: string;
+  createdAt?: string;
+  // Legacy fields for backward compatibility
+  // 向后兼容的遗留字段
   platformUserId?: string;
   nickname?: string;
-  phone?: string;
-  isDebug: boolean;
+  isDebug?: boolean;
 }
 
 export interface RegisterData {
@@ -32,26 +43,30 @@ export interface RegisterData {
 export interface AuthState {
   // State
   token: string | null;
+  refreshToken: string | null;
   user: UserInfo | null;
   isLoggedIn: boolean;
   isLoading: boolean;
   error: string | null;
 
   // Actions
-  login: (phone: string, password: string) => Promise<boolean>;
-  register: (data: RegisterData) => Promise<{ success: boolean; message?: string }>;
-  logout: () => void;
-  checkAuth: () => Promise<void>;
-  setToken: (token: string, user: UserInfo) => void;
+  setAuth: (token: string, user: UserInfo, refreshToken?: string) => void;
+  clearAuth: () => void;
+  setLoading: (loading: boolean) => void;
+  setError: (error: string | null) => void;
   clearError: () => void;
+  checkAuth: () => Promise<void>;
+  // Legacy actions (for backward compatibility)
+  logout: () => void;
+  setToken: (token: string, user: UserInfo) => void;
 }
 
 // ==========================================
-// API Base URL
-// API基础URL
+// API Base URL (User Microservice)
+// API基础URL（用户微服务）
 // ==========================================
 
-const API_BASE = '/api/v1/auth';
+const USER_API_BASE = '/api/user';
 
 // ==========================================
 // Store
@@ -64,97 +79,33 @@ export const useAuthStore = create<AuthState>()(
       // Initial state
       // 初始状态
       token: null,
+      refreshToken: null,
       user: null,
       isLoggedIn: false,
       isLoading: false,
       error: null,
 
-      // Register new user
-      // 注册新用户
-      register: async (data: RegisterData) => {
-        set({ isLoading: true, error: null });
-
-        try {
-          const response = await fetch(`${API_BASE}/register`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              phone: data.phone,
-              password: data.password,
-              password_confirm: data.passwordConfirm,
-              email: data.email || null,
-            }),
-          });
-
-          const result = await response.json();
-
-          if (!response.ok) {
-            throw new Error(result.detail?.message_zh || result.detail?.message || 'Registration failed');
-          }
-
-          set({ isLoading: false });
-
-          return {
-            success: true,
-            message: result.message_zh || result.message,
-          };
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'Unknown error';
-          set({ isLoading: false, error: message });
-          return { success: false, message };
-        }
+      // Set auth state (called by LoginModal after successful login/register)
+      // 设置认证状态（登录/注册成功后由LoginModal调用）
+      setAuth: (token: string, user: UserInfo, refreshToken?: string) => {
+        set({
+          token,
+          refreshToken: refreshToken || null,
+          user,
+          isLoggedIn: true,
+          error: null,
+        });
       },
 
-      // Login with phone and password
-      // 使用手机号和密码登录
-      login: async (phone: string, password: string) => {
-        set({ isLoading: true, error: null });
-
-        try {
-          const response = await fetch(`${API_BASE}/login`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ phone, password }),
-          });
-
-          const data = await response.json();
-
-          if (!response.ok) {
-            throw new Error(data.detail?.message_zh || data.detail?.message || 'Login failed');
-          }
-
-          const user: UserInfo = {
-            userId: data.user.platform_user_id,
-            platformUserId: data.user.platform_user_id,
-            nickname: data.user.nickname,
-            phone: data.user.phone,
-            isDebug: data.system_mode === 'debug',
-          };
-
-          set({
-            token: data.access_token,
-            user,
-            isLoggedIn: true,
-            isLoading: false,
-          });
-
-          return true;
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'Unknown error';
-          set({ isLoading: false, error: message });
-          return false;
-        }
-      },
-
-      // Logout
-      // 登出
-      logout: () => {
+      // Clear auth state (logout)
+      // 清除认证状态（登出）
+      clearAuth: () => {
         const token = get().token;
 
-        // Call logout API (fire and forget)
-        // 调用登出API（不等待结果）
+        // Call microservice logout API (fire and forget)
+        // 调用微服务登出API（不等待结果）
         if (token) {
-          fetch(`${API_BASE}/logout`, {
+          fetch(`${USER_API_BASE}/logout`, {
             method: 'POST',
             headers: {
               'Authorization': `Bearer ${token}`,
@@ -164,14 +115,33 @@ export const useAuthStore = create<AuthState>()(
 
         set({
           token: null,
+          refreshToken: null,
           user: null,
           isLoggedIn: false,
           error: null,
         });
       },
 
-      // Check current auth status
-      // 检查当前认证状态
+      // Set loading state
+      // 设置加载状态
+      setLoading: (loading: boolean) => {
+        set({ isLoading: loading });
+      },
+
+      // Set error
+      // 设置错误
+      setError: (error: string | null) => {
+        set({ error });
+      },
+
+      // Clear error
+      // 清除错误
+      clearError: () => {
+        set({ error: null });
+      },
+
+      // Check current auth status via microservice
+      // 通过微服务检查当前认证状态
       checkAuth: async () => {
         const token = get().token;
 
@@ -183,17 +153,45 @@ export const useAuthStore = create<AuthState>()(
         set({ isLoading: true });
 
         try {
-          const response = await fetch(`${API_BASE}/me`, {
+          const response = await fetch(`${USER_API_BASE}/me`, {
             headers: {
               'Authorization': `Bearer ${token}`,
             },
           });
 
           if (!response.ok) {
-            // Token expired or invalid
-            // 令牌过期或无效
+            // Token expired or invalid - try refresh
+            // 令牌过期或无效 - 尝试刷新
+            const refreshToken = get().refreshToken;
+            if (refreshToken) {
+              try {
+                const refreshResponse = await fetch(`${USER_API_BASE}/token/refresh`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ refresh_token: refreshToken }),
+                });
+
+                if (refreshResponse.ok) {
+                  const refreshData = await refreshResponse.json();
+                  set({
+                    token: refreshData.token,
+                    refreshToken: refreshData.refreshToken || refreshToken,
+                    isLoading: false,
+                  });
+                  // Retry auth check with new token
+                  // 使用新令牌重试认证检查
+                  get().checkAuth();
+                  return;
+                }
+              } catch {
+                // Refresh failed, clear auth
+                // 刷新失败，清除认证
+              }
+            }
+
             set({
               token: null,
+              refreshToken: null,
               user: null,
               isLoggedIn: false,
               isLoading: false,
@@ -205,18 +203,18 @@ export const useAuthStore = create<AuthState>()(
 
           set({
             user: {
-              userId: data.user_id,
-              platformUserId: data.platform_user_id,
-              nickname: data.nickname,
+              userId: data.userId || data.user_id,
               phone: data.phone,
-              isDebug: data.is_debug,
+              email: data.email,
+              createdAt: data.createdAt || data.created_at,
             },
             isLoggedIn: true,
             isLoading: false,
           });
-        } catch (error) {
+        } catch {
           set({
             token: null,
+            refreshToken: null,
             user: null,
             isLoggedIn: false,
             isLoading: false,
@@ -224,26 +222,23 @@ export const useAuthStore = create<AuthState>()(
         }
       },
 
-      // Set token and user directly (for SSO or other auth methods)
-      // 直接设置令牌和用户（用于SSO或其他认证方式）
-      setToken: (token: string, user: UserInfo) => {
-        set({
-          token,
-          user,
-          isLoggedIn: true,
-        });
+      // Legacy: logout (alias for clearAuth)
+      // 遗留: 登出（clearAuth的别名）
+      logout: () => {
+        get().clearAuth();
       },
 
-      // Clear error
-      // 清除错误
-      clearError: () => {
-        set({ error: null });
+      // Legacy: setToken (alias for setAuth without refreshToken)
+      // 遗留: 设置令牌（不带refreshToken的setAuth别名）
+      setToken: (token: string, user: UserInfo) => {
+        get().setAuth(token, user);
       },
     }),
     {
       name: 'academicguard-auth',
       partialize: (state) => ({
         token: state.token,
+        refreshToken: state.refreshToken,
         user: state.user,
         isLoggedIn: state.isLoggedIn,
       }),

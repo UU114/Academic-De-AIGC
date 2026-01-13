@@ -98,6 +98,63 @@ class StructureAnalysisResponse(SubstepBaseResponse):
     sections: List[Dict[str, Any]] = Field(default_factory=list, description="Detected sections")
 
 
+# =============================================================================
+# Merge Modify Schemas (Used by all substeps for rewriting)
+# 合并修改模式（所有子步骤用于改写）
+# =============================================================================
+
+class SelectedIssue(BaseModel):
+    """
+    A single selected issue for merge modification
+    合并修改中选择的单个问题
+    """
+    type: str = Field(..., description="Issue type identifier")
+    description: str = Field("", description="English description")
+    description_zh: str = Field(..., description="Chinese description")
+    severity: str = Field("medium", description="Severity: high/medium/low")
+    affected_positions: List[str] = Field(default_factory=list, description="Affected positions")
+
+
+class MergeModifyRequest(BaseModel):
+    """
+    Request for merge modification (generate prompt or apply directly)
+    合并修改请求（生成提示词或直接修改）
+
+    User selects multiple issues and can optionally provide notes.
+    用户选择多个问题，可选择性地提供注意事项。
+    """
+    document_id: str = Field(..., description="Document ID")
+    session_id: Optional[str] = Field(None, description="Session ID for context")
+    selected_issues: List[SelectedIssue] = Field(..., description="List of selected issues")
+    user_notes: Optional[str] = Field(None, description="User's optional notes/requirements")
+    mode: str = Field("prompt", description="Mode: 'prompt' (generate prompt) or 'apply' (direct modification)")
+
+
+class MergeModifyPromptResponse(BaseModel):
+    """
+    Response containing generated modification prompt
+    包含生成的修改提示词的响应
+    """
+    prompt: str = Field(..., description="Generated modification prompt for user to copy")
+    prompt_zh: str = Field(..., description="Prompt description in Chinese")
+    issues_summary_zh: str = Field("", description="Summary of selected issues in Chinese")
+    colloquialism_level: Optional[int] = Field(None, description="Target colloquialism level (0-10)")
+    estimated_changes: int = Field(0, description="Estimated number of changes")
+
+
+class MergeModifyApplyResponse(BaseModel):
+    """
+    Response containing AI-modified document
+    包含AI修改后文档的响应
+    """
+    modified_text: str = Field(..., description="Modified document text")
+    changes_summary_zh: str = Field("", description="Summary of changes in Chinese")
+    changes_count: int = Field(0, description="Number of changes made")
+    issues_addressed: List[str] = Field(default_factory=list, description="List of issue types addressed")
+    remaining_attempts: int = Field(3, description="Remaining regeneration attempts")
+    colloquialism_level: Optional[int] = Field(None, description="Target colloquialism level used")
+
+
 class SectionUniformityResponse(SubstepBaseResponse):
     """Response for section uniformity analysis (Step 1.2)"""
     paragraph_count: int = Field(0, description="Total paragraph count")
@@ -118,8 +175,16 @@ class LogicPatternResponse(SubstepBaseResponse):
     progression_markers: List[Dict[str, Any]] = Field(default_factory=list)
 
 
+class AnchorDensityResponse(SubstepBaseResponse):
+    """Response for anchor density analysis (Step 1.4)"""
+    overall_density: float = Field(0, description="Overall anchor density per 100 words")
+    target_density: float = Field(5.0, description="Target density for low-risk writing")
+    low_density_paragraphs: List[Dict[str, Any]] = Field(default_factory=list, description="Paragraphs with low density")
+    anchor_types_count: Dict[str, int] = Field(default_factory=dict, description="Count by anchor type")
+
+
 class ConnectorTransitionResponse(SubstepBaseResponse):
-    """Response for connector/transition analysis (Step 1.4/1.5)"""
+    """Response for connector/transition analysis (Step 1.5)"""
     total_transitions: int = Field(0, description="Total transition points")
     problematic_transitions: int = Field(0, description="Problematic transitions count")
     connector_density: float = Field(0, description="Connector density percentage")

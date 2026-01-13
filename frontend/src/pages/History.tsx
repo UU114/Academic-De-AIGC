@@ -4,7 +4,6 @@ import { FileText, Clock, Play, CheckCircle, Pause, Trash2, AlertCircle, Refresh
 import { clsx } from 'clsx';
 import Button from '../components/common/Button';
 import RiskBadge from '../components/common/RiskBadge';
-import ProgressBar from '../components/common/ProgressBar';
 import LoadingMessage from '../components/common/LoadingMessage';
 import { sessionApi, documentApi } from '../services/api';
 import type { SessionInfo, DocumentInfo, SessionStep } from '../types';
@@ -103,20 +102,74 @@ export default function History() {
   // Resume a task - navigate to the correct step
   // 恢复任务 - 导航到正确的步骤
   const handleResumeTask = (task: TaskItem) => {
-    // Navigate based on current step (5-layer architecture)
-    // 根据当前步骤导航（5层架构）
+    // Base URL params for all routes
+    // 所有路由的基础URL参数
+    const params = `?mode=${task.mode}&session=${task.sessionId}`;
+    const docBase = `/flow`;
+
+    // Navigate based on current step (5-layer architecture with granular sub-steps)
+    // 根据当前步骤导航（5层架构含细粒度子步骤）
     const stepRoutes: Record<string, string> = {
-      // New 5-layer routes (Layer 5 → Layer 1)
-      'layer-document': `/flow/layer-document/${task.documentId}?mode=${task.mode}&session=${task.sessionId}`,
-      'layer-section': `/flow/layer-section/${task.documentId}?mode=${task.mode}&session=${task.sessionId}`,
-      'layer-paragraph': `/flow/layer-paragraph/${task.documentId}?mode=${task.mode}&session=${task.sessionId}`,
-      'layer-sentence': `/flow/layer-sentence/${task.documentId}?mode=${task.mode}&session=${task.sessionId}`,
-      'layer-lexical': `/flow/layer-lexical/${task.documentId}?mode=${task.mode}&session=${task.sessionId}`,
-      // Legacy routes (for backward compatibility)
-      'step1-1': `/flow/layer-document/${task.documentId}?mode=${task.mode}&session=${task.sessionId}`,
-      'step1-2': `/flow/layer-section/${task.documentId}?mode=${task.mode}&session=${task.sessionId}`,
-      'step2': `/flow/layer-paragraph/${task.documentId}?mode=${task.mode}&session=${task.sessionId}`,
-      'level2': `/flow/layer-paragraph/${task.documentId}?mode=${task.mode}&session=${task.sessionId}`,
+      // Step 1.0: Term Locking
+      // 步骤 1.0：词汇锁定
+      'term-lock': `${docBase}/term-lock/${task.documentId}${params}`,
+
+      // Layer 5 (Document Level): Step 1.1 - 1.5
+      // Layer 5（全文层）：步骤 1.1 - 1.5
+      'layer5-step1-1': `${docBase}/layer5-step1-1/${task.documentId}${params}`,
+      'layer5-step1-2': `${docBase}/layer5-step1-2/${task.documentId}${params}`,
+      'layer5-step1-3': `${docBase}/layer5-step1-3/${task.documentId}${params}`,
+      'layer5-step1-4': `${docBase}/layer5-step1-4/${task.documentId}${params}`,
+      'layer5-step1-5': `${docBase}/layer5-step1-5/${task.documentId}${params}`,
+
+      // Layer 4 (Section Level): Step 2.0 - 2.5
+      // Layer 4（章节层）：步骤 2.0 - 2.5
+      'layer4-step2-0': `${docBase}/layer4-step2-0/${task.documentId}${params}`,
+      'layer4-step2-1': `${docBase}/layer4-step2-1/${task.documentId}${params}`,
+      'layer4-step2-2': `${docBase}/layer4-step2-2/${task.documentId}${params}`,
+      'layer4-step2-3': `${docBase}/layer4-step2-3/${task.documentId}${params}`,
+      'layer4-step2-4': `${docBase}/layer4-step2-4/${task.documentId}${params}`,
+      'layer4-step2-5': `${docBase}/layer4-step2-5/${task.documentId}${params}`,
+
+      // Layer 3 (Paragraph Level): Step 3.0 - 3.5
+      // Layer 3（段落层）：步骤 3.0 - 3.5
+      'layer3-step3-0': `${docBase}/layer3-step3-0/${task.documentId}${params}`,
+      'layer3-step3-1': `${docBase}/layer3-step3-1/${task.documentId}${params}`,
+      'layer3-step3-2': `${docBase}/layer3-step3-2/${task.documentId}${params}`,
+      'layer3-step3-3': `${docBase}/layer3-step3-3/${task.documentId}${params}`,
+      'layer3-step3-4': `${docBase}/layer3-step3-4/${task.documentId}${params}`,
+      'layer3-step3-5': `${docBase}/layer3-step3-5/${task.documentId}${params}`,
+
+      // Layer 2 (Sentence Level): Step 4.0 - 4.1, Console
+      // Layer 2（句子层）：步骤 4.0 - 4.1, Console
+      'layer2-step4-0': `${docBase}/layer2-step4-0/${task.documentId}${params}`,
+      'layer2-step4-1': `${docBase}/layer2-step4-1/${task.documentId}${params}`,
+      'layer2-step4-console': `${docBase}/layer2-step4-console/${task.documentId}${params}`,
+
+      // Layer 1 (Lexical Level): Step 5.0 - 5.5
+      // Layer 1（词汇层）：步骤 5.0 - 5.5
+      'layer1-step5-0': `${docBase}/layer1-step5-0/${task.documentId}${params}`,
+      'layer1-step5-1': `${docBase}/layer1-step5-1/${task.documentId}${params}`,
+      'layer1-step5-2': `${docBase}/layer1-step5-2/${task.documentId}${params}`,
+      'layer1-step5-3': `${docBase}/layer1-step5-3/${task.documentId}${params}`,
+      'layer1-step5-4': `${docBase}/layer1-step5-4/${task.documentId}${params}`,
+      'layer1-step5-5': `${docBase}/layer1-step5-5/${task.documentId}${params}`,
+      'layer-lexical-v2': `${docBase}/layer1-lexical-v2/${task.documentId}${params}`,
+
+      // Legacy combined layer routes (for backward compatibility)
+      // 旧版组合层级路由（向后兼容）
+      'layer-document': `${docBase}/layer-document/${task.documentId}${params}`,
+      'layer-section': `${docBase}/layer-section/${task.documentId}${params}`,
+      'layer-paragraph': `${docBase}/layer-paragraph/${task.documentId}${params}`,
+      'layer-sentence': `${docBase}/layer-sentence/${task.documentId}${params}`,
+      'layer-lexical': `${docBase}/layer-lexical/${task.documentId}${params}`,
+
+      // Legacy 4-step routes (for backward compatibility)
+      // 旧版4步流程路由（向后兼容）
+      'step1-1': `${docBase}/layer5-step1-1/${task.documentId}${params}`,
+      'step1-2': `${docBase}/layer4-step2-0/${task.documentId}${params}`,
+      'step2': `${docBase}/layer3-step3-0/${task.documentId}${params}`,
+      'level2': `${docBase}/layer3-step3-0/${task.documentId}${params}`,
       'step3': task.mode === 'intervention'
         ? `/intervention/${task.sessionId}`
         : `/yolo/${task.sessionId}`,
@@ -126,7 +179,9 @@ export default function History() {
       'review': `/review/${task.sessionId}`,
     };
 
-    const route = stepRoutes[task.currentStep] || stepRoutes['layer-document'];
+    // Default to term-lock (first step) if currentStep is not found
+    // 如果 currentStep 未找到，默认跳转到 term-lock（第一步）
+    const route = stepRoutes[task.currentStep] || `${docBase}/term-lock/${task.documentId}${params}`;
     navigate(route);
   };
 
@@ -163,12 +218,60 @@ export default function History() {
   // 获取步骤标签
   const getStepLabel = (step: string) => {
     const stepLabels: Record<string, string> = {
-      'step1-1': 'Step1-1 结构分析',
-      'step1-2': 'Step1-2 段落分析',
+      // Step 1.0: Term Locking
+      'term-lock': '1.0 词汇锁定',
+
+      // Layer 5 (Document Level): Step 1.1 - 1.5
+      'layer5-step1-1': '1.1 结构框架',
+      'layer5-step1-2': '1.2 段落长度',
+      'layer5-step1-3': '1.3 推进闭合',
+      'layer5-step1-4': '1.4 连接词衔接',
+      'layer5-step1-5': '1.5 内容实质',
+
+      // Layer 4 (Section Level): Step 2.0 - 2.5
+      'layer4-step2-0': '2.0 章节概览',
+      'layer4-step2-1': '2.1 章节结构',
+      'layer4-step2-2': '2.2 段落长度',
+      'layer4-step2-3': '2.3 推进闭合',
+      'layer4-step2-4': '2.4 连接词衔接',
+      'layer4-step2-5': '2.5 内容实质',
+
+      // Layer 3 (Paragraph Level): Step 3.0 - 3.5
+      'layer3-step3-0': '3.0 段落概览',
+      'layer3-step3-1': '3.1 段落结构',
+      'layer3-step3-2': '3.2 句子长度',
+      'layer3-step3-3': '3.3 推进闭合',
+      'layer3-step3-4': '3.4 连接词衔接',
+      'layer3-step3-5': '3.5 内容实质',
+
+      // Layer 2 (Sentence Level): Step 4.0 - 4.1, Console
+      'layer2-step4-0': '4.0 句子概览',
+      'layer2-step4-1': '4.1 句子结构',
+      'layer2-step4-console': '4.x 句子控制台',
+
+      // Layer 1 (Lexical Level): Step 5.0 - 5.5
+      'layer1-step5-0': '5.0 词汇概览',
+      'layer1-step5-1': '5.1 词汇结构',
+      'layer1-step5-2': '5.2 词汇密度',
+      'layer1-step5-3': '5.3 词汇多样性',
+      'layer1-step5-4': '5.4 词汇正式度',
+      'layer1-step5-5': '5.5 词汇一致性',
+      'layer-lexical-v2': '5.x 增强词汇分析',
+
+      // Legacy combined layer routes
+      'layer-document': 'L5 全文层',
+      'layer-section': 'L4 章节层',
+      'layer-paragraph': 'L3 段落层',
+      'layer-sentence': 'L2 句子层',
+      'layer-lexical': 'L1 词汇层',
+
+      // Legacy 4-step routes
+      'step1-1': '1.1 结构分析',
+      'step1-2': '1.2 段落分析',
       'step2': 'Step2 衔接优化',
-      'level2': 'Step2 衔接优化',  // Legacy support
+      'level2': 'Step2 衔接优化',
       'step3': 'Step3 句子处理',
-      'level3': 'Step3 句子处理',  // Legacy support
+      'level3': 'Step3 句子处理',
       'review': '审核完成',
     };
     return stepLabels[step] || step;
@@ -305,19 +408,8 @@ export default function History() {
                   )}
                 </div>
 
-                {/* Bottom row: progress */}
-                <div className="flex items-center justify-between">
-                  <div className="flex-1 mr-4">
-                    <div className="flex items-center justify-between text-sm text-gray-500 mb-1">
-                      <span>处理进度</span>
-                      <span>{task.processed} / {task.totalSentences} 句 ({task.progressPercent}%)</span>
-                    </div>
-                    <ProgressBar
-                      value={task.progressPercent}
-                      size="md"
-                      className="w-full"
-                    />
-                  </div>
+                {/* Bottom row: action button */}
+                <div className="flex items-center justify-end">
                   <Button
                     variant={task.status === 'completed' ? 'secondary' : 'primary'}
                     size="sm"

@@ -14,235 +14,212 @@ from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 import logging
 import time
-import re
 
 from src.api.routes.substeps.schemas import (
     SubstepBaseRequest,
     StructureAnalysisResponse,
     RiskLevel,
+    # Reuse merge-modify schemas from old code
+    MergeModifyRequest,
+    MergeModifyPromptResponse,
+    MergeModifyApplyResponse,
 )
-from src.core.analyzer.structure_predictability import StructurePredictabilityAnalyzer
+from src.api.routes.substeps.layer5.step1_1_handler import Step1_1Handler
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-
-class StructureAnalyzeRequest(SubstepBaseRequest):
-    """Request for structure analysis"""
-    pass
-
-
-def _split_paragraphs(text: str) -> List[str]:
-    """Split text into paragraphs"""
-    paragraphs = re.split(r'\n\n+', text.strip())
-    if len(paragraphs) == 1:
-        paragraphs = re.split(r'\n', text.strip())
-    return [p.strip() for p in paragraphs if p.strip()]
-
-
-def _detect_sections(paragraphs: List[str]) -> List[Dict[str, Any]]:
-    """
-    Detect sections from paragraphs (basic heuristic)
-    从段落中检测章节（基础启发式方法）
-    """
-    sections = []
-    current_section = {
-        "index": 0,
-        "role": "introduction",
-        "paragraphs": [],
-        "word_count": 0
-    }
-
-    # Section role keywords
-    role_keywords = {
-        "introduction": ["introduction", "background", "overview", "this paper", "this study"],
-        "literature_review": ["literature", "review", "previous", "prior", "existing"],
-        "methodology": ["method", "approach", "procedure", "experiment", "data collection"],
-        "results": ["result", "finding", "outcome", "showed", "demonstrated"],
-        "discussion": ["discussion", "implication", "analysis", "interpretation"],
-        "conclusion": ["conclusion", "summary", "future", "in conclusion"]
-    }
-
-    for i, para in enumerate(paragraphs):
-        para_lower = para.lower()
-        word_count = len(para.split())
-
-        # Check if this paragraph starts a new section
-        detected_role = None
-        for role, keywords in role_keywords.items():
-            if any(kw in para_lower for kw in keywords):
-                detected_role = role
-                break
-
-        # If significant role change, start new section
-        if detected_role and detected_role != current_section["role"] and current_section["paragraphs"]:
-            sections.append(current_section)
-            current_section = {
-                "index": len(sections),
-                "role": detected_role,
-                "paragraphs": [i],
-                "word_count": word_count
-            }
-        else:
-            current_section["paragraphs"].append(i)
-            current_section["word_count"] += word_count
-
-    # Add last section
-    if current_section["paragraphs"]:
-        sections.append(current_section)
-
-    return sections
+# Initialize handler
+handler = Step1_1Handler()
 
 
 @router.post("/analyze", response_model=StructureAnalysisResponse)
-async def analyze_structure(request: StructureAnalyzeRequest):
+async def analyze_structure(request: SubstepBaseRequest):
     """
-    Step 1.1: Analyze document structure for AI-like patterns
-    步骤 1.1：分析文档结构中的AI特征
+    Step 1.1: Analyze document structure for AI-like patterns using LLM
+    步骤 1.1：使用LLM分析文档结构中的AI特征
 
     Detects:
-    - Section symmetry (balanced section sizes)
-    - Predictable order (template-like structure)
-    - Linear flow (First-Second-Third patterns)
-    - Progression predictability
+    - Linear flow (First-Second-Third enumeration)
+    - Repetitive pattern (copy-paste section structure)
+    - Uniform length (CV < 0.30)
+    - Predictable order (formulaic academic structure)
+    - Symmetry (all sections have equal paragraphs)
     """
     start_time = time.time()
 
     try:
-        paragraphs = _split_paragraphs(request.text)
+        # Call LLM analysis via handler
+        result = await handler.analyze(
+            document_text=request.text,
+            locked_terms=request.locked_terms or []
+        )
 
-        if len(paragraphs) < 3:
-            return StructureAnalysisResponse(
-                risk_score=0,
-                risk_level=RiskLevel.LOW,
-                issues=[],
-                recommendations=["Document too short for structure analysis."],
-                recommendations_zh=["文档过短，无法进行结构分析。"],
-                processing_time_ms=int((time.time() - start_time) * 1000),
-                symmetry_score=0,
-                predictability_score=0,
-                linear_flow_score=0,
-                progression_type="unknown",
-                sections=[]
-            )
+        # Extract issues from result
+        issues = result.get("issues", [])
 
-        # Analyze structure predictability
-        analyzer = StructurePredictabilityAnalyzer()
-        result = analyzer.analyze(paragraphs)
-
-        # Detect sections
-        sections = _detect_sections(paragraphs)
-
-        # Calculate symmetry score (based on section size variance)
-        section_sizes = [s["word_count"] for s in sections]
-        if len(section_sizes) > 1:
-            mean_size = sum(section_sizes) / len(section_sizes)
-            variance = sum((s - mean_size) ** 2 for s in section_sizes) / len(section_sizes)
-            cv = (variance ** 0.5) / mean_size if mean_size > 0 else 0
-            # Lower CV = higher symmetry = higher AI risk
-            symmetry_score = max(0, int(100 * (1 - cv)))
-        else:
-            symmetry_score = 50
-
-        # Calculate predictability based on section order
-        expected_order = ["introduction", "literature_review", "methodology", "results", "discussion", "conclusion"]
-        actual_order = [s["role"] for s in sections]
-        order_matches = sum(1 for i, role in enumerate(actual_order) if i < len(expected_order) and role == expected_order[i])
-        predictability_score = int(100 * order_matches / len(expected_order)) if expected_order else 0
-
-        # Linear flow from analyzer
-        prog_details = result.details.get("progression", {})
-        sequential_markers = prog_details.get("sequential_markers", 0)
-        linear_flow_score = min(100, sequential_markers * 25)  # 4+ sequential markers = 100
-
-        # Combined risk score
-        risk_score = (symmetry_score * 0.3 + predictability_score * 0.4 + linear_flow_score * 0.3)
-        risk_score = int(risk_score)
-
-        # Determine risk level
-        if risk_score >= 60:
-            risk_level = RiskLevel.HIGH
-        elif risk_score >= 35:
-            risk_level = RiskLevel.MEDIUM
-        else:
-            risk_level = RiskLevel.LOW
-
-        # Build issues list
-        issues = []
-        if symmetry_score >= 70:
-            issues.append({
-                "type": "section_symmetry",
-                "description": f"Sections are too balanced in size (symmetry score: {symmetry_score})",
-                "description_zh": f"章节大小过于平衡（对称分数：{symmetry_score}）",
-                "severity": "high" if symmetry_score >= 80 else "medium",
-                "position": "document"
-            })
-
-        if predictability_score >= 70:
-            issues.append({
-                "type": "predictable_order",
-                "description": f"Section order follows academic template too closely ({predictability_score}% match)",
-                "description_zh": f"章节顺序过于接近学术模板（{predictability_score}% 匹配）",
-                "severity": "high" if predictability_score >= 80 else "medium",
-                "position": "document"
-            })
-
-        if linear_flow_score >= 50:
-            issues.append({
-                "type": "linear_flow",
-                "description": f"Detected First-Second-Third enumeration pattern ({sequential_markers} markers)",
-                "description_zh": f"检测到 First-Second-Third 枚举模式（{sequential_markers}个标记）",
-                "severity": "high" if linear_flow_score >= 75 else "medium",
-                "position": "document"
-            })
-
-        # Generate recommendations
-        recommendations = []
-        recommendations_zh = []
-
-        if symmetry_score >= 60:
-            recommendations.append("Section sizes are too balanced. Expand core sections and condense background sections.")
-            recommendations_zh.append("章节大小过于平衡。扩展核心章节，压缩背景章节。")
-
-        if predictability_score >= 60:
-            recommendations.append("Structure follows academic template too closely. Consider merging or reordering sections.")
-            recommendations_zh.append("结构过于遵循学术模板。考虑合并或重新排列章节。")
-
-        if linear_flow_score >= 50:
-            recommendations.append("Replace sequential markers (First, Second, Third) with varied transitions.")
-            recommendations_zh.append("将顺序标记（First, Second, Third）替换为多样化的过渡方式。")
-
-        if not recommendations:
-            recommendations.append("Structure appears natural. No major issues detected.")
-            recommendations_zh.append("结构看起来自然。未检测到重大问题。")
-
+        # Calculate processing time
         processing_time_ms = int((time.time() - start_time) * 1000)
 
+        # Build response
         return StructureAnalysisResponse(
-            risk_score=risk_score,
-            risk_level=risk_level,
+            risk_score=result.get("risk_score", 0),
+            risk_level=RiskLevel(result.get("risk_level", "low")),
             issues=issues,
-            recommendations=recommendations,
-            recommendations_zh=recommendations_zh,
+            recommendations=result.get("recommendations", []),
+            recommendations_zh=result.get("recommendations_zh", []),
             processing_time_ms=processing_time_ms,
-            symmetry_score=symmetry_score,
-            predictability_score=predictability_score,
-            linear_flow_score=linear_flow_score,
-            progression_type=result.progression_type,
-            sections=sections
+            # Step 1.1 specific fields
+            symmetry_score=_extract_score_from_issues(issues, "symmetry"),
+            predictability_score=_extract_score_from_issues(issues, "predictable_order"),
+            linear_flow_score=_extract_score_from_issues(issues, "linear_flow"),
+            progression_type=_infer_progression_type(issues),
+            sections=[]  # LLM doesn't return detailed sections in analysis
         )
 
     except Exception as e:
         logger.error(f"Structure analysis failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 
-@router.post("/process")
-async def process_structure_issues(request: StructureAnalyzeRequest):
+@router.post("/merge-modify/prompt", response_model=MergeModifyPromptResponse)
+async def generate_rewrite_prompt(request: MergeModifyRequest):
     """
-    Process and apply structure improvements
-    处理并应用结构改进
+    Generate a modification prompt for selected structure issues
+    为选定的结构问题生成修改提示词
+
+    User can copy this prompt to use with other AI tools.
+    用户可以复制此提示词用于其他AI工具。
+
+    Args:
+        request: Merge modify request with selected issues and user notes
+
+    Returns:
+        Prompt for user to copy
     """
-    # This endpoint would be implemented to apply AI suggestions
-    # For now, return analysis results
-    return await analyze_structure(request)
+    try:
+        # Convert SelectedIssue to dict format
+        selected_issues_dict = [
+            {
+                "type": issue.type,
+                "description": issue.description,
+                "description_zh": issue.description_zh,
+                "severity": issue.severity,
+                "affected_positions": issue.affected_positions
+            }
+            for issue in request.selected_issues
+        ]
+
+        # Get document text (should be passed in request or retrieved from DB)
+        # For now, assume it's in request context or we need to load it
+        # TODO: Load document text from database using request.document_id
+        document_text = "Document text would be loaded from database here"
+
+        # Generate prompt via handler
+        result = await handler.generate_rewrite_prompt(
+            document_text=document_text,
+            selected_issues=selected_issues_dict,
+            user_notes=request.user_notes,
+            locked_terms=[]  # TODO: Load from session
+        )
+
+        return MergeModifyPromptResponse(
+            prompt=result["prompt"],
+            prompt_zh=result["prompt_zh"],
+            issues_summary_zh=result["issues_summary_zh"],
+            colloquialism_level=None,  # Not applicable for structure
+            estimated_changes=result["estimated_changes"]
+        )
+
+    except Exception as e:
+        logger.error(f"Generate prompt failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Generate prompt failed: {str(e)}")
+
+
+@router.post("/merge-modify/apply", response_model=MergeModifyApplyResponse)
+async def apply_rewrite(request: MergeModifyRequest):
+    """
+    Apply AI modification to document structure directly
+    直接应用AI修改到文档结构
+
+    Args:
+        request: Merge modify request with selected issues and user notes
+
+    Returns:
+        Modified document with changes summary
+    """
+    try:
+        # Convert SelectedIssue to dict format
+        selected_issues_dict = [
+            {
+                "type": issue.type,
+                "description": issue.description,
+                "description_zh": issue.description_zh,
+                "severity": issue.severity,
+                "affected_positions": issue.affected_positions
+            }
+            for issue in request.selected_issues
+        ]
+
+        # Get document text (should be loaded from DB)
+        # TODO: Load document text from database using request.document_id
+        document_text = "Document text would be loaded from database here"
+
+        # Apply rewrite via handler
+        result = await handler.apply_rewrite(
+            document_text=document_text,
+            selected_issues=selected_issues_dict,
+            user_notes=request.user_notes,
+            locked_terms=[]  # TODO: Load from session
+        )
+
+        # Extract issues addressed
+        issues_addressed = [issue.type for issue in request.selected_issues]
+
+        return MergeModifyApplyResponse(
+            modified_text=result["modified_text"],
+            changes_summary_zh=result["changes_summary_zh"],
+            changes_count=result["changes_count"],
+            issues_addressed=issues_addressed,
+            remaining_attempts=3,
+            colloquialism_level=None  # Not applicable for structure
+        )
+
+    except Exception as e:
+        logger.error(f"Apply rewrite failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Apply rewrite failed: {str(e)}")
+
+
+# =============================================================================
+# Helper Functions
+# 辅助函数
+# =============================================================================
+
+def _extract_score_from_issues(issues: List[Dict[str, Any]], issue_type: str) -> int:
+    """
+    Extract score for a specific issue type from issues list
+    从问题列表中提取特定类型问题的分数
+    """
+    for issue in issues:
+        if issue.get("type") == issue_type:
+            severity = issue.get("severity", "medium")
+            if severity == "high":
+                return 80
+            elif severity == "medium":
+                return 60
+            else:
+                return 40
+    return 0
+
+
+def _infer_progression_type(issues: List[Dict[str, Any]]) -> str:
+    """
+    Infer progression type from issues
+    从问题中推断推进类型
+    """
+    for issue in issues:
+        if issue.get("type") == "linear_flow":
+            return "monotonic"
+        elif issue.get("type") == "predictable_order":
+            return "formulaic"
+    return "natural"

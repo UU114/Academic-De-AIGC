@@ -1,166 +1,62 @@
 """
 Step 5.3: Replacement Candidate Generation (替换候选生成)
-Layer 1 Lexical Level
+Layer 1 Lexical Level - NOW WITH LLM!
 
-Generate replacement candidates for fingerprint words.
-为指纹词生成替换候选。
+Generate replacement candidates for fingerprint words using LLM.
+使用LLM为指纹词生成替换候选。
 """
 
 from fastapi import APIRouter, HTTPException
-from typing import List, Dict, Any
 import logging
 import time
-import re
 
 from src.api.routes.substeps.schemas import (
     SubstepBaseRequest,
     ReplacementGenerationResponse,
     RiskLevel,
+    MergeModifyRequest,
+    MergeModifyPromptResponse,
+    MergeModifyApplyResponse,
 )
+from src.api.routes.substeps.layer1.step5_3_handler import Step5_3Handler
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-
-# Replacement dictionary for common AI words
-REPLACEMENTS = {
-    # Type A: Dead giveaways
-    "delve": ["explore", "examine", "investigate", "study"],
-    "underscore": ["highlight", "emphasize", "show", "indicate"],
-    "harness": ["use", "apply", "employ", "leverage"],
-    "unveil": ["reveal", "show", "present", "introduce"],
-    "pivotal": ["key", "important", "central", "essential"],
-    "intricate": ["complex", "detailed", "elaborate", "involved"],
-    "multifaceted": ["complex", "diverse", "varied", "multiple"],
-    "paramount": ["critical", "essential", "vital", "crucial"],
-    "tapestry": ["combination", "mix", "blend", "array"],
-    "realm": ["area", "field", "domain", "sphere"],
-    "landscape": ["environment", "context", "situation", "field"],
-
-    # Type B: Academic clichés
-    "comprehensive": ["thorough", "complete", "full", "extensive"],
-    "robust": ["strong", "reliable", "solid", "stable"],
-    "seamless": ["smooth", "integrated", "continuous", "unified"],
-    "leverage": ["use", "apply", "employ", "utilize"],
-    "facilitate": ["help", "enable", "support", "assist"],
-    "utilize": ["use", "apply", "employ"],
-    "crucial": ["important", "key", "essential", "critical"],
-    "holistic": ["complete", "whole", "integrated", "comprehensive"],
-    "transformative": ["significant", "major", "important", "substantial"],
-    "innovative": ["new", "novel", "creative", "original"],
-}
-
-
-def _find_fingerprints(text: str, locked_terms: List[str]) -> List[Dict]:
-    """Find fingerprint words in text"""
-    text_lower = text.lower()
-    locked_lower = [t.lower() for t in locked_terms]
-    found = []
-
-    for word in REPLACEMENTS.keys():
-        if word in locked_lower:
-            continue
-
-        pattern = rf'\b{word}\b'
-        matches = list(re.finditer(pattern, text_lower))
-
-        for m in matches:
-            context_start = max(0, m.start() - 40)
-            context_end = min(len(text), m.end() + 40)
-
-            found.append({
-                "word": word,
-                "position": m.start(),
-                "context": text[context_start:context_end],
-                "replacements": REPLACEMENTS[word]
-            })
-
-    return found
+# Initialize LLM handler
+handler = Step5_3Handler()
 
 
 @router.post("/analyze", response_model=ReplacementGenerationResponse)
 async def generate_replacements(request: SubstepBaseRequest):
     """
-    Step 5.3: Generate replacement candidates
-    步骤 5.3：生成替换候选
-
-    - Finds fingerprint words
-    - Generates context-appropriate replacements
-    - Excludes locked terms
+    Step 5.3: Generate replacement candidates (NOW WITH LLM!)
+    步骤 5.3：生成替换候选（现在使用LLM！）
     """
     start_time = time.time()
 
     try:
-        locked_terms = request.locked_terms or []
-        fingerprints = _find_fingerprints(request.text, locked_terms)
+        logger.info("Calling Step5_3Handler for LLM-based replacement generation")
+        result = await handler.analyze(
+            document_text=request.text,
+            locked_terms=request.locked_terms or []
+        )
 
-        # Build replacements list
-        replacements = []
-        for fp in fingerprints:
-            replacements.append({
-                "original_word": fp["word"],
-                "position": fp["position"],
-                "context": fp["context"],
-                "candidates": fp["replacements"],
-                "recommended": fp["replacements"][0] if fp["replacements"] else None
-            })
-
-        replacement_count = len(replacements)
-
-        # Calculate risk score
-        if replacement_count >= 5:
-            risk_score = 70
-        elif replacement_count >= 3:
-            risk_score = 50
-        elif replacement_count >= 1:
-            risk_score = 30
-        else:
-            risk_score = 10
-
-        risk_level = RiskLevel.HIGH if risk_score >= 60 else RiskLevel.MEDIUM if risk_score >= 35 else RiskLevel.LOW
-
-        # Build issues
-        issues = []
-
-        if replacement_count > 0:
-            unique_words = list(set(r["original_word"] for r in replacements))
-            issues.append({
-                "type": "replaceable_fingerprints",
-                "description": f"{replacement_count} fingerprint words can be replaced",
-                "description_zh": f"{replacement_count} 个指纹词可以替换",
-                "severity": "high" if replacement_count >= 5 else "medium",
-                "words": unique_words[:10]
-            })
-
-        # Build recommendations
-        recommendations = []
-        recommendations_zh = []
-
-        if replacement_count > 0:
-            recommendations.append(f"Replace {replacement_count} fingerprint words with suggested alternatives.")
-            recommendations_zh.append(f"用建议的替代词替换 {replacement_count} 个指纹词。")
-
-            # Show top replacements
-            for r in replacements[:3]:
-                recommendations.append(f"Replace '{r['original_word']}' with '{r['recommended']}'")
-                recommendations_zh.append(f"将 '{r['original_word']}' 替换为 '{r['recommended']}'")
-        else:
-            recommendations.append("No replaceable fingerprint words found.")
-            recommendations_zh.append("未发现可替换的指纹词。")
+        processing_time_ms = int((time.time() - start_time) * 1000)
 
         return ReplacementGenerationResponse(
-            risk_score=risk_score,
-            risk_level=risk_level,
-            issues=issues,
-            recommendations=recommendations,
-            recommendations_zh=recommendations_zh,
-            processing_time_ms=int((time.time() - start_time) * 1000),
-            replacements=replacements,
-            replacement_count=replacement_count
+            risk_score=result.get("risk_score", 0),
+            risk_level=RiskLevel(result.get("risk_level", "low")),
+            issues=result.get("issues", []),
+            recommendations=result.get("recommendations", []),
+            recommendations_zh=result.get("recommendations_zh", []),
+            processing_time_ms=processing_time_ms,
+            replacements=result.get("replacements", []),
+            replacement_count=result.get("replacement_count", 0)
         )
 
     except Exception as e:
-        logger.error(f"Replacement generation failed: {e}")
+        logger.error(f"Replacement generation failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -178,8 +74,56 @@ async def apply_replacements(request: SubstepBaseRequest):
 
 @router.post("/generate", response_model=ReplacementGenerationResponse)
 async def generate_replacement_candidates(request: SubstepBaseRequest):
-    """
-    Generate replacement candidates (alias for analyze endpoint)
-    生成替换候选（analyze端点的别名）
-    """
+    """Generate replacement candidates (alias for analyze endpoint)"""
     return await generate_replacements(request)
+
+
+@router.post("/merge-modify/prompt", response_model=MergeModifyPromptResponse)
+async def generate_prompt(request: MergeModifyRequest):
+    """Generate modification prompt for replacement issues"""
+    try:
+        prompt = await handler.generate_rewrite_prompt(
+            issues=request.selected_issues,
+            user_notes=request.user_notes
+        )
+        return MergeModifyPromptResponse(
+            prompt=prompt,
+            prompt_zh="根据选定的替换问题生成的修改提示词",
+            issues_summary_zh=f"选中了{len(request.selected_issues)}个问题",
+            estimated_changes=len(request.selected_issues)
+        )
+    except Exception as e:
+        logger.error(f"Prompt generation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/merge-modify/apply", response_model=MergeModifyApplyResponse)
+async def apply_modification(request: MergeModifyRequest):
+    """Apply AI modification for replacement issues"""
+    try:
+        from src.services.session_service import SessionService
+        session_service = SessionService()
+        session_data = await session_service.get_session(request.session_id) if request.session_id else None
+        document_text = session_data.get("document_text", "") if session_data else ""
+
+        if not document_text:
+            raise HTTPException(status_code=400, detail="Document text not found in session")
+
+        result = await handler.apply_rewrite(
+            document_text=document_text,
+            issues=request.selected_issues,
+            user_notes=request.user_notes,
+            locked_terms=session_data.get("locked_terms", []) if session_data else []
+        )
+        return MergeModifyApplyResponse(
+            modified_text=result.get("modified_text", ""),
+            changes_summary_zh=result.get("changes_summary_zh", ""),
+            changes_count=result.get("changes_count", 0),
+            issues_addressed=[i.type for i in request.selected_issues],
+            remaining_attempts=3
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Modification failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))

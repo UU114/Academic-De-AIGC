@@ -1,274 +1,164 @@
 """
-Step 1.4: Paragraph Length Uniformity (段落长度均匀性检测)
+Step 1.4: Anchor Density (锚点密度)
 Layer 5 Document Level
 
-Detects if paragraph lengths are too uniform (AI-like)
-检测段落长度是否过于均匀
+Uses LLM to detect and fix low anchor density issues
+使用LLM检测和修复低锚点密度问题
 """
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
+from fastapi import APIRouter, HTTPException, Depends
+from typing import Optional
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 import logging
 import time
-import re
-import statistics
 
 from src.api.routes.substeps.schemas import (
     SubstepBaseRequest,
+    AnchorDensityResponse,
     RiskLevel,
+    MergeModifyRequest,
+    MergeModifyPromptResponse,
+    MergeModifyApplyResponse,
 )
+from src.api.routes.substeps.layer5.step1_4_handler import Step1_4Handler
+from src.db.database import get_db
+from src.db.models import Document, Session as SessionModel
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-
-class ParagraphLengthRequest(SubstepBaseRequest):
-    """Request for paragraph length analysis"""
-    pass
+# Initialize handler
+handler = Step1_4Handler()
 
 
-class ParagraphLengthInfo(BaseModel):
-    """Paragraph length information"""
-    index: int
-    word_count: int
-    char_count: int
-    sentence_count: int
-    preview: str
-    deviation_from_mean: float
-    suggested_strategy: str
-    strategy_reason: str
-    strategy_reason_zh: str
-
-
-class ParagraphLengthResponse(BaseModel):
-    """Response for paragraph length analysis"""
-    risk_score: int = Field(0)
-    risk_level: RiskLevel = Field(RiskLevel.LOW)
-    paragraph_count: int = Field(0)
-    total_word_count: int = Field(0)
-    mean_length: float = Field(0)
-    stdev_length: float = Field(0)
-    cv: float = Field(0)
-    min_length: int = Field(0)
-    max_length: int = Field(0)
-    target_cv: float = Field(0.4)
-    paragraphs: List[ParagraphLengthInfo] = Field(default_factory=list)
-    merge_suggestions: List[int] = Field(default_factory=list)
-    split_suggestions: List[int] = Field(default_factory=list)
-    expand_suggestions: List[int] = Field(default_factory=list)
-    compress_suggestions: List[int] = Field(default_factory=list)
-    issues: List[Dict[str, Any]] = Field(default_factory=list)
-    recommendations: List[str] = Field(default_factory=list)
-    recommendations_zh: List[str] = Field(default_factory=list)
-    processing_time_ms: int = Field(0)
-
-
-def _split_paragraphs(text: str) -> List[str]:
-    """Split text into paragraphs"""
-    paragraphs = re.split(r'\n\n+', text.strip())
-    if len(paragraphs) == 1:
-        paragraphs = re.split(r'\n', text.strip())
-    return [p.strip() for p in paragraphs if p.strip()]
-
-
-def _count_sentences(text: str) -> int:
-    """Count sentences in text"""
-    endings = re.findall(r'[.!?]+', text)
-    return max(1, len(endings))
-
-
-@router.post("/analyze", response_model=ParagraphLengthResponse)
-async def analyze_paragraph_length(request: ParagraphLengthRequest):
+@router.post("/analyze", response_model=AnchorDensityResponse)
+async def analyze_anchor_density(request: SubstepBaseRequest):
     """
-    Step 1.4: Analyze paragraph length uniformity
-    步骤 1.4：分析段落长度均匀性
+    Step 1.4: Analyze anchor density using LLM
+    步骤 1.4：使用LLM分析锚点密度
 
-    CV (Coefficient of Variation) < 0.3 indicates too uniform (AI-like)
-    Target CV >= 0.4 for human-like writing
+    Detects:
+    - Low anchor density (< 5.0 per 100 words)
+    - Missing anchor types (statistics, citations, measurements)
     """
     start_time = time.time()
 
     try:
-        paragraphs = _split_paragraphs(request.text)
+        # Call LLM analysis via handler
+        result = await handler.analyze(
+            document_text=request.text,
+            locked_terms=request.locked_terms or []
+        )
 
-        if len(paragraphs) < 2:
-            return ParagraphLengthResponse(
-                risk_score=0,
-                risk_level=RiskLevel.LOW,
-                paragraph_count=len(paragraphs),
-                total_word_count=len(request.text.split()),
-                mean_length=len(request.text.split()),
-                stdev_length=0,
-                cv=0,
-                min_length=len(request.text.split()),
-                max_length=len(request.text.split()),
-                target_cv=0.4,
-                recommendations=["Document too short for paragraph length analysis."],
-                recommendations_zh=["文档过短，无法进行段落长度分析。"],
-                processing_time_ms=int((time.time() - start_time) * 1000)
-            )
+        # Extract issues
+        issues = result.get("issues", [])
 
-        # Calculate statistics
-        lengths = [len(p.split()) for p in paragraphs]
-        total_word_count = sum(lengths)
-        mean_len = statistics.mean(lengths)
-        stdev_len = statistics.stdev(lengths) if len(lengths) > 1 else 0
-        cv = stdev_len / mean_len if mean_len > 0 else 0
-        min_len = min(lengths)
-        max_len = max(lengths)
+        # Extract overall density from result
+        overall_density = result.get("overall_density", 0)
 
-        # Calculate risk score
-        if cv < 0.2:
-            score = 90
-        elif cv < 0.3:
-            score = 70
-        elif cv < 0.4:
-            score = 50
-        elif cv < 0.5:
-            score = 30
-        else:
-            score = 15
-
-        # Determine risk level
-        if score >= 60:
-            risk_level = RiskLevel.HIGH
-        elif score >= 35:
-            risk_level = RiskLevel.MEDIUM
-        else:
-            risk_level = RiskLevel.LOW
-
-        # Build paragraph info and suggestions
-        paragraph_infos = []
-        merge_suggestions = []
-        split_suggestions = []
-        expand_suggestions = []
-        compress_suggestions = []
-
-        for idx, (para, word_count) in enumerate(zip(paragraphs, lengths)):
-            deviation = (word_count - mean_len) / stdev_len if stdev_len > 0 else 0
-
-            strategy = "none"
-            reason = ""
-            reason_zh = ""
-
-            if deviation < -1.5 and word_count < 80:
-                if idx < len(paragraphs) - 1:
-                    strategy = "merge"
-                    reason = f"Short paragraph ({word_count} words). Consider merging with next paragraph."
-                    reason_zh = f"短段落（{word_count}词）。建议与下一段合并。"
-                    merge_suggestions.append(idx)
-                else:
-                    strategy = "expand"
-                    reason = f"Short paragraph ({word_count} words). Consider expanding with more details."
-                    reason_zh = f"短段落（{word_count}词）。建议添加更多细节扩展。"
-                    expand_suggestions.append(idx)
-            elif deviation > 1.5 and word_count > 200:
-                strategy = "split"
-                reason = f"Long paragraph ({word_count} words). Consider splitting into 2-3 smaller paragraphs."
-                reason_zh = f"长段落（{word_count}词）。建议拆分为2-3个较小的段落。"
-                split_suggestions.append(idx)
-            elif deviation > 1.0 and word_count > 150:
-                strategy = "compress"
-                reason = f"Moderately long paragraph ({word_count} words). Consider condensing."
-                reason_zh = f"中等偏长段落（{word_count}词）。建议适当压缩。"
-                compress_suggestions.append(idx)
-            elif deviation < -1.0 and word_count < 100:
-                strategy = "expand"
-                reason = f"Moderately short paragraph ({word_count} words). Consider adding details."
-                reason_zh = f"中等偏短段落（{word_count}词）。建议添加细节。"
-                expand_suggestions.append(idx)
-
-            paragraph_infos.append(ParagraphLengthInfo(
-                index=idx,
-                word_count=word_count,
-                char_count=len(para),
-                sentence_count=_count_sentences(para),
-                preview=para[:100] + "..." if len(para) > 100 else para,
-                deviation_from_mean=round(deviation, 2),
-                suggested_strategy=strategy,
-                strategy_reason=reason,
-                strategy_reason_zh=reason_zh
-            ))
-
-        # Build issues
-        issues = []
-        if cv < 0.3:
-            issues.append({
-                "type": "uniform_length",
-                "description": f"Paragraph lengths too uniform (CV={cv:.2f}). Target CV >= 0.40.",
-                "description_zh": f"段落长度过于均匀（CV={cv:.2f}）。目标CV >= 0.40。",
-                "severity": "high" if cv < 0.2 else "medium",
-                "position": "document"
-            })
-
-        # Generate recommendations
-        recommendations = []
-        recommendations_zh = []
-
-        if cv < 0.3:
-            recommendations.append(
-                f"Paragraph lengths are too uniform (CV={cv:.2f}). "
-                f"Target CV >= 0.40. Mix short paragraphs (50-80 words) with longer ones (150-200 words)."
-            )
-            recommendations_zh.append(
-                f"段落长度过于均匀（CV={cv:.2f}）。"
-                f"目标CV >= 0.40。混合短段落（50-80词）和长段落（150-200词）。"
-            )
-
-        if merge_suggestions:
-            recommendations.append(
-                f"Consider merging paragraphs {', '.join(map(str, [i+1 for i in merge_suggestions]))} with adjacent paragraphs."
-            )
-            recommendations_zh.append(
-                f"建议将第 {', '.join(map(str, [i+1 for i in merge_suggestions]))} 段与相邻段落合并。"
-            )
-
-        if split_suggestions:
-            recommendations.append(
-                f"Consider splitting paragraphs {', '.join(map(str, [i+1 for i in split_suggestions]))} into smaller sections."
-            )
-            recommendations_zh.append(
-                f"建议将第 {', '.join(map(str, [i+1 for i in split_suggestions]))} 段拆分为较小的部分。"
-            )
-
-        if not issues:
-            recommendations.append("Paragraph lengths show good variation. No major issues detected.")
-            recommendations_zh.append("段落长度变化良好。未检测到重大问题。")
-
+        # Calculate processing time
         processing_time_ms = int((time.time() - start_time) * 1000)
 
-        return ParagraphLengthResponse(
-            risk_score=score,
-            risk_level=risk_level,
-            paragraph_count=len(paragraphs),
-            total_word_count=total_word_count,
-            mean_length=round(mean_len, 1),
-            stdev_length=round(stdev_len, 1),
-            cv=round(cv, 3),
-            min_length=min_len,
-            max_length=max_len,
-            target_cv=0.4,
-            paragraphs=paragraph_infos,
-            merge_suggestions=merge_suggestions,
-            split_suggestions=split_suggestions,
-            expand_suggestions=expand_suggestions,
-            compress_suggestions=compress_suggestions,
+        # Build response
+        return AnchorDensityResponse(
+            risk_score=result.get("risk_score", 0),
+            risk_level=RiskLevel(result.get("risk_level", "low")),
             issues=issues,
-            recommendations=recommendations,
-            recommendations_zh=recommendations_zh,
-            processing_time_ms=processing_time_ms
+            recommendations=result.get("recommendations", []),
+            recommendations_zh=result.get("recommendations_zh", []),
+            processing_time_ms=processing_time_ms,
+            # Step 1.4 specific fields
+            overall_density=overall_density,
+            target_density=5.0,
+            low_density_paragraphs=[],
+            anchor_types_count={}
         )
 
     except Exception as e:
-        logger.error(f"Paragraph length analysis failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Anchor density analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+
+@router.post("/merge-modify/prompt", response_model=MergeModifyPromptResponse)
+async def generate_rewrite_prompt(request: MergeModifyRequest, db: AsyncSession = Depends(get_db)):
+    """
+    Generate a modification prompt for selected anchor density issues
+    为选定的锚点密度问题生成修改提示词
+    """
+    try:
+        # Get document from database
+        result = await db.execute(select(Document).where(Document.id == request.document_id))
+        doc = result.scalar_one_or_none()
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+
+        # Get session for locked terms
+        session_result = await db.execute(select(SessionModel).where(SessionModel.id == request.session_id))
+        session = session_result.scalar_one_or_none() if request.session_id else None
+        locked_terms = session.locked_terms if session and session.locked_terms else []
+
+        # Generate prompt via handler
+        result = await handler.generate_rewrite_prompt(
+            document_text=doc.processed_text or doc.original_text,
+            selected_issues=request.selected_issues,
+            user_notes=request.user_notes,
+            locked_terms=locked_terms
+        )
+
+        return MergeModifyPromptResponse(
+            prompt=result["prompt"],
+            prompt_zh=result.get("prompt_zh", ""),
+            issues_summary_zh=result.get("issues_summary_zh", ""),
+            estimated_changes=result.get("estimated_changes", len(request.selected_issues))
+        )
+
+    except Exception as e:
+        logger.error(f"Generate prompt failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate prompt: {str(e)}")
+
+
+@router.post("/merge-modify/apply", response_model=MergeModifyApplyResponse)
+async def apply_rewrite(request: MergeModifyRequest, db: AsyncSession = Depends(get_db)):
+    """
+    Apply AI modification directly for selected anchor density issues
+    为选定的锚点密度问题直接应用AI修改
+    """
+    try:
+        # Get document from database
+        result = await db.execute(select(Document).where(Document.id == request.document_id))
+        doc = result.scalar_one_or_none()
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+
+        # Get session for locked terms
+        session_result = await db.execute(select(SessionModel).where(SessionModel.id == request.session_id))
+        session = session_result.scalar_one_or_none() if request.session_id else None
+        locked_terms = session.locked_terms if session and session.locked_terms else []
+
+        # Apply rewrite via handler
+        result = await handler.apply_rewrite(
+            document_text=doc.processed_text or doc.original_text,
+            selected_issues=request.selected_issues,
+            user_notes=request.user_notes,
+            locked_terms=locked_terms
+        )
+
+        return MergeModifyApplyResponse(
+            modified_text=result["modified_text"],
+            changes_summary_zh=result.get("changes_summary_zh", ""),
+            changes_count=result.get("changes_count", 0),
+            issues_addressed=result.get("issues_addressed", [])
+        )
+
+    except Exception as e:
+        logger.error(f"Apply rewrite failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to apply modification: {str(e)}")
 
 
 @router.post("/process")
-async def process_paragraph_length(request: ParagraphLengthRequest):
+async def process_anchor_density(request: SubstepBaseRequest):
     """
-    Process and apply paragraph length improvements
-    处理并应用段落长度改进
+    Legacy endpoint - redirects to analyze
     """
-    return await analyze_paragraph_length(request)
+    return await analyze_anchor_density(request)

@@ -1824,6 +1824,32 @@ Identify and fix the problematic sentences/paragraphs. For each fix:
 - Vary sentence length and structure
 - Avoid AI-typical patterns like "First... Second... Third..."
 
+## PARAGRAPH STRUCTURE GUIDELINES (IMPORTANT for De-AIGC):
+When issues mention "uniform length", "paragraph uniformity", "weight imbalance", or "extreme section", you MUST adjust paragraph structure:
+
+1. **Discussion section MUST be the LONGEST** - This is the core analysis section. When all sections have identical paragraph counts, ALWAYS prioritize EXPANDING Discussion by:
+   - Splitting existing paragraphs into multiple focused paragraphs
+   - Adding substantive elaboration (analysis, implications, examples)
+
+2. **Conclusion should be SHORT** - Typically 1-2 paragraphs. If Conclusion is too long, merge paragraphs.
+
+3. **Adjacent sections MUST NOT have identical paragraph counts** - Break the uniformity pattern:
+   - If Introduction has 2 paragraphs, Methodology should have 2 or 3 (not exactly 2)
+   - Create natural variation: some sections 1 para, some 2, Discussion 3-5
+
+4. **How to split a paragraph**: Find a natural break point (topic shift, new aspect) and add a blank line. The split should create two coherent paragraphs.
+
+5. **How to merge paragraphs**: Remove the blank line between paragraphs and adjust transitions if needed.
+
+Example target distribution (NOT strict rules, just illustration):
+- Introduction: 2 paragraphs
+- Methodology: 2-3 paragraphs
+- Results: 2-3 paragraphs
+- Discussion: 4-5 paragraphs (MUST be longest)
+- Conclusion: 1-2 paragraphs
+
+When modifying paragraph structure, include the ENTIRE section in "original" and provide the restructured version in "modified".
+
 ## OUTPUT FORMAT (JSON) - ONLY OUTPUT THE CHANGES, NOT THE FULL DOCUMENT:
 {{
   "modifications": [
@@ -1846,9 +1872,10 @@ Identify and fix the problematic sentences/paragraphs. For each fix:
 CRITICAL RULES:
 1. The "original" field MUST be an EXACT substring from the document (copy-paste, no paraphrasing)
 2. Only output the parts that need modification, NOT the entire document
-3. Each modification should be a complete sentence or small paragraph
+3. Each modification should be a complete sentence or paragraph. For paragraph structure changes (splitting/merging), include the entire section content.
 4. All "modified" text MUST be in {doc_language} only
-5. Keep modifications focused - don't rewrite large sections unnecessarily
+5. Keep modifications focused - but for paragraph structure issues, include the full section to restructure
+6. When splitting paragraphs, add substantive content, not filler
 """
 
 # Style level descriptions

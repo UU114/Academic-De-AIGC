@@ -1,130 +1,62 @@
 """
 Step 5.0: Lexical Context Preparation (词汇环境准备)
-Layer 1 Lexical Level
+Layer 1 Lexical Level - NOW WITH LLM!
 
-Prepare lexical analysis context and load vocabulary databases.
-准备词汇分析上下文并加载词汇数据库。
+Prepare lexical analysis context and load vocabulary databases using LLM.
+使用LLM准备词汇分析上下文并加载词汇数据库。
 """
 
 from fastapi import APIRouter, HTTPException
-from typing import List, Dict, Any
 import logging
 import time
-import re
 
 from src.api.routes.substeps.schemas import (
     SubstepBaseRequest,
     LexicalContextResponse,
     RiskLevel,
+    MergeModifyRequest,
+    MergeModifyPromptResponse,
+    MergeModifyApplyResponse,
 )
+from src.api.routes.substeps.layer1.step5_0_handler import Step5_0Handler
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-
-def _split_paragraphs(text: str) -> List[str]:
-    paragraphs = re.split(r'\n\n+', text.strip())
-    if len(paragraphs) == 1:
-        paragraphs = re.split(r'\n', text.strip())
-    return [p.strip() for p in paragraphs if p.strip() and len(p.split()) >= 5]
-
-
-def _tokenize(text: str) -> List[str]:
-    """Simple tokenization"""
-    return re.findall(r'\b[a-z]+\b', text.lower())
-
-
-def _build_vocabulary_stats(paragraphs: List[str]) -> Dict[str, Any]:
-    """Build vocabulary statistics"""
-    all_words = []
-    unique_words = set()
-    word_freq = {}
-
-    for para in paragraphs:
-        words = _tokenize(para)
-        all_words.extend(words)
-        unique_words.update(words)
-        for word in words:
-            word_freq[word] = word_freq.get(word, 0) + 1
-
-    return {
-        "total_words": len(all_words),
-        "unique_words": len(unique_words),
-        "vocabulary_richness": len(unique_words) / len(all_words) if all_words else 0,
-        "top_words": sorted(word_freq.items(), key=lambda x: x[1], reverse=True)[:20]
-    }
+# Initialize LLM handler
+handler = Step5_0Handler()
 
 
 @router.post("/prepare", response_model=LexicalContextResponse)
 async def prepare_lexical_context(request: SubstepBaseRequest):
     """
-    Step 5.0: Prepare lexical analysis context
-    步骤 5.0：准备词汇分析上下文
-
-    - Receives text and locked terms
-    - Builds paragraph-word mapping
-    - Calculates vocabulary statistics
+    Step 5.0: Prepare lexical analysis context (NOW WITH LLM!)
+    步骤 5.0：准备词汇分析上下文（现在使用LLM！）
     """
     start_time = time.time()
 
     try:
-        paragraphs = _split_paragraphs(request.text)
-        locked_terms = request.locked_terms or []
+        logger.info("Calling Step5_0Handler for LLM-based lexical context preparation")
+        result = await handler.analyze(
+            document_text=request.text,
+            locked_terms=request.locked_terms or []
+        )
 
-        # Build tokens for each paragraph
-        tokens = []
-        for para_idx, para in enumerate(paragraphs):
-            para_words = _tokenize(para)
-            for word_idx, word in enumerate(para_words):
-                tokens.append({
-                    "word": word,
-                    "paragraph_index": para_idx,
-                    "position": word_idx,
-                    "is_locked": word in [t.lower() for t in locked_terms]
-                })
-
-        # Build vocabulary statistics
-        vocab_stats = _build_vocabulary_stats(paragraphs)
-
-        # Calculate risk based on vocabulary richness
-        if vocab_stats["vocabulary_richness"] < 0.3:
-            risk_score = 60  # Low vocabulary diversity
-        elif vocab_stats["vocabulary_richness"] < 0.4:
-            risk_score = 40
-        else:
-            risk_score = 20
-
-        risk_level = RiskLevel.HIGH if risk_score >= 60 else RiskLevel.MEDIUM if risk_score >= 35 else RiskLevel.LOW
-
-        # Build recommendations
-        recommendations = []
-        recommendations_zh = []
-
-        if vocab_stats["vocabulary_richness"] < 0.35:
-            recommendations.append("Consider diversifying vocabulary to reduce AI detection risk.")
-            recommendations_zh.append("考虑多样化词汇以降低AI检测风险。")
-
-        if len(locked_terms) > 0:
-            recommendations.append(f"{len(locked_terms)} terms are locked and will be preserved during rewriting.")
-            recommendations_zh.append(f"{len(locked_terms)} 个术语已锁定，将在改写过程中保留。")
-
-        if not recommendations:
-            recommendations.append("Lexical context prepared successfully.")
-            recommendations_zh.append("词汇上下文准备成功。")
+        processing_time_ms = int((time.time() - start_time) * 1000)
 
         return LexicalContextResponse(
-            risk_score=risk_score,
-            risk_level=risk_level,
-            issues=[],
-            recommendations=recommendations,
-            recommendations_zh=recommendations_zh,
-            processing_time_ms=int((time.time() - start_time) * 1000),
-            tokens=tokens,
-            vocabulary_stats=vocab_stats
+            risk_score=result.get("risk_score", 0),
+            risk_level=RiskLevel(result.get("risk_level", "low")),
+            issues=result.get("issues", []),
+            recommendations=result.get("recommendations", []),
+            recommendations_zh=result.get("recommendations_zh", []),
+            processing_time_ms=processing_time_ms,
+            tokens=result.get("tokens", []),
+            vocabulary_stats=result.get("vocabulary_stats", {})
         )
 
     except Exception as e:
-        logger.error(f"Lexical context preparation failed: {e}")
+        logger.error(f"Lexical context preparation failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -132,3 +64,54 @@ async def prepare_lexical_context(request: SubstepBaseRequest):
 async def analyze_context(request: SubstepBaseRequest):
     """Alias for prepare endpoint"""
     return await prepare_lexical_context(request)
+
+
+@router.post("/merge-modify/prompt", response_model=MergeModifyPromptResponse)
+async def generate_prompt(request: MergeModifyRequest):
+    """Generate modification prompt for lexical context issues"""
+    try:
+        prompt = await handler.generate_rewrite_prompt(
+            issues=request.selected_issues,
+            user_notes=request.user_notes
+        )
+        return MergeModifyPromptResponse(
+            prompt=prompt,
+            prompt_zh="根据选定的词汇问题生成的修改提示词",
+            issues_summary_zh=f"选中了{len(request.selected_issues)}个问题",
+            estimated_changes=len(request.selected_issues)
+        )
+    except Exception as e:
+        logger.error(f"Prompt generation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/merge-modify/apply", response_model=MergeModifyApplyResponse)
+async def apply_modification(request: MergeModifyRequest):
+    """Apply AI modification for lexical context issues"""
+    try:
+        from src.services.session_service import SessionService
+        session_service = SessionService()
+        session_data = await session_service.get_session(request.session_id) if request.session_id else None
+        document_text = session_data.get("document_text", "") if session_data else ""
+
+        if not document_text:
+            raise HTTPException(status_code=400, detail="Document text not found in session")
+
+        result = await handler.apply_rewrite(
+            document_text=document_text,
+            issues=request.selected_issues,
+            user_notes=request.user_notes,
+            locked_terms=session_data.get("locked_terms", []) if session_data else []
+        )
+        return MergeModifyApplyResponse(
+            modified_text=result.get("modified_text", ""),
+            changes_summary_zh=result.get("changes_summary_zh", ""),
+            changes_count=result.get("changes_count", 0),
+            issues_addressed=[i.type for i in request.selected_issues],
+            remaining_attempts=3
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Modification failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))

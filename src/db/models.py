@@ -177,6 +177,7 @@ class Session(Base):
     # Relationships
     document = relationship("Document", back_populates="sessions")
     modifications = relationship("Modification", back_populates="session", cascade="all, delete-orphan")
+    substep_states = relationship("SubstepState", back_populates="session", cascade="all, delete-orphan")
 
 
 class Sentence(Base):
@@ -278,3 +279,47 @@ class Feedback(Base):
     admin_notes = Column(Text, nullable=True)  # Admin notes for internal use
     created_at = Column(DateTime, server_default=func.now())
     reviewed_at = Column(DateTime, nullable=True)
+
+
+# ==========================================
+# Substep State Model (substep cache)
+# 子步骤状态模型（子步骤缓存）
+# ==========================================
+
+class SubstepState(Base):
+    """
+    Substep state model - caches substep analysis results and user inputs
+    子步骤状态模型 - 缓存子步骤分析结果和用户输入
+
+    This avoids redundant LLM calls when user navigates back to previous steps.
+    当用户返回上一步骤时，避免重复调用LLM。
+    """
+    __tablename__ = "substep_states"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    session_id = Column(String(36), ForeignKey("sessions.id"), nullable=False)
+    step_name = Column(String(50), nullable=False)  # e.g., "layer5-step1-1", "layer4-step2-0"
+
+    # Analysis result from LLM (cached)
+    # LLM分析结果（缓存）
+    analysis_result = Column(JSON, nullable=True)
+
+    # User inputs/selections for this step
+    # 用户在此步骤的输入/选择
+    user_inputs = Column(JSON, nullable=True)  # e.g., {"selectedIssues": [...], "userNotes": "..."}
+
+    # Modified text (if any modification was applied)
+    # 修改后的文本（如果应用了修改）
+    modified_text = Column(Text, nullable=True)
+
+    # Step completion status
+    # 步骤完成状态
+    status = Column(String(20), default="pending")  # pending, completed, skipped
+
+    # Timestamps
+    # 时间戳
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    # Relationships
+    session = relationship("Session", back_populates="substep_states")

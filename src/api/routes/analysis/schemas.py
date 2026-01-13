@@ -254,6 +254,7 @@ class BaseAnalysisRequest(BaseModel):
     """Base request model for all analysis endpoints"""
     text: str = Field(..., min_length=1, description="Text to analyze")
     include_recommendations: bool = Field(default=True, description="Include recommendations")
+    session_id: Optional[str] = Field(None, description="Session ID for caching / 会话ID用于缓存")
 
 
 class DocumentAnalysisRequest(BaseAnalysisRequest):
@@ -296,6 +297,7 @@ class ParagraphAnalysisRequest(BaseModel):
     paragraphs: Optional[List[str]] = Field(default=None, description="List of paragraphs")
     paragraph_roles: Optional[List[str]] = Field(default=None, description="Pre-detected paragraph roles")
     section_context: Optional[Dict[str, Any]] = Field(default=None, description="Context from Layer 4")
+    session_id: Optional[str] = Field(default=None, description="Session ID for caching / 会话ID用于缓存")
 
     @model_validator(mode='after')
     def validate_input(self):
@@ -414,6 +416,14 @@ class ParagraphAnalysisResponse(LayerAnalysisResult):
     anchor_densities: List[float] = Field(default_factory=list, description="Anchor density per paragraph")
     sentence_length_cvs: List[float] = Field(default_factory=list, description="Sentence length CV per paragraph")
     low_burstiness_paragraphs: List[int] = Field(default_factory=list, description="Indices of low burstiness paragraphs")
+    # Additional fields for Step 3.3 Anchor Density Analysis
+    # 用于步骤 3.3 锚点密度分析的额外字段
+    anchor_density: float = Field(default=0.0, description="Overall anchor density (anchors per 100 words)")
+    paragraph_count: int = Field(default=0, description="Total number of paragraphs analyzed")
+    paragraph_details: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Detailed analysis per paragraph including anchorCount, wordCount, density, etc."
+    )
 
 
 class SentenceWithContext(BaseModel):
@@ -819,6 +829,11 @@ class ParagraphLengthAnalysisResponse(BaseModel):
     expand_suggestions: List[int] = Field(default_factory=list, description="Paragraph indices suggested for expansion")
     compress_suggestions: List[int] = Field(default_factory=list, description="Paragraph indices suggested for compression")
 
+    # LLM Analysis Issues / LLM分析问题
+    issues: List[Dict[str, Any]] = Field(default_factory=list, description="LLM detected issues")
+    summary: str = Field("", description="One-sentence summary of analysis result")
+    summary_zh: str = Field("", description="分析结果的一句话总结")
+
     # Recommendations / 建议
     recommendations: List[str] = Field(default_factory=list, description="English recommendations")
     recommendations_zh: List[str] = Field(default_factory=list, description="Chinese recommendations")
@@ -913,6 +928,7 @@ class SectionIdentificationResponse(BaseModel):
     total_paragraphs: int = Field(0, description="Total number of paragraphs")
     total_words: int = Field(0, description="Total word count")
     role_distribution: Dict[str, int] = Field(default_factory=dict, description="Count of each role")
+    issues: List[DetectionIssue] = Field(default_factory=list, description="Detected structural issues")
     recommendations: List[str] = Field(default_factory=list)
     recommendations_zh: List[str] = Field(default_factory=list)
     processing_time_ms: Optional[int] = Field(None)

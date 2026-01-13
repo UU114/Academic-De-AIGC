@@ -11,6 +11,10 @@
 1. [Security Keys Generation | 安全密钥生成](#1-security-keys-generation--安全密钥生成)
 2. [Environment Variables | 环境变量配置](#2-environment-variables--环境变量配置)
 3. [Microservice Integration | 微服务集成](#3-microservice-integration--微服务集成)
+   - 3.1 Payment Service Integration | 支付服务集成
+   - 3.2 Authentication Service Integration | 认证服务集成
+   - 3.3 Internal Endpoint Protection | 内部端点保护
+   - 3.4 User Microservice Integration | 用户微服务集成 (NEW)
 4. [LLM API Configuration | LLM API配置](#4-llm-api-configuration--llm-api配置)
 5. [Nginx Configuration | Nginx配置](#5-nginx-configuration--nginx配置)
 6. [Startup Checklist | 启动检查清单](#6-startup-checklist--启动检查清单)
@@ -209,6 +213,119 @@ Protected endpoints (require IP whitelist + X-Service-Key):
 | `/api/v1/payment/callback` | Payment status updates |
 | `/api/v1/internal/*` | Internal service APIs |
 
+### 3.4 User Microservice Integration | 用户微服务集成
+
+The frontend calls `/api/user/*` for all user-related operations. This must be proxied to your user microservice.
+
+前端通过 `/api/user/*` 调用所有用户相关操作，需要代理到用户微服务。
+
+#### Required Endpoints | 必需的端点
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/user/sms/send` | POST | Send SMS verification code 发送短信验证码 |
+| `/api/user/register` | POST | User registration 用户注册 |
+| `/api/user/login` | POST | User login 用户登录 |
+| `/api/user/logout` | POST | User logout 用户登出 |
+| `/api/user/me` | GET | Get current user info 获取当前用户信息 |
+| `/api/user/token/refresh` | POST | Refresh access token 刷新访问令牌 |
+| `/api/user/password/reset-request` | POST | Request password reset 请求密码重置 |
+| `/api/user/password/reset-confirm` | POST | Confirm password reset 确认密码重置 |
+
+#### Nginx Proxy Configuration | Nginx 代理配置
+
+```nginx
+# User microservice proxy
+# 用户微服务代理
+location /api/user/ {
+    proxy_pass http://user-service:8080/;  # Your user microservice address
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+#### Aliyun CAPTCHA Configuration | 阿里云验证码配置
+
+Frontend requires Aliyun CAPTCHA SDK for registration and password reset.
+
+前端注册和密码找回需要阿里云验证码 SDK。
+
+1. **Get credentials from Aliyun Console | 从阿里云控制台获取凭据**
+   - Visit: https://www.aliyun.com/product/captcha
+   - Create a verification scene and get Scene ID
+   - Get App Key for your application
+
+2. **Configure frontend environment variables | 配置前端环境变量**
+
+```bash
+# In .env file (frontend uses Vite, requires VITE_ prefix)
+# 在 .env 文件中（前端使用 Vite，需要 VITE_ 前缀）
+VITE_ALIYUN_CAPTCHA_SCENE_ID=your_scene_id_here
+VITE_ALIYUN_CAPTCHA_APP_KEY=your_app_key_here
+```
+
+3. **User microservice must verify CAPTCHA | 用户微服务需验证 CAPTCHA**
+
+Your user microservice should call Aliyun's server-side verification API:
+
+您的用户微服务应调用阿里云服务端验证 API：
+
+```python
+# Example: Aliyun CAPTCHA server-side verification
+# 示例：阿里云验证码服务端验证
+import requests
+
+def verify_captcha(captcha_verify_param: str, scene_id: str, app_key: str) -> bool:
+    """
+    Verify Aliyun CAPTCHA on server side
+    服务端验证阿里云验证码
+    """
+    response = requests.post(
+        "https://captcha.aliyuncs.com/",
+        data={
+            "Action": "VerifyCaptcha",
+            "CaptchaVerifyParam": captcha_verify_param,
+            "SceneId": scene_id,
+            # ... other required parameters
+        },
+        headers={"Authorization": f"Bearer {app_key}"}
+    )
+    result = response.json()
+    return result.get("Result", {}).get("VerifyResult", False)
+```
+
+#### Aliyun SMS Configuration | 阿里云短信配置
+
+Your user microservice needs Aliyun SMS service for sending verification codes.
+
+您的用户微服务需要阿里云短信服务发送验证码。
+
+1. **Enable Aliyun SMS Service | 开通阿里云短信服务**
+   - Visit: https://www.aliyun.com/product/sms
+   - Create SMS signature and template
+   - Get AccessKey ID and Secret
+
+2. **SMS API integration in user microservice | 用户微服务中的短信API集成**
+
+```python
+# Example: Send SMS verification code
+# 示例：发送短信验证码
+from aliyunsdkcore.client import AcsClient
+from aliyunsdkdysmsapi.request.v20170525 import SendSmsRequest
+
+def send_sms_code(phone: str, code: str):
+    client = AcsClient(ACCESS_KEY_ID, ACCESS_KEY_SECRET, "cn-hangzhou")
+    request = SendSmsRequest.SendSmsRequest()
+    request.set_PhoneNumbers(phone)
+    request.set_SignName("YourSignName")
+    request.set_TemplateCode("SMS_XXXXXX")
+    request.set_TemplateParam(f'{{"code":"{code}"}}')
+    response = client.do_action_with_exception(request)
+    return response
+```
+
 ---
 
 ## 4. LLM API Configuration | LLM API配置
@@ -361,6 +478,18 @@ server {
 - [ ] Nginx is configured with `client_max_body_size`
 - [ ] SSL certificate is valid and configured
 - [ ] Payment service is configured to sign callbacks correctly
+
+### User Microservice Checklist | 用户微服务检查清单
+
+- [ ] User microservice is running and accessible
+- [ ] Nginx proxy for `/api/user/*` is configured
+- [ ] `VITE_ALIYUN_CAPTCHA_SCENE_ID` is set in frontend .env
+- [ ] `VITE_ALIYUN_CAPTCHA_APP_KEY` is set in frontend .env
+- [ ] Aliyun CAPTCHA service is enabled in Aliyun console
+- [ ] Aliyun SMS service is enabled and configured
+- [ ] SMS template is approved by Aliyun
+- [ ] User microservice can verify CAPTCHA server-side
+- [ ] User microservice can send SMS verification codes
 
 ### Expected Startup Log (Operational Mode) | 预期启动日志（运营模式）
 

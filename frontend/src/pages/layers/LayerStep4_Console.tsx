@@ -78,11 +78,53 @@ export default function LayerStep4Console({
   patternResult: initialPatternResult,
 }: LayerStep4ConsoleProps) {
   const { documentId: documentIdParam } = useParams<{ documentId: string }>();
-  const documentId = documentIdProp || documentIdParam;
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
   const sessionId = searchParams.get('session');
+
+  // Helper function to check if documentId is valid
+  // 辅助函数：检查documentId是否有效
+  const isValidDocumentId = (id: string | undefined): boolean => {
+    return !!(id && id !== 'undefined' && id !== 'null');
+  };
+
+  const getInitialDocumentId = (): string | undefined => {
+    if (isValidDocumentId(documentIdProp)) return documentIdProp;
+    if (isValidDocumentId(documentIdParam)) return documentIdParam;
+    return undefined;
+  };
+
+  const [documentId, setDocumentId] = useState<string | undefined>(getInitialDocumentId());
+  const [sessionFetchAttempted, setSessionFetchAttempted] = useState(
+    isValidDocumentId(documentIdProp) || isValidDocumentId(documentIdParam)
+  );
+
+  // Fetch documentId from session if not available
+  // 如果documentId不可用，从session获取
+  useEffect(() => {
+    const fetchDocumentIdFromSession = async () => {
+      if (!isValidDocumentId(documentId) && sessionId) {
+        try {
+          const sessionState = await sessionApi.getCurrent(sessionId);
+          if (sessionState.documentId) {
+            setDocumentId(sessionState.documentId);
+          }
+        } catch (err) {
+          console.error('Failed to get documentId from session:', err);
+        }
+      }
+      setSessionFetchAttempted(true);
+    };
+
+    if (!sessionId) {
+      setSessionFetchAttempted(true);
+    } else if (!isValidDocumentId(documentId)) {
+      fetchDocumentIdFromSession();
+    } else {
+      setSessionFetchAttempted(true);
+    }
+  }, [documentId, sessionId]);
 
   useEffect(() => {
     if (sessionId) {
@@ -101,13 +143,17 @@ export default function LayerStep4Console({
   const [currentProcessingIndex, setCurrentProcessingIndex] = useState<number | null>(null);
   const [processingLogs, setProcessingLogs] = useState<string[]>([]);
 
-  // Load document and run pattern analysis
-  // 加载文档并运行模式分析
+  // Load document and run pattern analysis - wait for session fetch to complete first
+  // 加载文档并运行模式分析 - 首先等待 session 获取完成
   useEffect(() => {
-    if (documentId) {
-      loadDocumentAndAnalyze(documentId);
+    if (!sessionFetchAttempted) return;
+    if (isValidDocumentId(documentId)) {
+      loadDocumentAndAnalyze(documentId!);
+    } else {
+      setError('Document ID not found. Please start from the document upload page. / 未找到文档ID，请从文档上传页面开始。');
+      setIsLoading(false);
     }
-  }, [documentId]);
+  }, [documentId, sessionFetchAttempted]);
 
   const loadDocumentAndAnalyze = async (docId: string) => {
     try {
@@ -118,15 +164,13 @@ export default function LayerStep4Console({
         return;
       }
 
-      // If no pattern result provided, run analysis
-      // 如果没有提供模式分析结果，则运行分析
-      if (!initialPatternResult) {
-        const result = await sentenceLayerApi.analyzePatterns(doc.originalText, undefined, sessionId || undefined);
-        setPatternResult(result);
-        buildParagraphQueue(doc.originalText, result);
-      } else {
-        buildParagraphQueue(doc.originalText, initialPatternResult);
-      }
+      // Always fetch fresh pattern analysis results
+      // 始终获取最新的模式分析结果
+      console.log('Fetching pattern analysis for document:', docId);
+      const result = await sentenceLayerApi.analyzePatterns(doc.originalText, undefined, sessionId || undefined);
+      console.log('Pattern analysis result:', result.highRiskParagraphs?.length, 'paragraphs');
+      setPatternResult(result);
+      buildParagraphQueue(doc.originalText, result);
     } catch (err) {
       console.error('Failed to load document:', err);
       setError('Failed to load document / 加载文档失败');
@@ -457,27 +501,6 @@ export default function LayerStep4Console({
               </p>
             </div>
           </div>
-
-          {/* Processing Controls */}
-          <div className="flex items-center gap-2">
-            {isProcessing ? (
-              <>
-                <Button variant="outline" onClick={togglePause}>
-                  {isPaused ? <Play className="w-4 h-4 mr-2" /> : <Pause className="w-4 h-4 mr-2" />}
-                  {isPaused ? 'Resume' : 'Pause'}
-                </Button>
-                <div className="flex items-center gap-2 text-blue-600">
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                  <span>Processing...</span>
-                </div>
-              </>
-            ) : (
-              <Button onClick={startProcessing} disabled={selectedParagraphs.size === 0}>
-                <Play className="w-4 h-4 mr-2" />
-                Start Processing ({selectedParagraphs.size})
-              </Button>
-            )}
-          </div>
         </div>
 
         <p className="text-gray-600 mb-4">
@@ -772,6 +795,31 @@ export default function LayerStep4Console({
             <RefreshCw className="w-4 h-4 mr-2" />
             Reset Completed / 重置已完成
           </Button>
+        </div>
+
+        {/* Processing Controls */}
+        <div className="flex items-center justify-end gap-3 mt-4 pt-4 border-t">
+          {isProcessing ? (
+            <>
+              <Button variant="outline" onClick={togglePause}>
+                {isPaused ? <Play className="w-4 h-4 mr-2" /> : <Pause className="w-4 h-4 mr-2" />}
+                {isPaused ? 'Resume / 继续' : 'Pause / 暂停'}
+              </Button>
+              <div className="flex items-center gap-2 text-blue-600">
+                <Loader2 className="w-5 h-5 animate-spin" />
+                <span>Processing... / 处理中...</span>
+              </div>
+            </>
+          ) : (
+            <Button
+              onClick={startProcessing}
+              disabled={selectedParagraphs.size === 0}
+              className="bg-purple-600 hover:bg-purple-700"
+            >
+              <Play className="w-4 h-4 mr-2" />
+              Start Processing / 开始处理 ({selectedParagraphs.size})
+            </Button>
+          )}
         </div>
       </div>
 

@@ -11,6 +11,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from src.config import get_settings
+from src.utils.process_manager import (
+    startup_check,
+    write_pid_file,
+    remove_pid_file,
+    is_port_in_use,
+    get_process_on_port
+)
 
 # Configure logging
 # 配置日志
@@ -21,6 +28,7 @@ from src.api.routes import documents, analyze, suggest, session, export, transit
 from src.api.routes import auth, payment, task, feedback, admin
 from src.api.routes.analysis import router as analysis_router
 from src.api.routes.substeps import router as substeps_router
+from src.api.routes.substep_state import router as substep_state_router
 from src.middleware.mode_checker import ModeCheckerMiddleware
 from src.middleware.internal_service_middleware import InternalServiceMiddleware, SecurityHeadersMiddleware
 from src.middleware.rate_limiter import RateLimitMiddleware
@@ -108,10 +116,32 @@ async def lifespan(app: FastAPI):
     # 关键: 在其他任何事之前进行安全检查
     _security_startup_check()
 
+    # Port and process check
+    # 端口和进程检查
+    port = settings.port
+    auto_kill = os.getenv("AUTO_KILL_PORT", "false").lower() == "true"
+
+    if not startup_check(port, auto_kill=auto_kill):
+        logger.critical("=" * 60)
+        logger.critical("  STARTUP FAILED: Port conflict detected!")
+        logger.critical(f"  Port {port} is already in use.")
+        logger.critical("")
+        logger.critical("  Solutions:")
+        logger.critical("  1. Stop the existing server: scripts/stop.bat")
+        logger.critical("  2. Set AUTO_KILL_PORT=true to auto-kill")
+        logger.critical("  3. Use a different port: --port 8001")
+        logger.critical("=" * 60)
+        sys.exit(1)
+
+    # Write PID file for singleton management
+    # 写入PID文件用于单例管理
+    write_pid_file()
+
     # Startup: Initialize database and load models
     # 启动: 初始化数据库和加载模型
     logger.info(f"Starting {settings.app_name} v{settings.app_version}...")
     logger.info(f"System Mode: {settings.system_mode.value.upper()}")
+    logger.info(f"Server PID: {os.getpid()}")
     await init_db()
     logger.info("Database initialized")
 
@@ -120,6 +150,8 @@ async def lifespan(app: FastAPI):
     # Shutdown: Cleanup resources
     # 关闭: 清理资源
     logger.info("Shutting down...")
+    remove_pid_file()
+    logger.info("PID file removed")
 
 
 app = FastAPI(
@@ -133,7 +165,7 @@ app = FastAPI(
 # 跨域中间件 - 安全: 仅允许配置的来源
 # Default: localhost for development, set ALLOWED_ORIGINS in .env for production
 # 默认: 开发环境localhost, 生产环境在.env中设置ALLOWED_ORIGINS
-allowed_origins_str = os.getenv('ALLOWED_ORIGINS', 'http://localhost:5173,http://localhost:3000')
+allowed_origins_str = os.getenv('ALLOWED_ORIGINS', 'http://localhost:5173,http://localhost:5174,http://localhost:3000')
 allowed_origins = [origin.strip() for origin in allowed_origins_str.split(',') if origin.strip()]
 
 app.add_middleware(
@@ -188,6 +220,11 @@ app.include_router(analysis_router, prefix="/api/v1/analysis", tags=["5-Layer An
 # Granular substep endpoints for each layer's analysis steps
 # 每个层级分析步骤的细粒度子步骤端点
 app.include_router(substeps_router, prefix="/api/v1", tags=["Substeps"])
+
+# Substep State API (子步骤状态API)
+# Cache and restore substep analysis results and user inputs
+# 缓存和恢复子步骤分析结果和用户输入
+app.include_router(substep_state_router, prefix="/api/v1/substep-state", tags=["Substep State"])
 
 # Dual-mode system routes (认证、支付、任务路由)
 # Dual-mode system routes (Auth, Payment, Task)

@@ -1448,10 +1448,10 @@ class SelectedIssue(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     type: str = Field(..., description="Issue type identifier")
-    description: str = Field("", description="English description")
-    description_zh: str = Field(..., alias="descriptionZh", description="Chinese description")
-    severity: str = Field("medium", description="Severity: high/medium/low")
-    affected_positions: List[str] = Field(default=[], alias="affectedPositions", description="Affected positions")
+    description: str = Field(default="", description="English description")
+    description_zh: str = Field(default="", alias="descriptionZh", description="Chinese description")
+    severity: str = Field(default="medium", description="Severity: high/medium/low")
+    affected_positions: List[str] = Field(default_factory=list, alias="affectedPositions", description="Affected positions")
 
 
 class MergeModifyRequest(BaseModel):

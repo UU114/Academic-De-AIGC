@@ -68,12 +68,30 @@ try:
 except ImportError:
     VOID_DETECTOR_AVAILABLE = False
 
+# Import Layer 2 sub-step handlers for LLM-based analysis
+# 导入 Layer 2 子步骤处理器用于基于LLM的分析
+from src.api.routes.substeps.layer2.step4_0_handler import Step4_0Handler
+from src.api.routes.substeps.layer2.step4_1_handler import Step4_1Handler
+from src.api.routes.substeps.layer2.step4_2_handler import Step4_2Handler
+from src.api.routes.substeps.layer2.step4_3_handler import Step4_3Handler
+from src.api.routes.substeps.layer2.step4_4_handler import Step4_4Handler
+from src.api.routes.substeps.layer2.step4_5_handler import Step4_5Handler
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Reusable segmenter instance
 # 可重用的分句器实例
 _segmenter = SentenceSegmenter()
+
+# Initialize Layer 2 sub-step handlers
+# 初始化 Layer 2 子步骤处理器
+step4_0_handler = Step4_0Handler()
+step4_1_handler = Step4_1Handler()
+step4_2_handler = Step4_2Handler()
+step4_3_handler = Step4_3Handler()
+step4_4_handler = Step4_4Handler()
+step4_5_handler = Step4_5Handler()
 
 
 # ============================================================================
@@ -1200,98 +1218,56 @@ async def identify_sentences(request: SentenceIdentificationRequest):
     start_time = time.time()
 
     try:
-        # Get paragraphs from request
-        # 从请求获取段落
-        if request.paragraphs:
-            paragraphs = request.paragraphs
-        elif request.text:
-            paragraphs = _split_text_to_paragraphs(request.text)
+        # Get document text from request
+        # 从请求获取文档文本
+        if request.text:
+            document_text = request.text
+        elif request.paragraphs:
+            document_text = "\n\n".join(request.paragraphs)
         else:
             raise HTTPException(status_code=400, detail="Either 'text' or 'paragraphs' must be provided")
 
-        # Identify sentences in each paragraph
-        # 识别每个段落中的句子
-        all_sentences: List[SentenceInfo] = []
-        paragraph_sentence_map: Dict[int, List[int]] = {}
-        type_distribution: Dict[str, int] = {"simple": 0, "compound": 0, "complex": 0, "compound_complex": 0}
-
-        global_idx = 0
-        for para_idx, para_text in enumerate(paragraphs):
-            para_sentences = _identify_sentences_in_paragraph(para_text, para_idx)
-            sentence_indices = []
-
-            for sent in para_sentences:
-                sent.index = global_idx
-                all_sentences.append(sent)
-                sentence_indices.append(global_idx)
-                type_distribution[sent.sentence_type] = type_distribution.get(sent.sentence_type, 0) + 1
-                global_idx += 1
-
-            paragraph_sentence_map[para_idx] = sentence_indices
-
-        # Calculate metrics and risk
-        # 计算指标和风险
-        total_sentences = len(all_sentences)
-        simple_count = type_distribution.get("simple", 0)
-        simple_ratio = simple_count / total_sentences if total_sentences > 0 else 0
-
-        # Calculate opener repetition
-        # 计算句首词重复率
-        opener_counts: Dict[str, int] = {}
-        for sent in all_sentences:
-            opener = sent.opener_word.lower()
-            opener_counts[opener] = opener_counts.get(opener, 0) + 1
-        max_opener_count = max(opener_counts.values()) if opener_counts else 0
-        opener_repetition = max_opener_count / total_sentences if total_sentences > 0 else 0
-
-        # Calculate risk score
-        # 计算风险分数
-        lengths = [sent.word_count for sent in all_sentences]
-        length_cv = _calculate_length_cv(lengths)
-        risk_score = _calculate_risk_score(simple_ratio, length_cv, opener_repetition, 0)
-        risk_level = _get_risk_level(risk_score)
-
-        # Generate issues
-        # 生成问题列表
-        issues = []
-        if simple_ratio > 0.6:
-            issues.append({
-                "type": "high_simple_ratio",
-                "description": f"Simple sentence ratio ({simple_ratio:.0%}) exceeds 60% threshold",
-                "description_zh": f"简单句比例（{simple_ratio:.0%}）超过60%阈值",
-                "severity": "high",
-            })
-        if opener_repetition > 0.3:
-            issues.append({
-                "type": "opener_repetition",
-                "description": f"Sentence opener repetition ({opener_repetition:.0%}) exceeds 30% threshold",
-                "description_zh": f"句首词重复率（{opener_repetition:.0%}）超过30%阈值",
-                "severity": "high",
-            })
-
-        # Generate recommendations
-        # 生成建议
-        recommendations = []
-        recommendations_zh = []
-        if simple_ratio > 0.6:
-            recommendations.append("Consider merging simple sentences into complex sentences with subordinate clauses")
-            recommendations_zh.append("建议将简单句合并为带从句的复杂句")
-        if opener_repetition > 0.3:
-            recommendations.append("Vary sentence openers to improve diversity")
-            recommendations_zh.append("变换句首词以提高多样性")
+        # Call Step4_0Handler for LLM-based sentence identification
+        # 调用 Step4_0Handler 进行基于LLM的句子识别
+        logger.info("Calling Step4_0Handler for LLM-based sentence identification")
+        result = await step4_0_handler.analyze(
+            document_text=document_text,
+            locked_terms=[],
+            session_id=request.session_id,
+            step_name="layer2-step4-0",
+            use_cache=True
+        )
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
+        # Convert handler result to response model
+        # 将处理器结果转换为响应模型
+        sentences = []
+        for idx, sent_data in enumerate(result.get("sentences", [])):
+            if isinstance(sent_data, dict):
+                sentences.append(SentenceInfo(
+                    index=sent_data.get("index", idx),
+                    text=sent_data.get("text", ""),
+                    paragraph_index=sent_data.get("paragraph_index", 0),
+                    word_count=sent_data.get("word_count", 0),
+                    sentence_type=sent_data.get("sentence_type", "simple"),
+                    function_role=sent_data.get("function_role", "body"),
+                    has_subordinate=sent_data.get("has_subordinate", False),
+                    clause_depth=sent_data.get("clause_depth", 0),
+                    voice=sent_data.get("voice", "active"),
+                    opener_word=sent_data.get("opener_word", "")
+                ))
+
         return SentenceIdentificationResponse(
-            sentences=all_sentences,
-            sentence_count=total_sentences,
-            paragraph_sentence_map=paragraph_sentence_map,
-            type_distribution=type_distribution,
-            risk_level=risk_level,
-            risk_score=risk_score,
-            issues=issues,
-            recommendations=recommendations,
-            recommendations_zh=recommendations_zh,
+            sentences=sentences,
+            sentence_count=result.get("sentence_count", len(sentences)),
+            paragraph_sentence_map=result.get("paragraph_sentence_map", {}),
+            type_distribution=result.get("type_distribution", {}),
+            risk_level=result.get("risk_level", "low"),
+            risk_score=result.get("risk_score", 0),
+            issues=result.get("issues", []),
+            recommendations=result.get("recommendations", []),
+            recommendations_zh=result.get("recommendations_zh", []),
             processing_time_ms=processing_time_ms,
         )
 
@@ -1325,256 +1301,235 @@ async def analyze_patterns(request: PatternAnalysisRequest):
     start_time = time.time()
 
     try:
-        # Get paragraphs
-        # 获取段落
-        if request.paragraphs:
-            paragraphs = request.paragraphs
-        elif request.text:
-            paragraphs = _split_text_to_paragraphs(request.text)
+        # Get document text from request
+        # 从请求获取文档文本
+        if request.text:
+            document_text = request.text
+        elif request.paragraphs:
+            document_text = "\n\n".join(request.paragraphs)
         else:
             raise HTTPException(status_code=400, detail="Either 'text' or 'paragraphs' must be provided")
 
-        # Collect all sentences
-        # 收集所有句子
-        all_sentences: List[SentenceInfo] = []
-        para_sentence_map: Dict[int, List[SentenceInfo]] = {}
-
-        for para_idx, para_text in enumerate(paragraphs):
-            para_sentences = _identify_sentences_in_paragraph(para_text, para_idx)
-            para_sentence_map[para_idx] = para_sentences
-            all_sentences.extend(para_sentences)
-
-        total_sentences = len(all_sentences)
-        if total_sentences == 0:
-            raise HTTPException(status_code=400, detail="No sentences found in text")
-
-        # Calculate type distribution
-        # 计算句式类型分布
-        type_counts: Dict[str, int] = {"simple": 0, "compound": 0, "complex": 0, "compound_complex": 0}
-        for sent in all_sentences:
-            type_counts[sent.sentence_type] = type_counts.get(sent.sentence_type, 0) + 1
-
-        type_distribution = {}
-        thresholds = {"simple": 0.6, "compound": 0.15, "complex": 0.2, "compound_complex": 0.1}
-        for stype, count in type_counts.items():
-            pct = count / total_sentences
-            is_risk = (stype == "simple" and pct > thresholds["simple"]) or \
-                      (stype != "simple" and pct < thresholds[stype])
-            type_distribution[stype] = TypeStats(
-                count=count,
-                percentage=pct,
-                is_risk=is_risk,
-                threshold=thresholds[stype],
-            )
-
-        # Analyze openers
-        # 分析句首词
-        opener_counts: Dict[str, int] = {}
-        subject_opening_count = 0
-        for sent in all_sentences:
-            opener = sent.opener_word
-            opener_counts[opener] = opener_counts.get(opener, 0) + 1
-            if opener in SUBJECT_OPENERS:
-                subject_opening_count += 1
-
-        sorted_openers = sorted(opener_counts.items(), key=lambda x: -x[1])
-        top_repeated = [o[0] for o in sorted_openers[:5]]
-        max_opener_count = sorted_openers[0][1] if sorted_openers else 0
-        repetition_rate = max_opener_count / total_sentences if total_sentences > 0 else 0
-        subject_opening_rate = subject_opening_count / total_sentences if total_sentences > 0 else 0
-
-        opener_issues = []
-        if repetition_rate > 0.3:
-            opener_issues.append(f"High opener repetition: '{top_repeated[0]}' used {max_opener_count} times ({repetition_rate:.0%})")
-        if subject_opening_rate > 0.8:
-            opener_issues.append(f"Subject-first opening rate ({subject_opening_rate:.0%}) exceeds 80%")
-
-        opener_analysis = OpenerAnalysis(
-            opener_counts=opener_counts,
-            top_repeated=top_repeated,
-            repetition_rate=repetition_rate,
-            subject_opening_rate=subject_opening_rate,
-            issues=opener_issues,
+        # Call Step4_1Handler for LLM-based pattern analysis
+        # 调用 Step4_1Handler 进行基于LLM的句式分析
+        logger.info("Calling Step4_1Handler for LLM-based pattern analysis")
+        result = await step4_1_handler.analyze(
+            document_text=document_text,
+            locked_terms=[],
+            session_id=request.session_id,
+            step_name="layer2-step4-1",
+            use_cache=True
         )
 
-        # Analyze voice distribution
-        # 分析语态分布
-        voice_counts = {"active": 0, "passive": 0}
-        for sent in all_sentences:
-            voice_counts[sent.voice] = voice_counts.get(sent.voice, 0) + 1
+        processing_time_ms = int((time.time() - start_time) * 1000)
 
-        # Analyze clause depth
-        # 分析从句深度
-        depths = [sent.clause_depth for sent in all_sentences]
-        clause_depth_stats = {
-            "mean": sum(depths) / len(depths) if depths else 0,
-            "max": max(depths) if depths else 0,
-            "min": min(depths) if depths else 0,
-        }
+        # Convert handler result to response model
+        # 将处理器结果转换为响应模型
+        type_dist_raw = result.get("type_distribution", {})
+        type_distribution = {}
+        for stype, data in type_dist_raw.items():
+            if isinstance(data, dict):
+                type_distribution[stype] = TypeStats(
+                    count=data.get("count", 0),
+                    percentage=data.get("percentage", 0.0),
+                    is_risk=data.get("is_risk", False),
+                    threshold=data.get("threshold", 0.0),
+                )
+            else:
+                type_distribution[stype] = TypeStats(count=0, percentage=0.0, is_risk=False, threshold=0.0)
 
-        # Count parallel structures (simplified: count sentences with similar structure)
-        # 计算平行结构（简化版）
-        parallel_count = 0
+        opener_raw = result.get("opener_analysis", {})
+        opener_analysis = OpenerAnalysis(
+            opener_counts=opener_raw.get("opener_counts", {}),
+            top_repeated=opener_raw.get("top_repeated", []),
+            repetition_rate=opener_raw.get("repetition_rate", 0.0),
+            subject_opening_rate=opener_raw.get("subject_opening_rate", 0.0),
+            issues=opener_raw.get("issues", []),
+        )
 
-        # Identify high-risk paragraphs
-        # 识别高风险段落
-        high_risk_paragraphs = []
-        for para_idx, para_sents in para_sentence_map.items():
-            if not para_sents:
-                continue
-            para_simple_count = sum(1 for s in para_sents if s.sentence_type == "simple")
-            para_simple_ratio = para_simple_count / len(para_sents)
+        # Get high_risk_paragraphs from LLM result, or compute from issues
+        # 从LLM结果获取高风险段落，或从issues计算
+        high_risk_paragraphs = result.get("high_risk_paragraphs", [])
 
-            lengths = [s.word_count for s in para_sents]
-            para_length_cv = _calculate_length_cv(lengths)
+        # Always compute paragraph-level metrics for ALL paragraphs
+        # 始终为所有段落计算段落级指标
+        paragraphs = document_text.split('\n\n')
+        paragraphs = [p.strip() for p in paragraphs if p.strip()]
 
-            para_openers = [s.opener_word for s in para_sents]
-            para_opener_counts = {}
-            for o in para_openers:
-                para_opener_counts[o] = para_opener_counts.get(o, 0) + 1
-            para_max_opener = max(para_opener_counts.values()) if para_opener_counts else 0
-            para_opener_rep = para_max_opener / len(para_sents)
+        # Build existing high_risk_paragraphs map
+        # 构建现有的高风险段落映射
+        existing_para_map = {p.get("paragraph_index"): p for p in high_risk_paragraphs if isinstance(p, dict)}
 
-            para_risk_score = _calculate_risk_score(para_simple_ratio, para_length_cv, para_opener_rep, 0)
-            para_risk_level = _get_risk_level(para_risk_score)
+        # Track issues per paragraph from LLM result
+        # 从LLM结果跟踪每个段落的问题
+        paragraph_issues = {}
+        for issue in result.get("issues", []):
+            severity = issue.get("severity", "low")
+            affected_positions = issue.get("affected_positions", [])
 
-            if para_risk_level in ["high", "medium"]:
-                high_risk_paragraphs.append({
+            for pos in affected_positions:
+                para_idx = None
+                if isinstance(pos, str):
+                    if pos.startswith("para_"):
+                        try:
+                            para_idx = int(pos.replace("para_", ""))
+                        except ValueError:
+                            pass
+                    elif pos.startswith("sent_") or pos.startswith("sentence_"):
+                        # Map sentence to paragraph
+                        # 将句子映射到段落
+                        try:
+                            sent_idx = int(pos.replace("sent_", "").replace("sentence_", ""))
+                            total_sents = 0
+                            for pi, para in enumerate(paragraphs):
+                                para_sents = len([s for s in para.split('.') if s.strip()])
+                                if total_sents + para_sents > sent_idx:
+                                    para_idx = pi
+                                    break
+                                total_sents += para_sents
+                        except ValueError:
+                            pass
+
+                if para_idx is not None and 0 <= para_idx < len(paragraphs):
+                    if para_idx not in paragraph_issues:
+                        paragraph_issues[para_idx] = {"high": 0, "medium": 0, "low": 0}
+                    paragraph_issues[para_idx][severity] = paragraph_issues[para_idx].get(severity, 0) + 1
+
+        # Compute metrics for ALL paragraphs
+        # 为所有段落计算指标
+        all_paragraph_data = []
+        global_opener_repetition = opener_raw.get("repetition_rate", 0.0)
+        global_subject_rate = opener_raw.get("subject_opening_rate", 0.0)
+
+        for para_idx, para_text in enumerate(paragraphs):
+            # Get sentences in this paragraph
+            # 获取此段落的句子
+            para_sentences = [s.strip() for s in para_text.split('.') if s.strip()]
+            sentence_count = len(para_sentences)
+
+            # Calculate sentence lengths for length CV
+            # 计算句长以得到长度变异系数
+            sentence_lengths = [len(s.split()) for s in para_sentences if s]
+            if len(sentence_lengths) >= 2:
+                mean_length = statistics.mean(sentence_lengths)
+                if mean_length > 0:
+                    std_length = statistics.stdev(sentence_lengths)
+                    length_cv = std_length / mean_length
+                else:
+                    length_cv = 0.0
+            else:
+                length_cv = 0.3  # Default for single sentence
+
+            # Calculate opener repetition for this paragraph
+            # 计算此段落的句首重复率
+            if para_sentences:
+                openers = [s.split()[0].strip('.,!?;:') if s.split() else '' for s in para_sentences]
+                opener_counts = {}
+                for opener in openers:
+                    if opener:
+                        opener_counts[opener] = opener_counts.get(opener, 0) + 1
+                max_repeat = max(opener_counts.values()) if opener_counts else 0
+                para_opener_repetition = max_repeat / len(para_sentences) if para_sentences else 0.0
+            else:
+                para_opener_repetition = 0.0
+
+            # Calculate simple sentence ratio (estimate based on sentence structure)
+            # 计算简单句比例（基于句子结构估算）
+            simple_count = 0
+            for sent in para_sentences:
+                # Simple heuristic: no subordinate conjunctions = likely simple sentence
+                # 简单启发式：没有从属连词 = 可能是简单句
+                subordinate_markers = ['which', 'that', 'because', 'although', 'while', 'when', 'if', 'since', 'unless', 'whereas']
+                sent_lower = sent.lower()
+                has_subordinate = any(marker in sent_lower for marker in subordinate_markers)
+                if not has_subordinate:
+                    simple_count += 1
+            simple_ratio = simple_count / sentence_count if sentence_count > 0 else 0.0
+
+            # Get issue counts for this paragraph
+            # 获取此段落的问题计数
+            issue_counts = paragraph_issues.get(para_idx, {"high": 0, "medium": 0, "low": 0})
+
+            # Calculate risk score based on metrics and issues
+            # 根据指标和问题计算风险分数
+            risk_score = 20  # Base score
+
+            # Add risk from issues
+            risk_score += issue_counts.get("high", 0) * 20
+            risk_score += issue_counts.get("medium", 0) * 10
+            risk_score += issue_counts.get("low", 0) * 5
+
+            # Add risk from metrics
+            if simple_ratio > 0.7:
+                risk_score += 15
+            elif simple_ratio > 0.5:
+                risk_score += 8
+            if length_cv < 0.2:
+                risk_score += 15  # Too uniform
+            elif length_cv < 0.3:
+                risk_score += 8
+            if para_opener_repetition > 0.5:
+                risk_score += 15
+            elif para_opener_repetition > 0.3:
+                risk_score += 8
+
+            risk_score = min(100, risk_score)
+
+            # Determine risk level
+            # 确定风险等级
+            if risk_score >= 60:
+                risk_level = "high"
+            elif risk_score >= 40:
+                risk_level = "medium"
+            else:
+                risk_level = "low"
+
+            # Use existing data if available, otherwise use computed data
+            # 如果有现有数据则使用，否则使用计算的数据
+            if para_idx in existing_para_map:
+                existing = existing_para_map[para_idx]
+                all_paragraph_data.append({
                     "paragraph_index": para_idx,
-                    "risk_score": para_risk_score,
-                    "risk_level": para_risk_level,
-                    "simple_ratio": para_simple_ratio,
-                    "length_cv": para_length_cv,
-                    "opener_repetition": para_opener_rep,
-                    "sentence_count": len(para_sents),
+                    "risk_score": existing.get("risk_score", risk_score),
+                    "risk_level": existing.get("risk_level", risk_level),
+                    "simple_ratio": existing.get("simple_ratio", simple_ratio),
+                    "length_cv": existing.get("length_cv", length_cv),
+                    "opener_repetition": existing.get("opener_repetition", para_opener_repetition),
+                    "sentence_count": sentence_count
+                })
+            else:
+                all_paragraph_data.append({
+                    "paragraph_index": para_idx,
+                    "risk_score": risk_score,
+                    "risk_level": risk_level,
+                    "simple_ratio": round(simple_ratio, 2),
+                    "length_cv": round(length_cv, 2),
+                    "opener_repetition": round(para_opener_repetition, 2),
+                    "sentence_count": sentence_count
                 })
 
-        # Calculate overall risk
-        # 计算总体风险
-        simple_ratio = type_counts.get("simple", 0) / total_sentences
-        lengths = [s.word_count for s in all_sentences]
-        length_cv = _calculate_length_cv(lengths)
-        risk_score = _calculate_risk_score(simple_ratio, length_cv, repetition_rate, 0)
-        risk_level = _get_risk_level(risk_score)
-
-        # Generate issues
-        # 生成问题列表
-        issues = []
-        if simple_ratio > 0.6:
-            issues.append({
-                "type": "high_simple_ratio",
-                "description": f"Simple sentence ratio ({simple_ratio:.0%}) exceeds 60%",
-                "severity": "high",
-            })
-        if repetition_rate > 0.3:
-            issues.append({
-                "type": "opener_repetition",
-                "description": f"Opener repetition rate ({repetition_rate:.0%}) exceeds 30%",
-                "severity": "high",
-            })
-        if voice_counts["passive"] / total_sentences < 0.1:
-            issues.append({
-                "type": "low_passive_ratio",
-                "description": f"Passive voice ratio ({voice_counts['passive']/total_sentences:.0%}) is below 10%",
-                "severity": "medium",
-            })
-
-        # Recommendations
-        # 建议
-        recommendations = []
-        recommendations_zh = []
-        if simple_ratio > 0.6:
-            recommendations.append("Merge simple sentences into complex sentences to increase variety")
-            recommendations_zh.append("将简单句合并为复杂句以增加多样性")
-        if repetition_rate > 0.3:
-            recommendations.append("Use varied sentence openers (adverbs, participles, prepositional phrases)")
-            recommendations_zh.append("使用多样化的句首（副词、分词、介词短语）")
-        if voice_counts["passive"] / total_sentences < 0.1:
-            recommendations.append("Add passive voice constructions for better balance (target: 15-30%)")
-            recommendations_zh.append("增加被动语态以获得更好的平衡（目标：15-30%）")
-
-        # Syntactic Void Detection Integration
-        # 句法空洞检测集成
-        syntactic_voids = []
-        void_score = 0
-        void_density = 0.0
-        has_critical_void = False
-
-        if VOID_DETECTOR_AVAILABLE and request.text:
-            try:
-                # Run syntactic void detection (using fast regex mode, spaCy optional)
-                # 运行句法空洞检测（使用快速正则模式，spaCy可选）
-                void_result: SyntacticVoidResult = detect_syntactic_voids(request.text, use_spacy=False)
-
-                # Convert VoidMatch objects to dicts for JSON serialization
-                # 将 VoidMatch 对象转换为 dict 以便 JSON 序列化
-                for match in void_result.matches:
-                    syntactic_voids.append({
-                        "pattern_type": match.pattern_type.value if hasattr(match.pattern_type, 'value') else str(match.pattern_type),
-                        "matched_text": match.matched_text,
-                        "position": match.position,
-                        "end_position": match.end_position,
-                        "severity": match.severity,
-                        "abstract_words": match.abstract_words,
-                        "suggestion": match.suggestion,
-                        "suggestion_zh": match.suggestion_zh
-                    })
-
-                void_score = void_result.void_score
-                void_density = round(void_result.void_density, 3)
-                has_critical_void = void_result.has_critical_void
-
-                logger.info(f"Syntactic Void Analysis: score={void_score}, matches={len(syntactic_voids)}, critical={has_critical_void}")
-
-                # Add void-related risk to overall score
-                # 将空洞相关风险添加到总体分数
-                if has_critical_void:
-                    risk_score = min(100, risk_score + 25)
-                    issues.append({
-                        "type": "syntactic_void_critical",
-                        "description": f"Critical syntactic voids detected ({len(syntactic_voids)} patterns)",
-                        "description_zh": f"检测到严重句法空洞（{len(syntactic_voids)} 个模式）",
-                        "severity": "critical",
-                    })
-                    recommendations.append("Remove or rewrite flowery empty phrases with concrete, specific language.")
-                    recommendations_zh.append("删除或改写华丽空洞的短语，使用具体、明确的语言。")
-                elif void_score > 30:
-                    risk_score = min(100, risk_score + 15)
-                    issues.append({
-                        "type": "syntactic_void_moderate",
-                        "description": f"Moderate syntactic voids detected (score: {void_score})",
-                        "description_zh": f"检测到中等句法空洞（分数：{void_score}）",
-                        "severity": "medium",
-                    })
-
-                # Recalculate risk level after void integration
-                # 在集成空洞检测后重新计算风险级别
-                risk_level = _get_risk_level(risk_score)
-
-            except Exception as e:
-                logger.warning(f"Syntactic void detection failed: {e}")
-
-        processing_time_ms = int((time.time() - start_time) * 1000)
+        # Replace high_risk_paragraphs with all paragraph data
+        # 用所有段落数据替换 high_risk_paragraphs
+        high_risk_paragraphs = all_paragraph_data
+        logger.info(f"Computed metrics for {len(high_risk_paragraphs)} paragraphs")
 
         return PatternAnalysisResponse(
             type_distribution=type_distribution,
             opener_analysis=opener_analysis,
-            voice_distribution=voice_counts,
-            clause_depth_stats=clause_depth_stats,
-            parallel_structure_count=parallel_count,
-            issues=issues,
-            risk_level=risk_level,
-            risk_score=risk_score,
+            voice_distribution=result.get("voice_distribution", {}),
+            clause_depth_stats=result.get("clause_depth_stats", {}),
+            parallel_structure_count=result.get("parallel_structure_count", 0),
+            issues=result.get("issues", []),
+            risk_level=result.get("risk_level", "low"),
+            risk_score=result.get("risk_score", 0),
             high_risk_paragraphs=high_risk_paragraphs,
-            recommendations=recommendations,
-            recommendations_zh=recommendations_zh,
+            recommendations=result.get("recommendations", []),
+            recommendations_zh=result.get("recommendations_zh", []),
             processing_time_ms=processing_time_ms,
-            # Syntactic Void Detection Results
-            # 句法空洞检测结果
-            syntactic_voids=syntactic_voids,
-            void_score=void_score,
-            void_density=void_density,
-            has_critical_void=has_critical_void,
+            syntactic_voids=result.get("syntactic_voids", []),
+            void_score=result.get("void_score", 0),
+            void_density=result.get("void_density", 0.0),
+            has_critical_void=result.get("has_critical_void", False),
         )
 
     except HTTPException:
@@ -1605,134 +1560,44 @@ async def analyze_length(request: LengthAnalysisRequest):
     start_time = time.time()
 
     try:
-        # Get paragraphs
-        # 获取段落
-        if request.paragraphs:
-            paragraphs = request.paragraphs
-        elif request.text:
-            paragraphs = _split_text_to_paragraphs(request.text)
+        # Get document text from request
+        # 从请求获取文档文本
+        if request.text:
+            document_text = request.text
+        elif request.paragraphs:
+            document_text = "\n\n".join(request.paragraphs)
         else:
             raise HTTPException(status_code=400, detail="Either 'text' or 'paragraphs' must be provided")
 
-        # If specific paragraph requested, filter
-        # 如果请求特定段落，则过滤
-        if request.paragraph_index is not None:
-            if request.paragraph_index >= len(paragraphs):
-                raise HTTPException(status_code=400, detail=f"Paragraph index {request.paragraph_index} out of range")
-            paragraphs = {request.paragraph_index: paragraphs[request.paragraph_index]}
-        else:
-            paragraphs = {i: p for i, p in enumerate(paragraphs)}
-
-        # Analyze each paragraph
-        # 分析每个段落
-        paragraph_stats = []
-        all_lengths = []
-        uniformity_issues = []
-        merge_candidates = []
-        split_candidates = []
-
-        for para_idx, para_text in paragraphs.items():
-            sentences = _identify_sentences_in_paragraph(para_text, para_idx)
-            if not sentences:
-                continue
-
-            lengths = [s.word_count for s in sentences]
-            all_lengths.extend(lengths)
-            length_cv = _calculate_length_cv(lengths)
-            min_length = min(lengths)
-            max_length = max(lengths)
-            avg_length = sum(lengths) / len(lengths)
-
-            para_stat = {
-                "paragraph_index": para_idx,
-                "sentence_count": len(sentences),
-                "length_cv": round(length_cv, 3),
-                "min_length": min_length,
-                "max_length": max_length,
-                "avg_length": round(avg_length, 1),
-                "lengths": lengths,
-            }
-            paragraph_stats.append(para_stat)
-
-            # Check for uniformity issues
-            # 检查句长均匀性问题
-            if length_cv < 0.25:
-                uniformity_issues.append({
-                    "paragraph_index": para_idx,
-                    "length_cv": round(length_cv, 3),
-                    "issue": "Length CV below 0.25 threshold - sentences too uniform",
-                    "issue_zh": "句长变异系数低于0.25阈值 - 句子长度过于均匀",
-                })
-
-            # Find merge candidates (adjacent short sentences)
-            # 查找合并候选（相邻短句）
-            for i in range(len(sentences) - 1):
-                if sentences[i].word_count <= 15 and sentences[i + 1].word_count <= 15:
-                    merge_candidates.append({
-                        "paragraph_index": para_idx,
-                        "sentence_indices": [sentences[i].index, sentences[i + 1].index],
-                        "sentences": [sentences[i].text, sentences[i + 1].text],
-                        "combined_length": sentences[i].word_count + sentences[i + 1].word_count,
-                        "reason": "Adjacent short sentences can be merged for complexity",
-                        "reason_zh": "相邻短句可以合并以增加复杂度",
-                    })
-
-            # Find split candidates (overly long sentences)
-            # 查找拆分候选（过长句子）
-            for sent in sentences:
-                if sent.word_count > 40:
-                    split_candidates.append({
-                        "paragraph_index": para_idx,
-                        "sentence_index": sent.index,
-                        "sentence": sent.text,
-                        "word_count": sent.word_count,
-                        "reason": "Sentence exceeds 40 words - consider splitting",
-                        "reason_zh": "句子超过40词 - 建议拆分",
-                    })
-
-        # Calculate overall CV
-        # 计算总体变异系数
-        overall_cv = _calculate_length_cv(all_lengths) if all_lengths else 0
-
-        # Calculate risk
-        # 计算风险
-        risk_score = 0
-        if overall_cv < 0.2:
-            risk_score += 40
-        elif overall_cv < 0.25:
-            risk_score += 25
-
-        if len(uniformity_issues) > len(paragraphs) * 0.5:
-            risk_score += 30
-
-        risk_level = _get_risk_level(risk_score)
-
-        # Recommendations
-        # 建议
-        recommendations = []
-        recommendations_zh = []
-        if overall_cv < 0.25:
-            recommendations.append("Overall sentence length CV is too low - add variety through merging short sentences and splitting long ones")
-            recommendations_zh.append("总体句长变异系数过低 - 通过合并短句和拆分长句增加变化")
-        if merge_candidates:
-            recommendations.append(f"Found {len(merge_candidates)} merge candidates - consider combining adjacent short sentences")
-            recommendations_zh.append(f"发现{len(merge_candidates)}个合并候选 - 建议合并相邻短句")
-        if split_candidates:
-            recommendations.append(f"Found {len(split_candidates)} overly long sentences - consider splitting for readability")
-            recommendations_zh.append(f"发现{len(split_candidates)}个过长句子 - 建议拆分以提高可读性")
+        # Call Step4_2Handler for LLM-based length analysis
+        # 调用 Step4_2Handler 进行基于LLM的句长分析
+        # Use paragraph-specific cache key to avoid sharing results between paragraphs
+        # 使用段落特定的缓存键，避免段落间共享结果
+        para_idx = request.paragraph_index if request.paragraph_index is not None else 0
+        cache_step_name = f"layer2-step4-2-para{para_idx}"
+        logger.info(f"Calling Step4_2Handler for paragraph {para_idx}")
+        result = await step4_2_handler.analyze(
+            document_text=document_text,
+            locked_terms=[],
+            session_id=request.session_id,
+            step_name=cache_step_name,
+            use_cache=True
+        )
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
+        # Convert handler result to response model
+        # 将处理器结果转换为响应模型
         return LengthAnalysisResponse(
-            paragraph_length_stats=paragraph_stats,
-            overall_length_cv=round(overall_cv, 3),
-            uniformity_issues=uniformity_issues,
-            merge_candidates=merge_candidates,
-            split_candidates=split_candidates,
-            risk_level=risk_level,
-            risk_score=risk_score,
-            recommendations=recommendations,
-            recommendations_zh=recommendations_zh,
+            paragraph_length_stats=result.get("paragraph_length_stats", []),
+            overall_length_cv=result.get("overall_length_cv", 0.0),
+            uniformity_issues=result.get("uniformity_issues", []),
+            merge_candidates=result.get("merge_candidates", []),
+            split_candidates=result.get("split_candidates", []),
+            risk_level=result.get("risk_level", "low"),
+            risk_score=result.get("risk_score", 0),
+            recommendations=result.get("recommendations", []),
+            recommendations_zh=result.get("recommendations_zh", []),
             processing_time_ms=processing_time_ms,
         )
 
@@ -1762,102 +1627,51 @@ async def suggest_merges(request: MergeSuggestionRequest):
     start_time = time.time()
 
     try:
-        para_text = request.paragraph_text
+        # Get document text from request
+        # 从请求获取文档文本
+        document_text = request.paragraph_text
+
+        # Call Step4_3Handler for LLM-based merge suggestions
+        # 调用 Step4_3Handler 进行基于LLM的合并建议
+        # Use paragraph-specific cache key to avoid sharing results between paragraphs
+        # 使用段落特定的缓存键，避免段落间共享结果
         para_idx = request.paragraph_index
-        max_merge = request.max_merge_count
-
-        # Get sentences in paragraph
-        # 获取段落中的句子
-        sentences = _identify_sentences_in_paragraph(para_text, para_idx)
-
-        if len(sentences) < 2:
-            return MergeSuggestionResponse(
-                paragraph_index=para_idx,
-                candidates=[],
-                estimated_improvement={},
-                risk_level="low",
-                recommendations=["Paragraph has fewer than 2 sentences - no merge needed"],
-                recommendations_zh=["段落少于2个句子 - 无需合并"],
-                processing_time_ms=int((time.time() - start_time) * 1000),
-            )
-
-        # Find merge candidates
-        # 查找合并候选
-        candidates = []
-        merge_types = {
-            "causal": ["because", "since", "as", "so"],
-            "contrast": ["although", "while", "whereas", "but"],
-            "temporal": ["when", "after", "before", "while"],
-            "addition": ["which", "that", "who"],
-        }
-
-        for i in range(len(sentences) - 1):
-            s1 = sentences[i]
-            s2 = sentences[i + 1]
-
-            # Only consider short sentences for merging
-            # 只考虑短句进行合并
-            if s1.word_count > 20 or s2.word_count > 20:
-                continue
-
-            # Determine merge type based on content
-            # 根据内容确定合并类型
-            merge_type = "addition"  # Default
-            s2_lower = s2.text.lower()
-            for mtype, keywords in merge_types.items():
-                if any(kw in s2_lower for kw in keywords):
-                    merge_type = mtype
-                    break
-
-            # Generate simple merged text (this would be enhanced with LLM)
-            # 生成简单的合并文本（实际应使用LLM增强）
-            if merge_type == "causal":
-                merged = f"{s1.text[:-1]}, which leads to the finding that {s2.text.lower()}"
-            elif merge_type == "contrast":
-                merged = f"Although {s1.text.lower()[:-1]}, {s2.text.lower()}"
-            elif merge_type == "temporal":
-                merged = f"After {s1.text.lower()[:-1]}, {s2.text.lower()}"
-            else:
-                merged = f"{s1.text[:-1]}, and {s2.text.lower()}"
-
-            word_count_after = len(merged.split())
-
-            candidate = MergeCandidate(
-                sentence_indices=[i, i + 1],
-                original_sentences=[s1.text, s2.text],
-                merged_text=merged,
-                merge_type=merge_type,
-                similarity_score=0.75,  # Placeholder
-                readability_score=0.85,  # Placeholder
-                word_count_before=s1.word_count + s2.word_count,
-                word_count_after=word_count_after,
-                complexity_gain=f"{s1.sentence_type}+{s2.sentence_type}->complex",
-            )
-            candidates.append(candidate)
-
-            if len(candidates) >= max_merge * 2:
-                break
-
-        # Estimate improvement
-        # 估算改进效果
-        estimated_improvement = {}
-        if candidates:
-            simple_reduction = len([c for c in candidates if "simple" in c.complexity_gain]) / len(sentences)
-            estimated_improvement = {
-                "simple_ratio_reduction": round(simple_reduction, 2),
-                "length_cv_increase": 0.08,  # Estimate
-                "complexity_increase": len(candidates) / len(sentences),
-            }
+        cache_step_name = f"layer2-step4-3-para{para_idx}"
+        logger.info(f"Calling Step4_3Handler for paragraph {para_idx}")
+        result = await step4_3_handler.analyze(
+            document_text=document_text,
+            locked_terms=[],
+            session_id=request.session_id if hasattr(request, 'session_id') else None,
+            step_name=cache_step_name,
+            use_cache=True
+        )
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
+        # Convert handler result to response model
+        # 将处理器结果转换为响应模型
+        candidates = []
+        for cand_data in result.get("candidates", []):
+            if isinstance(cand_data, dict):
+                candidates.append(MergeCandidate(
+                    sentence_indices=cand_data.get("sentence_indices", []),
+                    original_sentences=cand_data.get("original_sentences", []),
+                    merged_text=cand_data.get("merged_text", ""),
+                    merge_type=cand_data.get("merge_type", "addition"),
+                    similarity_score=cand_data.get("similarity_score", 0.0),
+                    readability_score=cand_data.get("readability_score", 0.0),
+                    word_count_before=cand_data.get("word_count_before", 0),
+                    word_count_after=cand_data.get("word_count_after", 0),
+                    complexity_gain=cand_data.get("complexity_gain", ""),
+                ))
+
         return MergeSuggestionResponse(
-            paragraph_index=para_idx,
+            paragraph_index=request.paragraph_index,
             candidates=candidates,
-            estimated_improvement=estimated_improvement,
-            risk_level="low" if candidates else "medium",
-            recommendations=["Review and apply merge suggestions to increase sentence complexity"],
-            recommendations_zh=["审核并应用合并建议以增加句子复杂度"],
+            estimated_improvement=result.get("estimated_improvement", {}),
+            risk_level=result.get("risk_level", "low"),
+            recommendations=result.get("recommendations", []),
+            recommendations_zh=result.get("recommendations_zh", []),
             processing_time_ms=processing_time_ms,
         )
 
@@ -1885,114 +1699,63 @@ async def optimize_connectors(request: ConnectorOptimizationRequest):
     start_time = time.time()
 
     try:
-        para_text = request.paragraph_text
+        # Get document text from request
+        # 从请求获取文档文本
+        document_text = request.paragraph_text
+
+        # Call Step4_4Handler for LLM-based connector optimization
+        # 调用 Step4_4Handler 进行基于LLM的连接词优化
+        # Use paragraph-specific cache key to avoid sharing results between paragraphs
+        # 使用段落特定的缓存键，避免段落间共享结果
         para_idx = request.paragraph_index
-        preserve = set(c.lower() for c in request.preserve_connectors)
-
-        # Get sentences
-        # 获取句子
-        sentences = _identify_sentences_in_paragraph(para_text, para_idx)
-
-        # Find connectors
-        # 查找连接词
-        connector_issues = []
-        connector_type_dist: Dict[str, int] = {}
-        total_connectors = 0
-
-        for i, sent in enumerate(sentences):
-            connectors = _detect_explicit_connectors(sent.text)
-            for conn_info in connectors:
-                conn = conn_info["connector"]
-                conn_type = conn_info["type"]
-
-                if conn.lower() in preserve:
-                    continue
-
-                connector_type_dist[conn_type] = connector_type_dist.get(conn_type, 0) + 1
-                total_connectors += 1
-
-                risk = "high" if conn_type in ["addition", "sequence", "summary"] else "medium"
-
-                connector_issues.append(ConnectorIssue(
-                    sentence_index=i,
-                    connector=conn,
-                    connector_type=conn_type,
-                    position=conn_info["position"],
-                    risk_level=risk,
-                    context=sent.text[:100] + "..." if len(sent.text) > 100 else sent.text,
-                ))
-
-        # Calculate explicit ratio
-        # 计算显性连接词比例
-        explicit_ratio = total_connectors / len(sentences) if sentences else 0
-
-        # Generate replacement suggestions
-        # 生成替换建议
-        suggestions = []
-        for issue in connector_issues:
-            if issue.connector_type == "addition":
-                suggestions.append(ReplacementSuggestion(
-                    original_connector=issue.connector,
-                    sentence_index=issue.sentence_index,
-                    replacement_type="remove",
-                    new_text=f"[Remove '{issue.connector}' and use semantic echo instead]",
-                    explanation=f"Remove '{issue.connector}' - let content flow naturally",
-                    explanation_zh=f"删除'{issue.connector}' - 让内容自然衔接",
-                ))
-            elif issue.connector_type == "causal":
-                suggestions.append(ReplacementSuggestion(
-                    original_connector=issue.connector,
-                    sentence_index=issue.sentence_index,
-                    replacement_type="subordinate",
-                    new_text=f"[Convert to subordinate clause: 'Given that...' or 'Since...']",
-                    explanation=f"Replace '{issue.connector}' with subordinate clause construction",
-                    explanation_zh=f"用从句结构替换'{issue.connector}'",
-                ))
-            elif issue.connector_type == "contrast":
-                suggestions.append(ReplacementSuggestion(
-                    original_connector=issue.connector,
-                    sentence_index=issue.sentence_index,
-                    replacement_type="subordinate",
-                    new_text=f"[Convert to 'Although...' or 'While...' clause]",
-                    explanation=f"Replace '{issue.connector}' with contrast subordinate clause",
-                    explanation_zh=f"用对比从句替换'{issue.connector}'",
-                ))
-
-        # Risk assessment
-        # 风险评估
-        risk_score = 0
-        if explicit_ratio > 0.5:
-            risk_score = 80
-        elif explicit_ratio > 0.4:
-            risk_score = 60
-        elif explicit_ratio > 0.3:
-            risk_score = 40
-
-        risk_level = _get_risk_level(risk_score)
-
-        # Recommendations
-        # 建议
-        recommendations = []
-        recommendations_zh = []
-        if explicit_ratio > 0.25:
-            recommendations.append(f"Explicit connector ratio ({explicit_ratio:.0%}) exceeds 25% - reduce for more natural flow")
-            recommendations_zh.append(f"显性连接词比例（{explicit_ratio:.0%}）超过25% - 建议减少以实现更自然的衔接")
-        if connector_type_dist.get("addition", 0) > 2:
-            recommendations.append("Too many addition connectors (Furthermore, Moreover) - use semantic linking instead")
-            recommendations_zh.append("递进连接词过多 - 建议使用语义关联替代")
+        cache_step_name = f"layer2-step4-4-para{para_idx}"
+        logger.info(f"Calling Step4_4Handler for paragraph {para_idx}")
+        result = await step4_4_handler.analyze(
+            document_text=document_text,
+            locked_terms=[],
+            session_id=request.session_id if hasattr(request, 'session_id') else None,
+            step_name=cache_step_name,
+            use_cache=True
+        )
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
+        # Convert handler result to response model
+        # 将处理器结果转换为响应模型
+        connector_issues = []
+        for issue_data in result.get("connector_issues", []):
+            if isinstance(issue_data, dict):
+                connector_issues.append(ConnectorIssue(
+                    sentence_index=issue_data.get("sentence_index", 0),
+                    connector=issue_data.get("connector", ""),
+                    connector_type=issue_data.get("connector_type", ""),
+                    position=issue_data.get("position", 0),
+                    risk_level=issue_data.get("risk_level", "medium"),
+                    context=issue_data.get("context", ""),
+                ))
+
+        replacement_suggestions = []
+        for sugg_data in result.get("replacement_suggestions", []):
+            if isinstance(sugg_data, dict):
+                replacement_suggestions.append(ReplacementSuggestion(
+                    original_connector=sugg_data.get("original_connector", ""),
+                    sentence_index=sugg_data.get("sentence_index", 0),
+                    replacement_type=sugg_data.get("replacement_type", "remove"),
+                    new_text=sugg_data.get("new_text", ""),
+                    explanation=sugg_data.get("explanation", ""),
+                    explanation_zh=sugg_data.get("explanation_zh", ""),
+                ))
+
         return ConnectorOptimizationResponse(
-            paragraph_index=para_idx,
+            paragraph_index=request.paragraph_index,
             connector_issues=connector_issues,
-            total_connectors=total_connectors,
-            explicit_ratio=round(explicit_ratio, 2),
-            connector_type_distribution=connector_type_dist,
-            replacement_suggestions=suggestions,
-            risk_level=risk_level,
-            recommendations=recommendations,
-            recommendations_zh=recommendations_zh,
+            total_connectors=result.get("total_connectors", 0),
+            explicit_ratio=result.get("explicit_ratio", 0.0),
+            connector_type_distribution=result.get("connector_type_distribution", {}),
+            replacement_suggestions=replacement_suggestions,
+            risk_level=result.get("risk_level", "low"),
+            recommendations=result.get("recommendations", []),
+            recommendations_zh=result.get("recommendations_zh", []),
             processing_time_ms=processing_time_ms,
         )
 
@@ -2022,137 +1785,77 @@ async def diversify_patterns(request: DiversificationRequest):
     start_time = time.time()
 
     try:
-        para_text = request.paragraph_text
+        # Get document text from request
+        # 从请求获取文档文本
+        document_text = request.paragraph_text
+
+        # Call Step4_5Handler for LLM-based pattern diversification
+        # 调用 Step4_5Handler 进行基于LLM的句式多样化
+        # Use paragraph-specific cache key to avoid sharing results between paragraphs
+        # 使用段落特定的缓存键，避免段落间共享结果
         para_idx = request.paragraph_index
-        intensity = request.rewrite_intensity
-
-        # Get sentences
-        # 获取句子
-        sentences = _identify_sentences_in_paragraph(para_text, para_idx)
-
-        if not sentences:
-            raise HTTPException(status_code=400, detail="No sentences found in paragraph")
-
-        # Calculate before metrics
-        # 计算改写前指标
-        type_counts_before = {"simple": 0, "compound": 0, "complex": 0, "compound_complex": 0}
-        voice_counts_before = {"active": 0, "passive": 0}
-        openers_before: Dict[str, int] = {}
-
-        for sent in sentences:
-            type_counts_before[sent.sentence_type] += 1
-            voice_counts_before[sent.voice] += 1
-            openers_before[sent.opener_word] = openers_before.get(sent.opener_word, 0) + 1
-
-        total = len(sentences)
-        lengths = [s.word_count for s in sentences]
-        length_cv_before = _calculate_length_cv(lengths)
-
-        before_metrics = PatternMetrics(
-            simple_ratio=type_counts_before["simple"] / total,
-            compound_ratio=type_counts_before["compound"] / total,
-            complex_ratio=type_counts_before["complex"] / total,
-            compound_complex_ratio=type_counts_before["compound_complex"] / total,
-            opener_diversity=len(openers_before) / total,
-            voice_balance=voice_counts_before["passive"] / total,
-            length_cv=length_cv_before,
-            overall_score=_calculate_risk_score(
-                type_counts_before["simple"] / total,
-                length_cv_before,
-                max(openers_before.values()) / total if openers_before else 0,
-                0
-            ),
+        cache_step_name = f"layer2-step4-5-para{para_idx}"
+        logger.info(f"Calling Step4_5Handler for paragraph {para_idx}")
+        result = await step4_5_handler.analyze(
+            document_text=document_text,
+            locked_terms=[],
+            session_id=request.session_id if hasattr(request, 'session_id') else None,
+            step_name=cache_step_name,
+            use_cache=True
         )
-
-        # Generate diversification changes (simplified - would use LLM in production)
-        # 生成多样化改变（简化版 - 生产环境应使用LLM）
-        changes: List[ChangeRecord] = []
-        applied_strategies: Dict[str, int] = {
-            "opener_change": 0,
-            "voice_switch": 0,
-            "sentence_merge": 0,
-            "inversion": 0,
-        }
-        diversified_sentences = []
-
-        for i, sent in enumerate(sentences):
-            new_text = sent.text
-            changed = False
-
-            # Apply opener change for sentences starting with "The"
-            # 对以"The"开头的句子应用开头变换
-            if sent.opener_word.lower() == "the" and intensity in ["moderate", "aggressive"]:
-                if sent.sentence_type == "simple":
-                    new_text = f"Notably, {sent.text[0].lower()}{sent.text[1:]}"
-                    changes.append(ChangeRecord(
-                        sentence_index=i,
-                        original=sent.text,
-                        modified=new_text,
-                        change_type="opener_change",
-                        strategy="adverb_opener",
-                        improvement_type="opener",
-                    ))
-                    applied_strategies["opener_change"] += 1
-                    changed = True
-
-            # Apply voice switch for very simple active sentences
-            # 对非常简单的主动句应用语态切换
-            elif sent.voice == "active" and sent.word_count < 15 and intensity == "aggressive":
-                # Simplified passive conversion
-                new_text = f"[Passive version of: {sent.text}]"
-                changes.append(ChangeRecord(
-                    sentence_index=i,
-                    original=sent.text,
-                    modified=new_text,
-                    change_type="voice_switch",
-                    strategy="active_to_passive",
-                    improvement_type="voice",
-                ))
-                applied_strategies["voice_switch"] += 1
-                changed = True
-
-            diversified_sentences.append(new_text if changed else sent.text)
-
-        # Calculate after metrics (estimated)
-        # 计算改写后指标（估算）
-        after_metrics = PatternMetrics(
-            simple_ratio=max(0, before_metrics.simple_ratio - 0.1),
-            compound_ratio=before_metrics.compound_ratio + 0.05,
-            complex_ratio=before_metrics.complex_ratio + 0.05,
-            compound_complex_ratio=before_metrics.compound_complex_ratio,
-            opener_diversity=min(1.0, before_metrics.opener_diversity + 0.2),
-            voice_balance=min(0.3, before_metrics.voice_balance + 0.05),
-            length_cv=min(0.5, before_metrics.length_cv + 0.05),
-            overall_score=max(0, before_metrics.overall_score - 15),
-        )
-
-        # Improvement summary
-        # 改进摘要
-        improvement_summary = {
-            "simple_ratio_change": after_metrics.simple_ratio - before_metrics.simple_ratio,
-            "opener_diversity_change": after_metrics.opener_diversity - before_metrics.opener_diversity,
-            "voice_balance_change": after_metrics.voice_balance - before_metrics.voice_balance,
-            "overall_score_change": after_metrics.overall_score - before_metrics.overall_score,
-        }
-
-        diversified_text = " ".join(diversified_sentences)
-
-        risk_level = _get_risk_level(int(after_metrics.overall_score))
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
+        # Convert handler result to response model
+        # 将处理器结果转换为响应模型
+        changes = []
+        for change_data in result.get("changes", []):
+            if isinstance(change_data, dict):
+                changes.append(ChangeRecord(
+                    sentence_index=change_data.get("sentence_index", 0),
+                    original=change_data.get("original", ""),
+                    modified=change_data.get("modified", ""),
+                    change_type=change_data.get("change_type", ""),
+                    strategy=change_data.get("strategy", ""),
+                    improvement_type=change_data.get("improvement_type", ""),
+                ))
+
+        before_raw = result.get("before_metrics", {})
+        before_metrics = PatternMetrics(
+            simple_ratio=before_raw.get("simple_ratio", 0.0),
+            compound_ratio=before_raw.get("compound_ratio", 0.0),
+            complex_ratio=before_raw.get("complex_ratio", 0.0),
+            compound_complex_ratio=before_raw.get("compound_complex_ratio", 0.0),
+            opener_diversity=before_raw.get("opener_diversity", 0.0),
+            voice_balance=before_raw.get("voice_balance", 0.0),
+            length_cv=before_raw.get("length_cv", 0.0),
+            overall_score=before_raw.get("overall_score", 0.0),
+        )
+
+        after_raw = result.get("after_metrics", {})
+        after_metrics = PatternMetrics(
+            simple_ratio=after_raw.get("simple_ratio", 0.0),
+            compound_ratio=after_raw.get("compound_ratio", 0.0),
+            complex_ratio=after_raw.get("complex_ratio", 0.0),
+            compound_complex_ratio=after_raw.get("compound_complex_ratio", 0.0),
+            opener_diversity=after_raw.get("opener_diversity", 0.0),
+            voice_balance=after_raw.get("voice_balance", 0.0),
+            length_cv=after_raw.get("length_cv", 0.0),
+            overall_score=after_raw.get("overall_score", 0.0),
+        )
+
         return DiversificationResponse(
-            paragraph_index=para_idx,
-            original_text=para_text,
-            diversified_text=diversified_text,
+            paragraph_index=request.paragraph_index,
+            original_text=request.paragraph_text,
+            diversified_text=result.get("diversified_text", ""),
             changes=changes,
-            applied_strategies=applied_strategies,
+            applied_strategies=result.get("applied_strategies", {}),
             before_metrics=before_metrics,
             after_metrics=after_metrics,
-            improvement_summary=improvement_summary,
-            risk_level=risk_level,
-            recommendations=["Review diversified text and apply changes as needed"],
-            recommendations_zh=["审核多样化文本并按需应用更改"],
+            improvement_summary=result.get("improvement_summary", {}),
+            risk_level=result.get("risk_level", "low"),
+            recommendations=result.get("recommendations", []),
+            recommendations_zh=result.get("recommendations_zh", []),
             processing_time_ms=processing_time_ms,
         )
 

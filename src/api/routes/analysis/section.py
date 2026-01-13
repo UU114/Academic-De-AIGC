@@ -64,8 +64,26 @@ from src.api.routes.analysis.schemas import (
 from src.core.analyzer.layers import SectionAnalyzer, LayerContext
 from src.core.preprocessor.segmenter import SentenceSegmenter, ContentType
 
+# Import LLM handlers for Layer 4 substeps
+# 导入 Layer 4 子步骤的 LLM handler
+from src.api.routes.substeps.layer4.step2_0_handler import Step2_0Handler
+from src.api.routes.substeps.layer4.step2_1_handler import Step2_1Handler
+from src.api.routes.substeps.layer4.step2_2_handler import Step2_2Handler
+from src.api.routes.substeps.layer4.step2_3_handler import Step2_3Handler
+from src.api.routes.substeps.layer4.step2_4_handler import Step2_4Handler
+from src.api.routes.substeps.layer4.step2_5_handler import Step2_5Handler
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Initialize LLM handlers
+# 初始化 LLM handler
+step2_0_handler = Step2_0Handler()
+step2_1_handler = Step2_1Handler()
+step2_2_handler = Step2_2Handler()
+step2_3_handler = Step2_3Handler()
+step2_4_handler = Step2_4Handler()
+step2_5_handler = Step2_5Handler()
 
 # Reusable segmenter instance
 # 可重用的分句器实例
@@ -693,18 +711,22 @@ def _extract_keywords(text: str, top_n: int = 5) -> List[str]:
 @router.post("/step2-0/identify", response_model=SectionIdentificationResponse)
 async def identify_sections(request: SectionIdentificationRequest):
     """
-    Step 2.0: Section Identification
-    步骤 2.0：章节识别与角色标注
+    Step 2.0: Section Identification (LLM-based)
+    步骤 2.0：章节识别与角色标注（基于LLM）
 
-    Detects section boundaries and assigns roles to each section.
-    检测章节边界并为每个章节分配角色。
+    Detects section boundaries and assigns roles to each section using LLM.
+    使用LLM检测章节边界并为每个章节分配角色。
     """
     start_time = time.time()
 
     try:
-        paragraphs = _get_paragraphs_from_request(request)
+        # Get document text
+        # 获取文档文本
+        document_text = request.text if request.text else ""
+        if not document_text and request.paragraphs:
+            document_text = "\n\n".join(request.paragraphs)
 
-        if not paragraphs:
+        if not document_text:
             return SectionIdentificationResponse(
                 section_count=0,
                 sections=[],
@@ -713,71 +735,80 @@ async def identify_sections(request: SectionIdentificationRequest):
                 processing_time_ms=int((time.time() - start_time) * 1000)
             )
 
-        # Detect sections and roles
-        # 检测章节和角色
+        # Get paragraphs count for LLM
+        # 获取段落数量供LLM使用
+        temp_paragraphs = _get_paragraphs_from_request(request)
+        paragraph_count = len(temp_paragraphs)
+
+        # Call LLM handler for analysis
+        # 调用LLM handler进行分析
+        logger.info("Calling Step2_0Handler for LLM-based section identification")
+        logger.info(f"Document text length: {len(document_text)} chars")
+        logger.info(f"Document has {paragraph_count} paragraphs")
+        logger.info(f"Document text preview (first 500 chars): {document_text[:500]}")
+        logger.info(f"Document text preview (last 500 chars): {document_text[-500:]}")
+        result = await step2_0_handler.analyze(
+            document_text=document_text,
+            locked_terms=[],
+            session_id=request.session_id,
+            step_name="layer4-step2-0",
+            use_cache=True,
+            paragraph_count=paragraph_count
+        )
+
+        # Convert LLM result to response model
+        # 将LLM结果转换为响应模型
         sections: List[SectionInfo] = []
-        current_role = None
-        current_start = 0
         role_distribution: Dict[str, int] = {}
 
-        for idx, para in enumerate(paragraphs):
-            detected_role, confidence = _detect_paragraph_role(para)
+        # Get paragraphs for word count calculation
+        # 获取段落用于计算词数
+        paragraphs = _get_paragraphs_from_request(request)
+        logger.info(f"Total paragraphs: {len(paragraphs)}")
+        for i, para in enumerate(paragraphs):
+            logger.info(f"  Paragraph {i}: {len(para.split())} words")
 
-            # Check for section boundary (role change)
-            # 检查章节边界（角色变化）
-            if detected_role != current_role and detected_role != "body":
-                # Save previous section if exists
-                if current_role is not None and idx > current_start:
-                    section_paras = paragraphs[current_start:idx]
-                    word_count = sum(len(p.split()) for p in section_paras)
-                    char_count = sum(len(p) for p in section_paras)
+        for sec_data in result.get("sections", []):
+            role = sec_data.get("role", "body")
+            start_idx = sec_data.get("start_paragraph", 0)
+            end_idx = sec_data.get("end_paragraph", 0)
 
-                    sections.append(SectionInfo(
-                        index=len(sections),
-                        role=current_role,
-                        role_confidence=0.7,
-                        start_paragraph_idx=current_start,
-                        end_paragraph_idx=idx,
-                        paragraph_count=idx - current_start,
-                        word_count=word_count,
-                        char_count=char_count,
-                        preview=section_paras[0][:150] if section_paras else ""
-                    ))
+            # ALWAYS calculate word_count from actual paragraphs (don't trust LLM's estimation)
+            # 总是从实际段落计算词数（不相信LLM的估算）
+            word_count = 0
+            paragraph_count = 0
 
-                    role_distribution[current_role] = role_distribution.get(current_role, 0) + 1
-
-                current_role = detected_role
-                current_start = idx
-            elif current_role is None:
-                current_role = detected_role
-                current_start = idx
-
-        # Add final section
-        # 添加最后一个章节
-        if current_role is not None:
-            section_paras = paragraphs[current_start:]
-            word_count = sum(len(p.split()) for p in section_paras)
-            char_count = sum(len(p) for p in section_paras)
+            if 0 <= start_idx <= end_idx < len(paragraphs):
+                # Calculate from actual paragraphs
+                # 从实际段落计算
+                section_paragraphs = paragraphs[start_idx:end_idx + 1]
+                paragraph_count = len(section_paragraphs)
+                word_count = sum(len(p.split()) for p in section_paragraphs)
+                logger.info(f"Section {sec_data.get('index', 0)} ({role}): para {start_idx}-{end_idx}, calculated {word_count} words, {paragraph_count} paragraphs")
+            else:
+                # Fallback: estimate paragraph count
+                # 回退：估算段落数
+                paragraph_count = max(1, end_idx - start_idx + 1)
+                logger.warning(f"Section {sec_data.get('index', 0)}: paragraph index out of range ({start_idx}-{end_idx} vs {len(paragraphs)} paragraphs)")
 
             sections.append(SectionInfo(
-                index=len(sections),
-                role=current_role,
-                role_confidence=0.7,
-                start_paragraph_idx=current_start,
-                end_paragraph_idx=len(paragraphs),
-                paragraph_count=len(paragraphs) - current_start,
+                index=sec_data.get("index", len(sections)),
+                role=role,
+                role_confidence=sec_data.get("confidence", 0.7),
+                start_paragraph_idx=start_idx,
+                end_paragraph_idx=end_idx,
+                paragraph_count=paragraph_count,
                 word_count=word_count,
-                char_count=char_count,
-                preview=section_paras[0][:150] if section_paras else ""
+                char_count=0,
+                preview=""
             ))
+            role_distribution[role] = role_distribution.get(role, 0) + 1
 
-            role_distribution[current_role] = role_distribution.get(current_role, 0) + 1
-
-        # If no sections detected, treat as single body section
-        # 如果未检测到章节，视为单一正文章节
+        # If no sections from LLM, fallback to single body section
+        # 如果LLM未返回章节，回退到单一正文章节
         if not sections:
+            paragraphs = _get_paragraphs_from_request(request)
             total_words = sum(len(p.split()) for p in paragraphs)
-            total_chars = sum(len(p) for p in paragraphs)
 
             sections.append(SectionInfo(
                 index=0,
@@ -787,14 +818,31 @@ async def identify_sections(request: SectionIdentificationRequest):
                 end_paragraph_idx=len(paragraphs),
                 paragraph_count=len(paragraphs),
                 word_count=total_words,
-                char_count=total_chars,
+                char_count=sum(len(p) for p in paragraphs),
                 preview=paragraphs[0][:150] if paragraphs else ""
             ))
             role_distribution["body"] = 1
 
-        total_words = sum(s.word_count for s in sections)
+        paragraphs = _get_paragraphs_from_request(request)
+        total_words = sum(len(p.split()) for p in paragraphs)
 
         processing_time_ms = int((time.time() - start_time) * 1000)
+
+        # Extract issues from LLM result
+        # 从LLM结果中提取问题
+        issues_data = result.get("issues", [])
+        issues = []
+        for issue in issues_data:
+            issues.append(DetectionIssue(
+                type=issue.get("type", "unknown"),
+                description=issue.get("description", ""),
+                description_zh=issue.get("description_zh", ""),
+                severity=issue.get("severity", "low"),
+                layer="section",
+                location=", ".join(issue.get("affected_positions", [])) if issue.get("affected_positions") else None,
+                fix_suggestions=issue.get("fix_suggestions", []),
+                fix_suggestions_zh=issue.get("fix_suggestions_zh", [])
+            ))
 
         return SectionIdentificationResponse(
             section_count=len(sections),
@@ -802,8 +850,9 @@ async def identify_sections(request: SectionIdentificationRequest):
             total_paragraphs=len(paragraphs),
             total_words=total_words,
             role_distribution=role_distribution,
-            recommendations=[],
-            recommendations_zh=[],
+            issues=issues,
+            recommendations=result.get("recommendations", []),
+            recommendations_zh=result.get("recommendations_zh", []),
             processing_time_ms=processing_time_ms
         )
 
@@ -819,8 +868,8 @@ async def identify_sections(request: SectionIdentificationRequest):
 @router.post("/step2-1/order", response_model=SectionOrderResponse)
 async def analyze_section_order(request: SectionOrderRequest):
     """
-    Step 2.1: Section Order & Structure Analysis
-    步骤 2.1：章节顺序与结构分析
+    Step 2.1: Section Order & Structure Analysis (LLM-based)
+    步骤 2.1：章节顺序与结构分析（基于LLM）
 
     Analyzes section order, detects missing sections, and evaluates function purity.
     分析章节顺序，检测缺失章节，评估功能纯度。
@@ -828,19 +877,13 @@ async def analyze_section_order(request: SectionOrderRequest):
     start_time = time.time()
 
     try:
-        # Get or detect sections
-        # 获取或检测章节
-        if request.sections:
-            sections = request.sections
-        else:
-            paragraphs = _get_paragraphs_from_request(request)
-            # Use Step 2.0 logic to detect sections
-            id_response = await identify_sections(SectionIdentificationRequest(
-                paragraphs=paragraphs
-            ))
-            sections = [s.model_dump() for s in id_response.sections]
+        # Get document text
+        # 获取文档文本
+        document_text = request.text if request.text else ""
+        if not document_text and request.paragraphs:
+            document_text = "\n\n".join(request.paragraphs)
 
-        if not sections:
+        if not document_text:
             return SectionOrderResponse(
                 risk_score=0,
                 risk_level=RiskLevel.LOW,
@@ -849,84 +892,50 @@ async def analyze_section_order(request: SectionOrderRequest):
                 processing_time_ms=int((time.time() - start_time) * 1000)
             )
 
-        # Expected academic order
-        # 预期的学术顺序
-        expected_order = ["introduction", "literature_review", "methodology", "results", "discussion", "conclusion"]
-        detected_order = [s.get("role", "unknown") for s in sections]
+        # Call LLM handler for analysis
+        # 调用LLM handler进行分析
+        logger.info("Calling Step2_1Handler for LLM-based section order analysis")
+        result = await step2_1_handler.analyze(
+            document_text=document_text,
+            locked_terms=[],
+            session_id=request.session_id,
+            step_name="layer4-step2-1",
+            use_cache=True
+        )
 
-        # Calculate order match score
-        # 计算顺序匹配分数
-        filtered_detected = [r for r in detected_order if r in expected_order]
-        order_match_score = 0.0
-
-        if filtered_detected:
-            matches = 0
-            last_idx = -1
-            for role in filtered_detected:
-                exp_idx = expected_order.index(role) if role in expected_order else -1
-                if exp_idx > last_idx:
-                    matches += 1
-                    last_idx = exp_idx
-            order_match_score = matches / len(filtered_detected)
-
-        is_predictable = order_match_score >= 0.8
-
-        # Detect missing critical sections
-        # 检测缺失的关键章节
-        missing_sections = []
-        for critical in ["introduction", "methodology", "conclusion"]:
-            if critical not in detected_order:
-                missing_sections.append(critical)
-
-        # Analyze function fusion (single purpose vs multi-purpose)
-        # 分析功能融合度
-        fusion_score = 1.0  # Assume perfect purity initially
-        multi_function_sections = []
-
-        # Issues and recommendations
-        # 问题和建议
+        # Convert LLM result to response model
+        # 将LLM结果转换为响应模型
         issues: List[DetectionIssue] = []
-        recommendations = []
-        recommendations_zh = []
-
-        if is_predictable:
+        for issue_data in result.get("issues", []):
             issues.append(DetectionIssue(
-                type="predictable_section_order",
-                description="Section order follows a highly predictable academic template",
-                description_zh="章节顺序遵循高度可预测的学术模板",
-                severity=IssueSeverity.MEDIUM,
+                type=issue_data.get("type", "section_order_issue"),
+                description=issue_data.get("description", ""),
+                description_zh=issue_data.get("description_zh", ""),
+                severity=IssueSeverity(issue_data.get("severity", "medium")),
                 layer=LayerLevel.SECTION,
-                suggestion="Consider non-linear narrative or integrated discussions",
-                suggestion_zh="考虑非线性叙事或整合式讨论"
+                location=", ".join(issue_data.get("affected_positions", [])) if issue_data.get("affected_positions") else None,
+                suggestion=issue_data.get("fix_suggestions", [""])[0] if issue_data.get("fix_suggestions") else "",
+                suggestion_zh=issue_data.get("fix_suggestions_zh", [""])[0] if issue_data.get("fix_suggestions_zh") else ""
             ))
-            recommendations.append("Add digressions or combine related sections")
-            recommendations_zh.append("添加旁白或合并相关章节")
-
-        # Calculate risk score
-        # 计算风险分数
-        risk_score = int(order_match_score * 60)  # Up to 60 points for predictability
-        if not missing_sections:
-            risk_score += 20  # Additional points for having all sections
-        risk_level = RiskLevel.HIGH if risk_score >= 60 else (RiskLevel.MEDIUM if risk_score >= 35 else RiskLevel.LOW)
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
         return SectionOrderResponse(
-            risk_score=risk_score,
-            risk_level=risk_level,
+            risk_score=result.get("risk_score", 0),
+            risk_level=RiskLevel(result.get("risk_level", "low")),
             order_analysis=SectionOrderAnalysis(
-                detected_order=detected_order,
-                expected_order=expected_order,
-                order_match_score=order_match_score,
-                is_predictable=is_predictable,
-                missing_sections=missing_sections,
+                detected_order=result.get("current_order", []),
+                expected_order=result.get("expected_order", []),
+                order_match_score=result.get("order_match_score", 0) / 100.0 if result.get("order_match_score", 0) > 1 else result.get("order_match_score", 0),
+                is_predictable=result.get("order_match_score", 0) >= 80,
+                missing_sections=result.get("missing_sections", []),
                 unexpected_sections=[],
-                fusion_score=fusion_score,
-                multi_function_sections=multi_function_sections
+                fusion_score=result.get("function_fusion_score", 0) / 100.0 if result.get("function_fusion_score", 0) > 1 else result.get("function_fusion_score", 0),
+                multi_function_sections=[]
             ),
             issues=issues,
-            recommendations=recommendations,
-            recommendations_zh=recommendations_zh,
+            recommendations=result.get("recommendations", []),
+            recommendations_zh=result.get("recommendations_zh", []),
             processing_time_ms=processing_time_ms
         )
 
@@ -954,144 +963,86 @@ EXPECTED_SECTION_WEIGHTS = {
 @router.post("/step2-2/length", response_model=SectionLengthResponse)
 async def analyze_section_length(request: SectionLengthRequest):
     """
-    Step 2.2: Section Length Distribution Analysis
-    步骤 2.2：章节长度分布分析
+    Step 2.2: Section Length Distribution Analysis (LLM-based)
+    步骤 2.2：章节长度分布分析（基于LLM）
 
-    Analyzes length distribution, CV, extreme sections, and key section weights.
-    分析长度分布、变异系数、极端章节和关键章节权重。
+    Analyzes length distribution, CV, extreme sections, and key section weights using LLM.
+    使用LLM分析长度分布、变异系数、极端章节和关键章节权重。
     """
     start_time = time.time()
 
     try:
-        # Get or detect sections
-        # 获取或检测章节
-        paragraphs = []
-        if request.sections:
-            sections = request.sections
-            if request.paragraphs:
-                paragraphs = request.paragraphs
-        else:
-            paragraphs = _get_paragraphs_from_request(request)
-            id_response = await identify_sections(SectionIdentificationRequest(
-                paragraphs=paragraphs
-            ))
-            sections = [s.model_dump() for s in id_response.sections]
+        # Get document text
+        # 获取文档文本
+        document_text = request.text if request.text else ""
+        if not document_text and request.paragraphs:
+            document_text = "\n\n".join(request.paragraphs)
 
-        if not sections:
+        if not document_text:
             return SectionLengthResponse(
                 risk_score=0,
                 risk_level=RiskLevel.LOW,
                 processing_time_ms=int((time.time() - start_time) * 1000)
             )
 
-        # Calculate length statistics
-        # 计算长度统计
-        lengths = [s.get("word_count", 0) for s in sections]
-        total_words = sum(lengths)
+        # Call LLM handler for analysis (with chain-call to detect sections first)
+        # 调用LLM handler进行分析（链式调用先检测章节）
+        logger.info("Calling Step2_2Handler for LLM-based section length analysis")
+        result = await step2_2_handler.analyze(
+            document_text=document_text,
+            locked_terms=[],
+            session_id=request.session_id,
+            step_name="layer4-step2-2",
+            use_cache=True
+        )
 
-        if len(lengths) < 2:
-            return SectionLengthResponse(
-                risk_score=0,
-                risk_level=RiskLevel.LOW,
-                section_count=len(sections),
-                total_words=total_words,
-                processing_time_ms=int((time.time() - start_time) * 1000)
-            )
-
-        mean_length = statistics.mean(lengths)
-        stdev_length = statistics.stdev(lengths) if len(lengths) > 1 else 0
-        length_cv = stdev_length / mean_length if mean_length > 0 else 0
-        is_uniform = length_cv < 0.3
-
-        # Build section length info
-        # 构建章节长度信息
+        # Convert LLM result to response model
+        # 将LLM结果转换为响应模型
         section_infos: List[SectionLengthInfo] = []
-        extremely_short: List[int] = []
-        extremely_long: List[int] = []
-
-        for idx, section in enumerate(sections):
-            word_count = section.get("word_count", 0)
-            role = section.get("role", "body")
-            para_count = section.get("paragraph_count", 0)
-
-            deviation = (word_count - mean_length) / stdev_length if stdev_length > 0 else 0
-            is_extreme = abs(deviation) > 1.5
-
-            if deviation < -1.5 and word_count < 100:
-                extremely_short.append(idx)
-            elif deviation > 1.5:
-                extremely_long.append(idx)
-
-            # Calculate weight deviation
-            # 计算权重偏差
-            actual_weight = word_count / total_words if total_words > 0 else 0
-            expected_weight = EXPECTED_SECTION_WEIGHTS.get(role, 0.15)
-            weight_deviation = actual_weight - expected_weight
-
+        for sec_data in result.get("sections", []):
             section_infos.append(SectionLengthInfo(
-                index=idx,
-                role=role,
-                word_count=word_count,
-                paragraph_count=para_count,
-                deviation_from_mean=round(deviation, 2),
-                is_extreme=is_extreme,
-                expected_weight=expected_weight,
-                actual_weight=round(actual_weight, 3),
-                weight_deviation=round(weight_deviation, 3)
+                index=sec_data.get("index", len(section_infos)),
+                role=sec_data.get("role", "body"),
+                word_count=sec_data.get("word_count", 0),
+                paragraph_count=sec_data.get("paragraph_count", 0),
+                deviation_from_mean=0.0,
+                is_extreme=sec_data.get("deviation", "normal") != "normal",
+                expected_weight=EXPECTED_SECTION_WEIGHTS.get(sec_data.get("role", "body"), 0.15),
+                actual_weight=0.0,
+                weight_deviation=0.0
             ))
 
-        # Calculate key section weight score
-        # 计算关键章节权重分数
-        weight_deviations = [abs(s.weight_deviation) for s in section_infos if s.expected_weight]
-        key_section_weight_score = 100 - (sum(weight_deviations) * 100) if weight_deviations else 50
-
-        # Issues and recommendations
-        # 问题和建议
         issues: List[DetectionIssue] = []
-        recommendations = []
-        recommendations_zh = []
-
-        if is_uniform:
+        for issue_data in result.get("issues", []):
             issues.append(DetectionIssue(
-                type="uniform_section_lengths",
-                description=f"Section lengths are too uniform (CV: {length_cv:.2f})",
-                description_zh=f"章节长度过于均匀（变异系数：{length_cv:.2f}）",
-                severity=IssueSeverity.MEDIUM,
+                type=issue_data.get("type", "section_length_issue"),
+                description=issue_data.get("description", ""),
+                description_zh=issue_data.get("description_zh", ""),
+                severity=IssueSeverity(issue_data.get("severity", "medium")),
                 layer=LayerLevel.SECTION,
-                suggestion="Vary section lengths - methodology should be longer than introduction",
-                suggestion_zh="改变章节长度——方法论应该比引言更长"
+                location=", ".join(issue_data.get("affected_positions", [])) if issue_data.get("affected_positions") else None,
+                suggestion=issue_data.get("fix_suggestions", [""])[0] if issue_data.get("fix_suggestions") else "",
+                suggestion_zh=issue_data.get("fix_suggestions_zh", [""])[0] if issue_data.get("fix_suggestions_zh") else ""
             ))
-            recommendations.append("Create asymmetric section lengths")
-            recommendations_zh.append("创建非对称章节长度")
-
-        # Calculate risk score
-        # 计算风险分数
-        risk_score = 0
-        if is_uniform:
-            risk_score += int((0.3 - length_cv) / 0.3 * 50)  # Up to 50 points for uniform
-        if not extremely_short and not extremely_long:
-            risk_score += 20  # Additional points for no extreme variation
-
-        risk_level = RiskLevel.HIGH if risk_score >= 50 else (RiskLevel.MEDIUM if risk_score >= 25 else RiskLevel.LOW)
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
         return SectionLengthResponse(
-            risk_score=risk_score,
-            risk_level=risk_level,
-            section_count=len(sections),
-            total_words=total_words,
-            mean_length=round(mean_length, 1),
-            stdev_length=round(stdev_length, 1),
-            length_cv=round(length_cv, 3),
-            is_uniform=is_uniform,
+            risk_score=result.get("risk_score", 0),
+            risk_level=RiskLevel(result.get("risk_level", "low")),
+            section_count=len(section_infos),
+            total_words=sum(s.word_count for s in section_infos),
+            mean_length=0.0,  # LLM provides overall analysis
+            stdev_length=0.0,
+            length_cv=result.get("length_cv", 0.0),
+            is_uniform=result.get("length_cv", 0.0) < 0.3,
             sections=section_infos,
-            extremely_short=extremely_short,
-            extremely_long=extremely_long,
-            key_section_weight_score=round(key_section_weight_score, 1),
+            extremely_short=result.get("extreme_sections", []),
+            extremely_long=[],
+            key_section_weight_score=50.0,
             issues=issues,
-            recommendations=recommendations,
-            recommendations_zh=recommendations_zh,
+            recommendations=result.get("recommendations", []),
+            recommendations_zh=result.get("recommendations_zh", []),
             processing_time_ms=processing_time_ms
         )
 
@@ -1107,185 +1058,105 @@ async def analyze_section_length(request: SectionLengthRequest):
 @router.post("/step2-3/similarity", response_model=InternalStructureSimilarityResponse)
 async def analyze_internal_structure_similarity(request: InternalStructureSimilarityRequest):
     """
-    Step 2.3: Internal Structure Similarity Analysis (NEW)
-    步骤 2.3：章节内部结构相似性分析（新）
+    Step 2.3: Internal Structure Similarity Analysis (LLM-based)
+    步骤 2.3：章节内部结构相似性分析（基于LLM）
 
-    Compares internal paragraph function sequences across sections.
-    比较不同章节内部段落功能序列的相似性。
+    Compares internal paragraph function sequences across sections using LLM.
+    使用LLM比较不同章节内部段落功能序列的相似性。
     """
     start_time = time.time()
 
     try:
-        # Get paragraphs and sections
-        # 获取段落和章节
-        paragraphs = []
-        if request.paragraphs:
-            paragraphs = request.paragraphs
-        elif request.text:
-            paragraphs = _split_text_to_paragraphs(request.text)
+        # Get document text
+        # 获取文档文本
+        document_text = request.text if request.text else ""
+        if not document_text and request.paragraphs:
+            document_text = "\n\n".join(request.paragraphs)
 
-        if request.sections:
-            sections = request.sections
-        else:
-            id_response = await identify_sections(SectionIdentificationRequest(
-                paragraphs=paragraphs
-            ))
-            sections = [s.model_dump() for s in id_response.sections]
-
-        if len(sections) < 2:
+        if not document_text:
             return InternalStructureSimilarityResponse(
                 risk_score=0,
                 risk_level=RiskLevel.LOW,
                 processing_time_ms=int((time.time() - start_time) * 1000)
             )
 
-        # Analyze internal structure of each section
-        # 分析每个章节的内部结构
+        # Call LLM handler for analysis (with chain-call to detect sections first)
+        # 调用LLM handler进行分析（链式调用先检测章节）
+        logger.info("Calling Step2_3Handler for LLM-based internal structure similarity analysis")
+        result = await step2_3_handler.analyze(
+            document_text=document_text,
+            locked_terms=[],
+            session_id=request.session_id,
+            step_name="layer4-step2-3",
+            use_cache=True
+        )
+
+        # Convert LLM result to response model
+        # 将LLM结果转换为响应模型
         section_structures: List[SectionInternalStructure] = []
-
-        for section in sections:
-            section_idx = section.get("index", 0)
-            section_role = section.get("role", "body")
-            start_para = section.get("start_paragraph_idx", 0)
-            end_para = section.get("end_paragraph_idx", len(paragraphs))
-
-            section_paras = paragraphs[start_para:end_para] if paragraphs else []
-
-            # Detect paragraph functions
-            # 检测段落功能
-            para_functions: List[ParagraphFunctionInfo] = []
-            function_sequence: List[str] = []
-
-            for local_idx, para in enumerate(section_paras):
-                global_idx = start_para + local_idx
-                position = "first" if local_idx == 0 else ("last" if local_idx == len(section_paras) - 1 else "middle")
-
-                func, confidence = _detect_paragraph_function(para, position)
-
-                para_functions.append(ParagraphFunctionInfo(
-                    paragraph_index=global_idx,
-                    local_index=local_idx,
-                    function=func,
-                    function_confidence=confidence,
-                    preview=para[:100] if para else ""
-                ))
-                function_sequence.append(func)
-
-            # Count argument markers
-            # 统计论点标记
-            section_text = " ".join(section_paras)
-            argument_count = sum(1 for pattern in ARGUMENT_MARKERS if re.search(pattern, section_text.lower()))
-            word_count = len(section_text.split())
-            argument_density = (argument_count / word_count * 100) if word_count > 0 else 0
-
+        for pf_data in result.get("paragraph_functions", []):
             section_structures.append(SectionInternalStructure(
-                section_index=section_idx,
-                section_role=section_role,
-                paragraph_functions=para_functions,
-                function_sequence=function_sequence,
-                heading_depth=0,  # Would need heading detection
+                section_index=pf_data.get("section_index", len(section_structures)),
+                section_role="body",
+                paragraph_functions=[],
+                function_sequence=pf_data.get("functions", []),
+                heading_depth=0,
                 has_subheadings=False,
-                argument_count=argument_count,
-                argument_density=round(argument_density, 2)
+                argument_count=0,
+                argument_density=0.0
             ))
 
-        # Calculate pairwise similarity
-        # 计算成对相似性
+        # Build similarity pairs from matrix
         similarity_pairs: List[StructureSimilarityPair] = []
         suspicious_pairs: List[StructureSimilarityPair] = []
-        all_similarities = []
+        similarity_matrix = result.get("similarity_matrix", [])
 
-        for i in range(len(section_structures)):
-            for j in range(i + 1, len(section_structures)):
-                struct_a = section_structures[i]
-                struct_b = section_structures[j]
+        for i in range(len(similarity_matrix)):
+            for j in range(i + 1, len(similarity_matrix)):
+                if j < len(similarity_matrix[i]):
+                    similarity = similarity_matrix[i][j] * 100 if similarity_matrix[i][j] <= 1 else similarity_matrix[i][j]
+                    is_suspicious = similarity > 70
+                    pair = StructureSimilarityPair(
+                        section_a_index=i,
+                        section_b_index=j,
+                        section_a_role="body",
+                        section_b_role="body",
+                        function_sequence_similarity=similarity,
+                        structure_similarity=similarity,
+                        is_suspicious=is_suspicious
+                    )
+                    similarity_pairs.append(pair)
+                    if is_suspicious:
+                        suspicious_pairs.append(pair)
 
-                seq_similarity = _calculate_sequence_similarity(
-                    struct_a.function_sequence,
-                    struct_b.function_sequence
-                )
-
-                # Overall structure similarity (can be extended)
-                structure_similarity = seq_similarity  # For now, just sequence similarity
-
-                is_suspicious = seq_similarity > 80
-
-                pair = StructureSimilarityPair(
-                    section_a_index=struct_a.section_index,
-                    section_b_index=struct_b.section_index,
-                    section_a_role=struct_a.section_role,
-                    section_b_role=struct_b.section_role,
-                    function_sequence_similarity=seq_similarity,
-                    structure_similarity=structure_similarity,
-                    is_suspicious=is_suspicious
-                )
-
-                similarity_pairs.append(pair)
-                all_similarities.append(seq_similarity)
-
-                if is_suspicious:
-                    suspicious_pairs.append(pair)
-
-        # Calculate aggregate metrics
-        # 计算聚合指标
-        avg_similarity = statistics.mean(all_similarities) if all_similarities else 0
-        max_similarity = max(all_similarities) if all_similarities else 0
-
-        # Calculate CV for argument density and heading depth
-        # 计算论点密度和标题深度的变异系数
-        arg_densities = [s.argument_density for s in section_structures]
-        heading_depths = [s.heading_depth for s in section_structures]
-
-        arg_density_cv = 0.0
-        if len(arg_densities) > 1 and statistics.mean(arg_densities) > 0:
-            arg_density_cv = statistics.stdev(arg_densities) / statistics.mean(arg_densities)
-
-        heading_depth_cv = 0.0
-        if len(heading_depths) > 1 and statistics.mean(heading_depths) > 0:
-            heading_depth_cv = statistics.stdev(heading_depths) / statistics.mean(heading_depths)
-
-        # Issues and recommendations
-        # 问题和建议
         issues: List[DetectionIssue] = []
-        recommendations = []
-        recommendations_zh = []
-
-        if suspicious_pairs:
+        for issue_data in result.get("issues", []):
             issues.append(DetectionIssue(
-                type="high_structure_similarity",
-                description=f"Found {len(suspicious_pairs)} section pairs with >80% structural similarity",
-                description_zh=f"发现{len(suspicious_pairs)}对章节结构相似度超过80%",
-                severity=IssueSeverity.HIGH,
+                type=issue_data.get("type", "structure_similarity_issue"),
+                description=issue_data.get("description", ""),
+                description_zh=issue_data.get("description_zh", ""),
+                severity=IssueSeverity(issue_data.get("severity", "medium")),
                 layer=LayerLevel.SECTION,
-                suggestion="Vary the internal structure of sections",
-                suggestion_zh="变化章节的内部结构"
+                location=", ".join(issue_data.get("affected_positions", [])) if issue_data.get("affected_positions") else None,
+                suggestion=issue_data.get("fix_suggestions", [""])[0] if issue_data.get("fix_suggestions") else "",
+                suggestion_zh=issue_data.get("fix_suggestions_zh", [""])[0] if issue_data.get("fix_suggestions_zh") else ""
             ))
-            recommendations.append("Use different paragraph organization patterns in different sections")
-            recommendations_zh.append("在不同章节使用不同的段落组织模式")
-
-        # Calculate risk score
-        # 计算风险分数
-        risk_score = int(avg_similarity * 0.5)  # 50% weight on average similarity
-        if max_similarity > 80:
-            risk_score += 30  # Additional penalty for high similarity
-
-        risk_level = RiskLevel.HIGH if risk_score >= 60 else (RiskLevel.MEDIUM if risk_score >= 35 else RiskLevel.LOW)
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
         return InternalStructureSimilarityResponse(
-            risk_score=risk_score,
-            risk_level=risk_level,
+            risk_score=result.get("risk_score", 0),
+            risk_level=RiskLevel(result.get("risk_level", "low")),
             section_structures=section_structures,
             similarity_pairs=similarity_pairs,
-            average_similarity=round(avg_similarity, 1),
-            max_similarity=round(max_similarity, 1),
-            heading_depth_cv=round(heading_depth_cv, 3),
-            argument_density_cv=round(arg_density_cv, 3),
+            average_similarity=result.get("avg_similarity", 0.0) * 100 if result.get("avg_similarity", 0.0) <= 1 else result.get("avg_similarity", 0.0),
+            max_similarity=max([p.function_sequence_similarity for p in similarity_pairs], default=0.0),
+            heading_depth_cv=result.get("heading_variance", 0.0),
+            argument_density_cv=result.get("argument_density_cv", 0.0),
             suspicious_pairs=suspicious_pairs,
             issues=issues,
-            recommendations=recommendations,
-            recommendations_zh=recommendations_zh,
+            recommendations=result.get("recommendations", []),
+            recommendations_zh=result.get("recommendations_zh", []),
             processing_time_ms=processing_time_ms
         )
 
@@ -1301,193 +1172,102 @@ async def analyze_internal_structure_similarity(request: InternalStructureSimila
 @router.post("/step2-4/transition", response_model=SectionTransitionResponse)
 async def analyze_section_transition(request: SectionTransitionRequest):
     """
-    Step 2.4: Section Transition Analysis
-    步骤 2.4：章节衔接与过渡分析
+    Step 2.4: Section Transition Analysis (LLM-based)
+    步骤 2.4：章节衔接与过渡分析（基于LLM）
 
-    Analyzes transitions between sections including explicit markers and semantic echo.
-    分析章节间的过渡，包括显性标记和语义回声。
+    Analyzes transitions between sections using LLM including explicit markers and semantic echo.
+    使用LLM分析章节间的过渡，包括显性标记和语义回声。
     """
     start_time = time.time()
 
     try:
-        # Get paragraphs and sections
-        # 获取段落和章节
-        paragraphs = []
-        if request.paragraphs:
-            paragraphs = request.paragraphs
-        elif request.text:
-            paragraphs = _split_text_to_paragraphs(request.text)
+        # Get document text
+        # 获取文档文本
+        document_text = request.text if request.text else ""
+        if not document_text and request.paragraphs:
+            document_text = "\n\n".join(request.paragraphs)
 
-        if request.sections:
-            sections = request.sections
-        else:
-            id_response = await identify_sections(SectionIdentificationRequest(
-                paragraphs=paragraphs
-            ))
-            sections = [s.model_dump() for s in id_response.sections]
-
-        if len(sections) < 2:
+        if not document_text:
             return SectionTransitionResponse(
                 risk_score=0,
                 risk_level=RiskLevel.LOW,
                 processing_time_ms=int((time.time() - start_time) * 1000)
             )
 
-        # Analyze transitions between consecutive sections
-        # 分析连续章节之间的过渡
+        # Call LLM handler for analysis (with chain-call to detect sections first)
+        # 调用LLM handler进行分析（链式调用先检测章节）
+        logger.info("Calling Step2_4Handler for LLM-based section transition analysis")
+        result = await step2_4_handler.analyze(
+            document_text=document_text,
+            locked_terms=[],
+            session_id=request.session_id,
+            step_name="layer4-step2-4",
+            use_cache=True
+        )
+
+        # Convert LLM result to response model
+        # 将LLM结果转换为响应模型
         transitions: List[SectionTransitionInfo] = []
-        strength_distribution: Dict[str, int] = {"strong": 0, "moderate": 0, "weak": 0, "none": 0}
-        explicit_count = 0
-        formulaic_count = 0
-        echo_scores = []
-
-        for i in range(len(sections) - 1):
-            from_section = sections[i]
-            to_section = sections[i + 1]
-
-            from_idx = from_section.get("index", i)
-            to_idx = to_section.get("index", i + 1)
-            from_role = from_section.get("role", "body")
-            to_role = to_section.get("role", "body")
-
-            # Get opener of target section
-            # 获取目标章节的开头
-            to_start = to_section.get("start_paragraph_idx", 0)
-            opener_para = paragraphs[to_start] if to_start < len(paragraphs) else ""
-            opener_sentences = re.split(r'[.!?]+', opener_para)
-            opener_text = opener_sentences[0].strip() if opener_sentences else ""
-
-            # Detect explicit transition words
-            # 检测显性过渡词
-            explicit_words = []
-            transition_strength = "none"
-
-            opener_lower = opener_text.lower()
-            for strength, patterns in TRANSITION_WORD_PATTERNS.items():
-                for pattern in patterns:
-                    match = re.search(pattern, opener_lower)
-                    if match:
-                        explicit_words.append(match.group())
-                        if transition_strength == "none" or strength == "strong":
-                            transition_strength = strength
-
-            has_explicit = len(explicit_words) > 0
-            if has_explicit:
-                explicit_count += 1
-
-            strength_distribution[transition_strength] += 1
-
-            # Detect formulaic opener
-            # 检测公式化开头
-            formulaic_patterns = [
-                r"^in\s+this\s+section", r"^this\s+section", r"^the\s+following\s+section",
-                r"^as\s+mentioned", r"^having\s+discussed"
-            ]
-            is_formulaic = any(re.search(p, opener_lower) for p in formulaic_patterns)
-            if is_formulaic:
-                formulaic_count += 1
-
-            # Calculate semantic echo
-            # 计算语义回声
-            from_end = from_section.get("end_paragraph_idx", 0)
-            from_paras = paragraphs[from_section.get("start_paragraph_idx", 0):from_end]
-            to_paras = paragraphs[to_start:to_section.get("end_paragraph_idx", len(paragraphs))]
-
-            from_text = " ".join(from_paras)
-            to_text = " ".join(to_paras[:2])  # First 2 paragraphs of target
-
-            from_keywords = set(_extract_keywords(from_text, 10))
-            to_keywords = set(_extract_keywords(to_text, 10))
-            echoed = from_keywords & to_keywords
-            echo_score = (len(echoed) / len(from_keywords) * 100) if from_keywords else 0
-            echo_scores.append(echo_score)
-
-            # Calculate transition risk
-            # 计算过渡风险
-            trans_risk = 0
-            if has_explicit:
-                trans_risk += 30
-            if is_formulaic:
-                trans_risk += 20
-            if echo_score < 20:
-                trans_risk += 20
-
+        for tw_data in result.get("transition_words", []):
             transitions.append(SectionTransitionInfo(
-                from_section_index=from_idx,
-                to_section_index=to_idx,
-                from_section_role=from_role,
-                to_section_role=to_role,
-                has_explicit_transition=has_explicit,
-                explicit_words=explicit_words,
-                transition_strength=transition_strength,
-                semantic_echo_score=round(echo_score, 1),
-                echoed_keywords=list(echoed)[:5],
-                opener_text=opener_text[:200],
-                opener_pattern="formulaic" if is_formulaic else "natural",
-                is_formulaic_opener=is_formulaic,
-                transition_risk_score=trans_risk
+                from_section_index=tw_data.get("from_section", 0),
+                to_section_index=tw_data.get("to_section", 0),
+                from_section_role="body",
+                to_section_role="body",
+                has_explicit_transition=len(tw_data.get("words", [])) > 0,
+                explicit_words=tw_data.get("words", []),
+                transition_strength=tw_data.get("strength", "moderate"),
+                semantic_echo_score=0.0,
+                echoed_keywords=[],
+                opener_text="",
+                opener_pattern="natural",
+                is_formulaic_opener=False,
+                transition_risk_score=0
             ))
 
-        # Calculate aggregate metrics
-        # 计算聚合指标
-        total_transitions = len(transitions)
-        explicit_ratio = explicit_count / total_transitions if total_transitions > 0 else 0
-        avg_echo = statistics.mean(echo_scores) if echo_scores else 0
+        # Add formulaic openers to transitions if available
+        for op_data in result.get("opener_patterns", []):
+            if op_data.get("is_formulaic", False):
+                # Find or create transition for this section
+                section_idx = op_data.get("section_index", 0)
+                for trans in transitions:
+                    if trans.to_section_index == section_idx:
+                        trans.is_formulaic_opener = True
+                        trans.opener_text = op_data.get("opener", "")
+                        trans.opener_pattern = "formulaic"
+                        break
 
-        # Issues and recommendations
-        # 问题和建议
         issues: List[DetectionIssue] = []
-        recommendations = []
-        recommendations_zh = []
-
-        if explicit_ratio > 0.7:
+        for issue_data in result.get("issues", []):
             issues.append(DetectionIssue(
-                type="excessive_explicit_transitions",
-                description=f"Too many explicit transitions ({explicit_count}/{total_transitions})",
-                description_zh=f"显性过渡过多（{explicit_count}/{total_transitions}）",
-                severity=IssueSeverity.MEDIUM,
+                type=issue_data.get("type", "transition_issue"),
+                description=issue_data.get("description", ""),
+                description_zh=issue_data.get("description_zh", ""),
+                severity=IssueSeverity(issue_data.get("severity", "medium")),
                 layer=LayerLevel.SECTION,
-                suggestion="Use semantic echo instead of explicit transitions",
-                suggestion_zh="使用语义回声代替显性过渡"
-            ))
-            recommendations.append("Replace transition words with keyword echoes")
-            recommendations_zh.append("用关键词回声替换过渡词")
-
-        if formulaic_count > 0:
-            issues.append(DetectionIssue(
-                type="formulaic_section_openers",
-                description=f"Found {formulaic_count} formulaic section openers",
-                description_zh=f"发现{formulaic_count}个公式化章节开头",
-                severity=IssueSeverity.LOW,
-                layer=LayerLevel.SECTION,
-                suggestion="Vary section opening patterns",
-                suggestion_zh="变化章节开头模式"
+                location=", ".join(issue_data.get("affected_positions", [])) if issue_data.get("affected_positions") else None,
+                suggestion=issue_data.get("fix_suggestions", [""])[0] if issue_data.get("fix_suggestions") else "",
+                suggestion_zh=issue_data.get("fix_suggestions_zh", [""])[0] if issue_data.get("fix_suggestions_zh") else ""
             ))
 
-        # Calculate risk score
-        # 计算风险分数
-        risk_score = int(explicit_ratio * 40) + int((100 - avg_echo) * 0.3)
-        if formulaic_count > 0:
-            risk_score += formulaic_count * 10
-
-        risk_score = min(100, risk_score)
-        risk_level = RiskLevel.HIGH if risk_score >= 60 else (RiskLevel.MEDIUM if risk_score >= 35 else RiskLevel.LOW)
+        strength_distribution = result.get("strength_distribution", {"strong": 0, "moderate": 0, "weak": 0})
+        formulaic_count = len([op for op in result.get("opener_patterns", []) if op.get("is_formulaic", False)])
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
         return SectionTransitionResponse(
-            risk_score=risk_score,
-            risk_level=risk_level,
-            total_transitions=total_transitions,
-            explicit_transition_count=explicit_count,
+            risk_score=result.get("risk_score", 0),
+            risk_level=RiskLevel(result.get("risk_level", "low")),
+            total_transitions=len(transitions),
+            explicit_transition_count=int(result.get("explicit_transition_ratio", 0) * len(transitions)) if transitions else 0,
             transitions=transitions,
-            explicit_ratio=round(explicit_ratio, 3),
-            avg_semantic_echo=round(avg_echo, 1),
+            explicit_ratio=result.get("explicit_transition_ratio", 0.0),
+            avg_semantic_echo=result.get("semantic_echo_score", 0.0) * 100 if result.get("semantic_echo_score", 0.0) <= 1 else result.get("semantic_echo_score", 0.0),
             formulaic_opener_count=formulaic_count,
             strength_distribution=strength_distribution,
             issues=issues,
-            recommendations=recommendations,
-            recommendations_zh=recommendations_zh,
+            recommendations=result.get("recommendations", []),
+            recommendations_zh=result.get("recommendations_zh", []),
             processing_time_ms=processing_time_ms
         )
 
@@ -1503,203 +1283,110 @@ async def analyze_section_transition(request: SectionTransitionRequest):
 @router.post("/step2-5/logic", response_model=InterSectionLogicResponse)
 async def analyze_inter_section_logic(request: InterSectionLogicRequest):
     """
-    Step 2.5: Inter-Section Logic Analysis
-    步骤 2.5：章节间逻辑关系分析
+    Step 2.5: Inter-Section Logic Analysis (LLM-based)
+    步骤 2.5：章节间逻辑关系分析（基于LLM）
 
-    Analyzes argument chains, redundancy, and progression patterns.
-    分析论点链、冗余和推进模式。
+    Analyzes argument chains, redundancy, and progression patterns using LLM.
+    使用LLM分析论点链、冗余和推进模式。
     """
     start_time = time.time()
 
     try:
-        # Get paragraphs and sections
-        # 获取段落和章节
-        paragraphs = []
-        if request.paragraphs:
-            paragraphs = request.paragraphs
-        elif request.text:
-            paragraphs = _split_text_to_paragraphs(request.text)
+        # Get document text
+        # 获取文档文本
+        document_text = request.text if request.text else ""
+        if not document_text and request.paragraphs:
+            document_text = "\n\n".join(request.paragraphs)
 
-        if request.sections:
-            sections = request.sections
-        else:
-            id_response = await identify_sections(SectionIdentificationRequest(
-                paragraphs=paragraphs
-            ))
-            sections = [s.model_dump() for s in id_response.sections]
-
-        if not sections:
+        if not document_text:
             return InterSectionLogicResponse(
                 risk_score=0,
                 risk_level=RiskLevel.LOW,
                 processing_time_ms=int((time.time() - start_time) * 1000)
             )
 
-        # Build argument chain
-        # 构建论点链
+        # Call LLM handler for analysis (with chain-call to detect sections first)
+        # 调用LLM handler进行分析（链式调用先检测章节）
+        logger.info("Calling Step2_5Handler for LLM-based inter-section logic analysis")
+        result = await step2_5_handler.analyze(
+            document_text=document_text,
+            locked_terms=[],
+            session_id=request.session_id,
+            step_name="layer4-step2-5",
+            use_cache=True
+        )
+
+        # Convert LLM result to response model
+        # 将LLM结果转换为响应模型
         argument_chain: List[ArgumentChainNode] = []
-        prev_keywords = set()
-
-        for section in sections:
-            section_idx = section.get("index", 0)
-            section_role = section.get("role", "body")
-            start_para = section.get("start_paragraph_idx", 0)
-            end_para = section.get("end_paragraph_idx", len(paragraphs))
-
-            section_paras = paragraphs[start_para:end_para] if paragraphs else []
-            section_text = " ".join(section_paras)
-
-            # Extract main argument (first sentence of first paragraph)
-            first_sentences = re.split(r'[.!?]+', section_paras[0]) if section_paras else []
-            main_argument = first_sentences[0].strip() if first_sentences else ""
-
-            # Extract supporting points (look for argument markers)
-            supporting_points = []
-            for pattern in ARGUMENT_MARKERS[:4]:
-                matches = re.findall(pattern + r'[^.!?]+', section_text.lower())
-                supporting_points.extend(matches[:2])
-
-            # Check connection to previous section
-            current_keywords = set(_extract_keywords(section_text, 10))
-            connects_to_prev = len(prev_keywords & current_keywords) >= 2
-
-            # Determine connection type
-            connection_type = ""
-            if section_idx > 0:
-                if section_role == "discussion" and sections[section_idx-1].get("role") == "results":
-                    connection_type = "interprets"
-                elif section_role == "conclusion":
-                    connection_type = "summarizes"
-                elif connects_to_prev:
-                    connection_type = "extends"
-
+        # LLM doesn't return detailed chain, create minimal structure
+        for i, section in enumerate(result.get("detected_sections", [])):
             argument_chain.append(ArgumentChainNode(
-                section_index=section_idx,
-                section_role=section_role,
-                main_argument=main_argument[:200],
-                supporting_points=supporting_points[:3],
-                connects_to_previous=connects_to_prev,
-                connection_type=connection_type
+                section_index=i,
+                section_role=section.get("role", "body"),
+                main_argument="",
+                supporting_points=[],
+                connects_to_previous=i > 0,
+                connection_type="extends" if i > 0 else ""
             ))
 
-            prev_keywords = current_keywords
-
-        # Detect redundancy
-        # 检测冗余
         redundancies: List[RedundancyInfo] = []
+        for red_data in result.get("redundancy_issues", []):
+            redundancies.append(RedundancyInfo(
+                section_a_index=red_data.get("section_a", 0),
+                section_b_index=red_data.get("section_b", 0),
+                redundant_content=red_data.get("overlap_content", ""),
+                redundancy_type="repeated_phrase",
+                severity="medium"
+            ))
 
-        for i in range(len(sections)):
-            for j in range(i + 1, len(sections)):
-                sec_i = sections[i]
-                sec_j = sections[j]
-
-                # Get section texts
-                text_i = " ".join(paragraphs[sec_i.get("start_paragraph_idx", 0):sec_i.get("end_paragraph_idx", 0)])
-                text_j = " ".join(paragraphs[sec_j.get("start_paragraph_idx", 0):sec_j.get("end_paragraph_idx", 0)])
-
-                # Check for repeated phrases (simple n-gram overlap)
-                words_i = text_i.lower().split()
-                words_j = text_j.lower().split()
-
-                # 4-gram overlap
-                ngrams_i = set(" ".join(words_i[k:k+4]) for k in range(len(words_i)-3))
-                ngrams_j = set(" ".join(words_j[k:k+4]) for k in range(len(words_j)-3))
-
-                overlap = ngrams_i & ngrams_j
-                if len(overlap) > 3:
-                    redundancies.append(RedundancyInfo(
-                        section_a_index=i,
-                        section_b_index=j,
-                        redundant_content=list(overlap)[0] if overlap else "",
-                        redundancy_type="repeated_phrase",
-                        severity="medium" if len(overlap) > 5 else "low"
-                    ))
-
-        # Detect progression patterns
-        # 检测推进模式
         progression_patterns: List[ProgressionPatternInfo] = []
-
-        # Check for sequential pattern
-        roles = [s.get("role", "body") for s in sections]
-        if roles == sorted(roles, key=lambda x: ["introduction", "literature_review", "methodology", "results", "discussion", "conclusion"].index(x) if x in ["introduction", "literature_review", "methodology", "results", "discussion", "conclusion"] else 999):
+        progression_pattern = result.get("progression_pattern", "varied")
+        if progression_pattern == "linear":
             progression_patterns.append(ProgressionPatternInfo(
                 pattern_type="sequential",
                 description="Sections follow a strict sequential order",
                 description_zh="章节遵循严格的顺序排列",
                 is_ai_typical=True,
-                sections_involved=list(range(len(sections)))
+                sections_involved=list(range(len(argument_chain)))
+            ))
+        elif progression_pattern != "varied":
+            progression_patterns.append(ProgressionPatternInfo(
+                pattern_type=progression_pattern,
+                description=f"Sections follow a {progression_pattern} pattern",
+                description_zh=f"章节遵循{progression_pattern}模式",
+                is_ai_typical=False,
+                sections_involved=list(range(len(argument_chain)))
             ))
 
-        # Calculate chain coherence
-        # 计算链条连贯性
-        connected_count = sum(1 for node in argument_chain if node.connects_to_previous)
-        chain_coherence = (connected_count / (len(argument_chain) - 1) * 100) if len(argument_chain) > 1 else 0
-
-        # Determine dominant pattern
-        # 确定主导模式
-        dominant_pattern = progression_patterns[0].pattern_type if progression_patterns else "varied"
-
-        # Pattern variety score
-        # 模式多样性分数
-        pattern_variety = 100 - (len(progression_patterns) * 20)  # Fewer patterns = more variety
-
-        # Issues and recommendations
-        # 问题和建议
         issues: List[DetectionIssue] = []
-        recommendations = []
-        recommendations_zh = []
-
-        if any(p.is_ai_typical for p in progression_patterns):
+        for issue_data in result.get("issues", []):
             issues.append(DetectionIssue(
-                type="predictable_progression",
-                description="Document follows AI-typical sequential progression",
-                description_zh="文档遵循AI典型的顺序推进模式",
-                severity=IssueSeverity.MEDIUM,
+                type=issue_data.get("type", "logic_issue"),
+                description=issue_data.get("description", ""),
+                description_zh=issue_data.get("description_zh", ""),
+                severity=IssueSeverity(issue_data.get("severity", "medium")),
                 layer=LayerLevel.SECTION,
-                suggestion="Add non-linear elements or returns to earlier points",
-                suggestion_zh="添加非线性元素或回扣前文"
+                location=", ".join(issue_data.get("affected_positions", [])) if issue_data.get("affected_positions") else None,
+                suggestion=issue_data.get("fix_suggestions", [""])[0] if issue_data.get("fix_suggestions") else "",
+                suggestion_zh=issue_data.get("fix_suggestions_zh", [""])[0] if issue_data.get("fix_suggestions_zh") else ""
             ))
-            recommendations.append("Break sequential flow with cross-references")
-            recommendations_zh.append("用交叉引用打破顺序流")
-
-        if redundancies:
-            issues.append(DetectionIssue(
-                type="content_redundancy",
-                description=f"Found {len(redundancies)} instances of content redundancy",
-                description_zh=f"发现{len(redundancies)}处内容冗余",
-                severity=IssueSeverity.LOW,
-                layer=LayerLevel.SECTION,
-                suggestion="Remove redundant content or consolidate into one section",
-                suggestion_zh="删除冗余内容或合并到一个章节"
-            ))
-
-        # Calculate risk score
-        # 计算风险分数
-        risk_score = 0
-        if any(p.is_ai_typical for p in progression_patterns):
-            risk_score += 40
-        if chain_coherence > 80:
-            risk_score += 20  # Too coherent can be suspicious
-        risk_score += len(redundancies) * 5
-
-        risk_score = min(100, risk_score)
-        risk_level = RiskLevel.HIGH if risk_score >= 60 else (RiskLevel.MEDIUM if risk_score >= 35 else RiskLevel.LOW)
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
         return InterSectionLogicResponse(
-            risk_score=risk_score,
-            risk_level=risk_level,
+            risk_score=result.get("risk_score", 0),
+            risk_level=RiskLevel(result.get("risk_level", "low")),
             argument_chain=argument_chain,
-            chain_coherence_score=round(chain_coherence, 1),
+            chain_coherence_score=result.get("argument_chain_score", 0.0),
             redundancies=redundancies,
             total_redundancies=len(redundancies),
             progression_patterns=progression_patterns,
-            dominant_pattern=dominant_pattern,
-            pattern_variety_score=max(0, pattern_variety),
+            dominant_pattern=result.get("progression_pattern", "varied"),
+            pattern_variety_score=100 - result.get("linearity_score", 0),
             issues=issues,
-            recommendations=recommendations,
-            recommendations_zh=recommendations_zh,
+            recommendations=result.get("recommendations", []),
+            recommendations_zh=result.get("recommendations_zh", []),
             processing_time_ms=processing_time_ms
         )
 

@@ -10,6 +10,7 @@ import Intervention from './pages/Intervention'
 import Yolo from './pages/Yolo'
 import YoloFullAuto from './pages/YoloFullAuto'
 import Review from './pages/Review'
+import FlowComplete from './pages/FlowComplete'
 import ThreeLevelFlow from './pages/ThreeLevelFlow'
 import Step1_1 from './pages/Step1_1'
 import Step1_2 from './pages/Step1_2'
@@ -38,6 +39,12 @@ import {
   LayerStep4_0,
   LayerStep4_1,
   LayerStep4_Console,
+  LayerStep5_0,
+  LayerStep5_1,
+  LayerStep5_2,
+  LayerStep5_3,
+  LayerStep5_4,
+  LayerStep5_5,
   LayerLexicalV2,
   LayerDocument,
   LayerSection,
@@ -143,8 +150,16 @@ function App() {
           <Route path="flow/layer2-step4-0/:documentId" element={<LayerStep4_0 />} />
           <Route path="flow/layer2-step4-1/:documentId" element={<LayerStep4_1 />} />
           <Route path="flow/layer2-step4-console/:documentId" element={<LayerStep4_Console />} />
-          {/* Layer 1 Sub-steps: Lexical Level Analysis (Enhanced) */}
-          {/* Layer 1 子步骤：词汇层面分析（增强版） */}
+          {/* Layer 1 Sub-steps: Lexical Level Analysis */}
+          {/* Layer 1 子步骤：词汇层面分析 */}
+          <Route path="flow/layer1-step5-0/:documentId" element={<LayerStep5_0 />} />
+          <Route path="flow/layer1-step5-1/:documentId" element={<LayerStep5_1 />} />
+          <Route path="flow/layer1-step5-2/:documentId" element={<LayerStep5_2 />} />
+          <Route path="flow/layer1-step5-3/:documentId" element={<LayerStep5_3 />} />
+          <Route path="flow/layer1-step5-4/:documentId" element={<LayerStep5_4 />} />
+          <Route path="flow/layer1-step5-5/:documentId" element={<LayerStep5_5 />} />
+          {/* Layer 1 Legacy: Enhanced Lexical Analysis */}
+          {/* Layer 1 旧版：增强词汇分析 */}
           <Route path="flow/layer1-lexical-v2/:documentId" element={<LayerLexicalV2 />} />
           {/* ============================================ */}
           {/* DEPRECATED: Legacy combined layer routes    */}
@@ -166,6 +181,10 @@ function App() {
           <Route path="yolo/:sessionId" element={<Yolo />} />
           <Route path="yolo-full-auto/:sessionId" element={<YoloFullAuto />} />
           <Route path="review/:sessionId" element={<Review />} />
+          {/* Flow completion pages - shown after analysis is done */}
+          {/* 流程完成页面 - 分析完成后显示 */}
+          <Route path="flow/summary/:documentId" element={<FlowComplete />} />
+          <Route path="flow/complete/:documentId" element={<FlowComplete />} />
         </Route>
       </Routes>
       {/* Floating debug mode badge */}

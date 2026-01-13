@@ -84,3 +84,4 @@ exports/
 body.txt
 test_results/
 *.output
+gemini-test*/

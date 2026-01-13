@@ -1,0 +1,181 @@
+Category,Term,Weight(1-100),Type,Typical_Context/Notes
+AIGC,Delve (into),99,Verb,Signature AI move usually in intros
+AIGC,Underscore,95,Verb,Used to emphasize points excessively
+AIGC,Harness,92,Verb,Harnessing power/potential
+AIGC,Foster,88,Verb,Fostering environments/relationships
+AIGC,Unveil,87,Verb,Revealing new concepts
+AIGC,Navigate,85,Verb,Navigating challenges/complexities
+AIGC,Facilitate,84,Verb,Making processes easier
+AIGC,Empower,82,Verb,Empowering users/systems
+AIGC,Revolutionize,80,Verb,Describing impact
+AIGC,Bridge,78,Verb,Bridging gaps
+AIGC,Epitomize,77,Verb,Perfect example of
+AIGC,Encapsulate,76,Verb,Summarizing
+AIGC,Yield,75,Verb,Yielding insights (not results)
+AIGC,Leverage,90,Verb,Using resources
+AIGC,Illuminate,85,Verb,Shedding light on
+AIGC,Curate,70,Verb,Organizing content
+AIGC,Orchestrate,72,Verb,Managing complex systems
+AIGC,Streamline,75,Verb,Making efficient
+AIGC,Bolster,78,Verb,Strengthening
+AIGC,Augment,80,Verb,Adding to
+AIGC,Unlock,88,Verb,Unlocking potential
+AIGC,Unleash,86,Verb,Unleashing power
+AIGC,Spearhead,70,Verb,Leading initiatives
+AIGC,Encompass,75,Verb,Including
+AIGC,Resonate,72,Verb,Resonating with audience
+AIGC,Pivotal,98,Adjective,Crucially important
+AIGC,Intricate,96,Adjective,Complex details
+AIGC,Multifaceted,94,Adjective,Many-sided
+AIGC,Comprehensive,91,Adjective,Complete/all-encompassing
+AIGC,Robust,89,Adjective,Strong system
+AIGC,Paramount,88,Adjective,Most important
+AIGC,Seamless,86,Adjective,Smooth transition
+AIGC,Dynamic,85,Adjective,Changing/active
+AIGC,Transformative,84,Adjective,Causing major change
+AIGC,Invaluable,82,Adjective,Very useful
+AIGC,Nuanced,88,Adjective,Subtle distinction
+AIGC,Notable,80,Adjective,Worth noting
+AIGC,Critical,85,Adjective,Very important
+AIGC,Vital,85,Adjective,Necessary
+AIGC,Indispensable,82,Adjective,Cannot do without
+AIGC,Groundbreaking,88,Adjective,Innovative
+AIGC,Unprecedented,86,Adjective,Never seen before
+AIGC,Sustainable,75,Adjective,Long-lasting (generic use)
+AIGC,Resilient,78,Adjective,Tough
+AIGC,Holistic,85,Adjective,Whole system view
+AIGC,Synergistic,80,Adjective,Working together
+AIGC,Cutting-edge,82,Adjective,Modern/New
+AIGC,State-of-the-art,80,Adjective,Best current tech
+AIGC,Immersive,75,Adjective,Deeply engaging
+AIGC,Formidable,70,Adjective,Impressive strength
+AIGC,Landscape,97,Noun,Metaphor for environment
+AIGC,Realm,95,Noun,Area of interest
+AIGC,Tapestry,93,Noun,Complex combination
+AIGC,Interplay,90,Noun,Interaction
+AIGC,Paradigm,88,Noun,Model or pattern
+AIGC,Cornerstone,86,Noun,Foundation
+AIGC,Synergy,85,Noun,Combined effect
+AIGC,Testament,84,Noun,Proof/Tribute
+AIGC,Mosaic,80,Noun,Combination of elements
+AIGC,Insight,79,Noun,Understanding
+AIGC,Plethora,82,Noun,Excessive amount
+AIGC,Myriad,85,Noun,Great number
+AIGC,Confluence,78,Noun,Coming together
+AIGC,Intersection,80,Noun,Where things meet
+AIGC,Beacon,75,Noun,Guiding light
+AIGC,Integration,80,Noun,Mixing things
+AIGC,Evolution,85,Noun,Gradual change
+AIGC,Era,80,Noun,Period of time
+AIGC,Dawn,75,Noun,Beginning of...
+AIGC,In conclusion,99,Phrase,Ending transition
+AIGC,Important to note,96,Phrase,Emphasis filler
+AIGC,Not only...but also,94,Phrase,Sentence structure
+AIGC,Ever-evolving,95,Phrase,Cliche context
+AIGC,Crucial role,92,Phrase,Function description
+AIGC,Game-changer,85,Phrase,Impact description
+AIGC,Pave the way,88,Phrase,Enabling future
+AIGC,Bear in mind,80,Phrase,Reminder
+AIGC,By and large,75,Phrase,Generalization
+AIGC,In essence,85,Phrase,Summary
+AIGC,Deep dive,90,Phrase,Analysis description
+AIGC,At the forefront,85,Phrase,Leading position
+AIGC,Rapidly changing,88,Phrase,Context setting
+AIGC,Digital age,85,Phrase,Time context
+AIGC,Treasure trove,75,Phrase,Collection of value
+AIGC,Shed light on,88,Phrase,Explain
+AIGC,Key takeaway,80,Phrase,Summary point
+AIGC,Vast majority,75,Phrase,Generalization
+AIGC,Stark contrast,80,Phrase,Comparison
+AIGC,Integral part,85,Phrase,Component
+Human,Examine,95,Verb,Specific investigation
+Human,Argue,92,Verb,Stating position
+Human,Suggest,90,Verb,Hedging conclusion
+Human,Conduct,88,Verb,Doing research
+Human,Demonstrate,87,Verb,Showing proof
+Human,Observe,86,Verb,Noting data
+Human,Report,85,Verb,Stating findings
+Human,Identify,84,Verb,Pinpointing
+Human,Imply,82,Verb,Indirect suggestion
+Human,Address,80,Verb,Dealing with topic
+Human,Investigate,88,Verb,Researching
+Human,Measure,85,Verb,Quantifying
+Human,Calculate,85,Verb,Math operation
+Human,Analyze,88,Verb,Examining data
+Human,Compare,80,Verb,Looking at differences
+Human,Contrast,80,Verb,Looking at opposites
+Human,Validate,82,Verb,Confirming
+Human,Corroborate,85,Verb,Supporting evidence
+Human,Postulate,80,Verb,Hypothesizing
+Human,Interpret,82,Verb,Explaining meaning
+Human,Assess,84,Verb,Evaluating
+Human,Determine,83,Verb,Finding out
+Human,Evaluate,82,Verb,Judging value
+Human,Propose,80,Verb,Suggesting plan
+Human,Establish,78,Verb,Setting up proof
+Human,Significant,98,Adjective,Statistical meaning
+Human,Associated (with),96,Adjective,Correlation
+Human,Specific,94,Adjective,Precise
+Human,Empirical,92,Adjective,Data-based
+Human,Consistent,90,Adjective,Matching
+Human,Distinct,88,Adjective,Separate
+Human,Respective,86,Adjective,Order-based
+Human,Preliminary,85,Adjective,Initial stage
+Human,Potential,84,Adjective,Possible (hedging)
+Human,Conversely,82,Adverb,On the other hand
+Human,Particular,88,Adjective,Specific instance
+Human,Quantitative,90,Adjective,Numerical
+Human,Qualitative,90,Adjective,Non-numerical
+Human,Longitudinal,85,Adjective,Over time
+Human,Cross-sectional,85,Adjective,One point in time
+Human,Limited,88,Adjective,Scope restriction
+Human,Valid,85,Adjective,Logically sound
+Human,Reliable,85,Adjective,Consistent results
+Human,Notably,80,Adverb,Worth mention
+Human,Subsequent,82,Adjective,Following
+Human,Prior,85,Adjective,Previous
+Human,Given,80,Adjective,Assuming
+Human,Apparent,75,Adjective,Seeming
+Human,Plausible,80,Adjective,Reasonable
+Human,Evidence,97,Noun,Proof
+Human,Findings,96,Noun,Results
+Human,Limitation,95,Noun,Weakness of study
+Human,Discrepancy,92,Noun,Difference
+Human,Correlation,90,Noun,Statistical link
+Human,Participant,89,Noun,Subject
+Human,Variable,88,Noun,Changed factor
+Human,Hypothesis,87,Noun,Prediction
+Human,Methodology,86,Noun,How it was done
+Human,Extent,84,Noun,Scope/Degree
+Human,Analysis,90,Noun,Review of data
+Human,Cohort,85,Noun,Group of subjects
+Human,Deviation,88,Noun,Variance
+Human,Variance,88,Noun,Difference
+Human,Implication,85,Noun,Consequence
+Human,Scope,82,Noun,Range
+Human,Protocol,84,Noun,Procedure
+Human,Literature,85,Noun,Previous work
+Human,Phenomenon,80,Noun,Occurrence
+Human,Mechanism,82,Noun,How it works
+Human,Effect,85,Noun,Result
+Human,Causality,88,Noun,Cause and effect
+Human,Bias,85,Noun,Skew
+Human,Validity,85,Noun,Accuracy
+Human,Results indicate,95,Phrase,Data driven
+Human,In contrast to,94,Phrase,Comparison
+Human,To our knowledge,92,Phrase,Scope limitation
+Human,It is argued,90,Phrase,Theoretical stance
+Human,Data suggest,89,Phrase,Evidence based
+Human,Consistent with,88,Phrase,Literature alignment
+Human,Future research,87,Phrase,Next steps
+Human,Standard deviation,90,Phrase,Statistical term
+Human,Respectively,85,Phrase,Order listing
+Human,On the contrary,80,Phrase,Rebuttal
+Human,In summary,80,Phrase,Brief conclusion
+Human,Account for,82,Phrase,Explain
+Human,Stem from,80,Phrase,Origin
+Human,Subject to,78,Phrase,Dependent on
+Human,Within the scope,85,Phrase,Limitation
+Human,Focus on,80,Phrase,Direction
+Human,Difference between,85,Phrase,Comparison
+Human,Relationship between,85,Phrase,Correlation

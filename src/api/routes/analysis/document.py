@@ -18,7 +18,7 @@ import re
 from src.api.routes.analysis.schemas import (
     DocumentAnalysisRequest,
     DocumentAnalysisResponse,
-    DocumentSection,
+    DocumentSection,  # ← Already imported, good!
     LayerLevel,
     RiskLevel,
     DetectionIssue,
@@ -46,8 +46,22 @@ from src.core.analyzer.transition import TransitionAnalyzer
 from src.core.analyzer.structure_predictability import StructurePredictabilityAnalyzer
 import statistics
 
+# Import new LLM handlers
+from src.api.routes.substeps.layer5.step1_1_handler import Step1_1Handler
+from src.api.routes.substeps.layer5.step1_2_handler import Step1_2Handler
+from src.api.routes.substeps.layer5.step1_3_handler import Step1_3Handler
+from src.api.routes.substeps.layer5.step1_4_handler import Step1_4Handler
+from src.api.routes.substeps.layer5.step1_5_handler import Step1_5Handler
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Initialize LLM handlers
+step1_1_handler = Step1_1Handler()
+step1_2_handler = Step1_2Handler()
+step1_3_handler = Step1_3Handler()
+step1_4_handler = Step1_4Handler()
+step1_5_handler = Step1_5Handler()
 
 
 def _convert_issue(issue) -> DetectionIssue:
@@ -68,50 +82,119 @@ def _convert_issue(issue) -> DetectionIssue:
 @router.post("/structure", response_model=DocumentAnalysisResponse)
 async def analyze_document_structure(request: DocumentAnalysisRequest):
     """
-    Step 1.1: Structure Analysis
-    步骤 1.1：结构分析
+    Step 1.1: Structure Analysis (NOW WITH LLM!)
+    步骤 1.1：结构分析（现在使用LLM！）
 
-    Analyzes document structure including:
-    - Progression predictability
-    - Function uniformity
-    - Closure strength
-    - Length regularity
-    - Connector explicitness
+    Uses LLM to detect AI-like structural patterns:
+    - Linear flow (First-Second-Third)
+    - Repetitive patterns
+    - Uniform length
+    - Predictable order
+    - Symmetry
+
+    Supports caching: Returns cached results if available for this session.
+    支持缓存：如果此会话有缓存结果，将直接返回。
     """
     start_time = time.time()
 
     try:
-        orchestrator = DocumentOrchestrator()
-
-        # Create context with text
-        context = LayerContext(full_text=request.text)
-
-        # Run analysis
-        result = await orchestrator.analyze(context)
+        # Use new LLM handler for analysis (with caching support)
+        logger.info("Calling Step1_1Handler for LLM-based structure analysis")
+        result = await step1_1_handler.analyze(
+            document_text=request.text,
+            locked_terms=[],  # No locked terms yet in Step 1.1
+            session_id=request.session_id,  # Get session_id from request for caching
+            step_name="layer5-step1-1",  # Unique step identifier for caching
+            use_cache=True  # Enable caching
+        )
 
         # Calculate processing time
         processing_time_ms = int((time.time() - start_time) * 1000)
 
-        # Extract structure-specific details
-        structure_details = result.details.get("structure_analysis", {})
-        predictability = structure_details.get("predictability", {})
+        # Convert issues to API format
+        issues_converted = []
+        for issue in result.get("issues", []):
+            issues_converted.append(DetectionIssue(
+                type=issue.get("type", "unknown"),
+                description=issue.get("description", ""),
+                description_zh=issue.get("description_zh", ""),
+                severity=IssueSeverity(issue.get("severity", "medium")),
+                layer=LayerLevel.DOCUMENT,
+                position=", ".join(issue.get("affected_positions", [])),
+                suggestion="\n".join(issue.get("fix_suggestions", [])),
+                suggestion_zh="\n".join(issue.get("fix_suggestions_zh", [])),
+                details=issue,
+            ))
+
+        # Extract sections from LLM analysis result (TASK A output)
+        # 从LLM分析结果中提取章节数据（任务A输出）
+        paragraphs = [p.strip() for p in request.text.split('\n\n') if p.strip()]
+        sections = []
+        structure_pattern = result.get("structure_pattern", "Unknown")
+
+        # Use LLM-detected sections if available
+        # 如果LLM返回了章节数据，则使用它
+        llm_sections = result.get("sections", [])
+        if llm_sections:
+            logger.info(f"Using LLM-detected sections: {len(llm_sections)} sections found")
+            for idx, sec in enumerate(llm_sections):
+                sections.append(DocumentSection(
+                    index=sec.get("index", idx),
+                    role=sec.get("role", "body"),
+                    title=sec.get("title", f"Section {idx + 1}"),
+                    paragraph_count=sec.get("paragraph_count", 1),
+                    word_count=sec.get("word_count", 0)
+                ))
+        else:
+            # Fallback: Simple section detection based on paragraph count
+            # 回退：基于段落数量的简单章节检测
+            logger.warning("LLM did not return sections, using fallback heuristic")
+            total_paras = len(paragraphs)
+
+            if total_paras <= 3:
+                # Small document - treat as single section
+                sections = [DocumentSection(
+                    index=0,
+                    role="body",
+                    title="Main Content",
+                    paragraph_count=total_paras,
+                    word_count=sum(len(p.split()) for p in paragraphs)
+                )]
+            else:
+                # Larger document - basic intro/body/conclusion split
+                intro_count = 1
+                conclusion_count = 1
+                body_count = total_paras - intro_count - conclusion_count
+
+                intro_words = len(paragraphs[0].split()) if paragraphs else 0
+                body_words = sum(len(paragraphs[i].split()) for i in range(intro_count, intro_count + body_count))
+                conclusion_words = len(paragraphs[-1].split()) if paragraphs else 0
+
+                sections = [
+                    DocumentSection(index=0, role="introduction", title="Introduction", paragraph_count=intro_count, word_count=intro_words),
+                    DocumentSection(index=1, role="body", title="Body", paragraph_count=body_count, word_count=body_words),
+                    DocumentSection(index=2, role="conclusion", title="Conclusion", paragraph_count=conclusion_count, word_count=conclusion_words),
+                ]
 
         return DocumentAnalysisResponse(
-            risk_score=result.risk_score,
-            risk_level=RiskLevel(result.risk_level.value),
-            issues=[_convert_issue(i) for i in result.issues],
-            recommendations=result.recommendations,
-            recommendations_zh=result.recommendations_zh,
-            details=result.details,
+            risk_score=result.get("risk_score", 0),
+            risk_level=RiskLevel(result.get("risk_level", "low")),
+            issues=issues_converted,
+            recommendations=result.get("recommendations", []),
+            recommendations_zh=result.get("recommendations_zh", []),
+            details={"llm_analysis": result},
             processing_time_ms=processing_time_ms,
-            structure=structure_details,
-            predictability_score=predictability,
-            paragraph_count=structure_details.get("paragraph_count", 0),
-            word_count=structure_details.get("total_word_count", 0),
+            structure={},
+            predictability_score={},
+            paragraph_count=len(paragraphs),
+            word_count=len(request.text.split()),
+            # LLM-based section analysis / LLM章节分析
+            structure_pattern=structure_pattern,
+            sections=sections,
         )
 
     except Exception as e:
-        logger.error(f"Document structure analysis failed: {e}")
+        logger.error(f"Document structure analysis failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -326,10 +409,15 @@ async def get_document_context(request: DocumentAnalysisRequest):
 # 步骤 1.4：连接词与衔接分析
 # =============================================================================
 
-def _split_paragraphs(text: str) -> List[str]:
+def _split_paragraphs(text: str, exclude_non_body: bool = True) -> List[str]:
     """
     Split text into paragraphs by double newlines or single newlines
     按双换行或单换行将文本分割为段落
+
+    Args:
+        text: Document text to split
+        exclude_non_body: If True, exclude titles, headers, figure captions, etc.
+                         如果为True，排除标题、表头、图名等非正文内容
     """
     # Try double newline first
     paragraphs = re.split(r'\n\n+', text.strip())
@@ -337,178 +425,122 @@ def _split_paragraphs(text: str) -> List[str]:
     if len(paragraphs) == 1:
         paragraphs = re.split(r'\n', text.strip())
     # Filter empty paragraphs
-    return [p.strip() for p in paragraphs if p.strip()]
+    paragraphs = [p.strip() for p in paragraphs if p.strip()]
+
+    if not exclude_non_body:
+        return paragraphs
+
+    # Filter out non-body content
+    # 过滤非正文内容
+    filtered = []
+    for p in paragraphs:
+        # Skip if too short (likely title/header)
+        # 跳过太短的内容（可能是标题）
+        word_count = len(p.split())
+        if word_count < 5:
+            continue
+
+        # Skip common non-paragraph patterns
+        # 跳过常见的非段落模式
+        p_lower = p.lower().strip()
+
+        # Skip section headers (numbered or common titles)
+        # 跳过章节标题
+        if re.match(r'^(\d+\.?\s+|[ivxlcdm]+\.?\s+|chapter\s+\d|section\s+\d)', p_lower):
+            continue
+        if re.match(r'^(abstract|introduction|methodology|methods|results|discussion|conclusion|references|acknowledgment|appendix)s?\s*$', p_lower):
+            continue
+
+        # Skip figure/table captions
+        # 跳过图表标题
+        if re.match(r'^(figure|fig\.?|table|tab\.?|图|表)\s*\d', p_lower):
+            continue
+
+        # Skip keywords line
+        # 跳过关键词行
+        if p_lower.startswith(('keywords:', 'key words:', '关键词', '关键字')):
+            continue
+
+        # Skip reference entries (usually start with [number] or author name followed by year)
+        # 跳过参考文献条目
+        if re.match(r'^\[\d+\]', p) or re.match(r'^[A-Z][a-z]+,?\s+[A-Z].*\(\d{4}\)', p):
+            continue
+
+        # Skip lines that are all caps (likely headers)
+        # 跳过全大写行（可能是标题）
+        if p.isupper() and word_count < 10:
+            continue
+
+        filtered.append(p)
+
+    return filtered
 
 
 @router.post("/connectors", response_model=ConnectorAnalysisResponse)
 async def analyze_connectors(request: ConnectorAnalysisRequest):
     """
-    Step 1.4: Connector & Transition Analysis
-    步骤 1.4：连接词与衔接分析
+    Step 1.4: Connector & Transition Analysis (NOW WITH LLM!)
+    步骤 1.4：连接词与衔接分析（现在使用LLM！）
 
-    Analyzes paragraph transitions for AI-like patterns including:
-    - Explicit connectors at paragraph openings
-    - Formulaic topic sentences
-    - Summary endings
-    - Too-smooth transitions
-
-    分析段落衔接的AI风格模式，包括：
-    - 段落开头的显性连接词
-    - 公式化主题句
-    - 总结性结尾
-    - 过于平滑的过渡
+    Uses LLM to analyze paragraph transitions for AI-like patterns.
+    使用LLM分析段落衔接的AI风格模式。
     """
     start_time = time.time()
 
     try:
-        # Split text into paragraphs
-        # 将文本分割为段落
-        paragraphs = _split_paragraphs(request.text)
-
-        if len(paragraphs) < 2:
-            # Need at least 2 paragraphs to analyze transitions
-            # 至少需要2个段落才能分析衔接
-            return ConnectorAnalysisResponse(
-                total_transitions=0,
-                problematic_transitions=0,
-                overall_smoothness_score=0,
-                overall_risk_level=RiskLevel.LOW,
-                processing_time_ms=int((time.time() - start_time) * 1000)
-            )
-
-        # Initialize transition analyzer
-        # 初始化衔接分析器
-        analyzer = TransitionAnalyzer()
-
-        # Analyze all transitions
-        # 分析所有衔接
-        transition_results = analyzer.analyze_document_transitions(paragraphs)
-
-        # Convert to response format
-        # 转换为响应格式
-        transitions: List[TransitionResultSchema] = []
-        all_issues: List[DetectionIssue] = []
-        all_connectors: List[str] = []
-        total_score = 0
-        problematic_count = 0
-
-        for idx, result in enumerate(transition_results):
-            # Convert issues to schema format
-            # 转换问题为模式格式
-            issues = [
-                TransitionIssueSchema(
-                    type=issue.type,
-                    description=issue.description,
-                    description_zh=issue.description_zh,
-                    severity=IssueSeverity(issue.severity),
-                    position=issue.position,
-                    word=issue.word
-                )
-                for issue in result.issues
-            ]
-
-            # Create transition result
-            # 创建衔接结果
-            transition = TransitionResultSchema(
-                transition_index=idx,
-                para_a_index=idx,
-                para_b_index=idx + 1,
-                para_a_ending=result.para_a_ending,
-                para_b_opening=result.para_b_opening,
-                smoothness_score=result.smoothness_score,
-                risk_level=RiskLevel(result.risk_level),
-                issues=issues,
-                explicit_connectors=result.explicit_connectors,
-                has_topic_sentence_pattern=result.has_topic_sentence_pattern,
-                has_summary_ending=result.has_summary_ending,
-                semantic_overlap=result.semantic_overlap
-            )
-            transitions.append(transition)
-
-            # Aggregate statistics
-            # 汇总统计
-            total_score += result.smoothness_score
-            if result.issues:
-                problematic_count += 1
-
-            # Collect all explicit connectors
-            # 收集所有显性连接词
-            all_connectors.extend(result.explicit_connectors)
-
-            # Convert to unified issue format
-            # 转换为统一问题格式
-            for issue in result.issues:
-                all_issues.append(DetectionIssue(
-                    type=issue.type,
-                    description=issue.description,
-                    description_zh=issue.description_zh,
-                    severity=IssueSeverity(issue.severity),
-                    layer=LayerLevel.DOCUMENT,
-                    position=f"transition_{idx}",
-                    suggestion=f"Consider using semantic echo or logical hook instead of explicit connector",
-                    suggestion_zh=f"考虑使用语义回声或逻辑设问代替显性连接词",
-                    details={
-                        "para_a_index": idx,
-                        "para_b_index": idx + 1,
-                        "word": issue.word
-                    }
-                ))
-
-        # Calculate overall statistics
-        # 计算总体统计
-        num_transitions = len(transition_results)
-        overall_score = total_score // num_transitions if num_transitions > 0 else 0
-        connector_density = (len(all_connectors) / len(paragraphs)) * 100 if paragraphs else 0
-
-        # Determine overall risk level
-        # 确定总体风险等级
-        if overall_score >= 50:
-            overall_risk = RiskLevel.HIGH
-        elif overall_score >= 25:
-            overall_risk = RiskLevel.MEDIUM
-        else:
-            overall_risk = RiskLevel.LOW
-
-        # Generate recommendations
-        # 生成建议
-        recommendations = []
-        recommendations_zh = []
-
-        if connector_density > 30:
-            recommendations.append("High connector density detected. Replace explicit connectors with semantic echoes.")
-            recommendations_zh.append("检测到高连接词密度。建议用语义回声替换显性连接词。")
-
-        if any(t.has_topic_sentence_pattern for t in transitions):
-            recommendations.append("Formulaic topic sentences detected. Vary paragraph openings.")
-            recommendations_zh.append("检测到公式化主题句。建议变化段落开头。")
-
-        if any(t.has_summary_ending for t in transitions):
-            recommendations.append("Summary endings detected. Consider using open-ended transitions.")
-            recommendations_zh.append("检测到总结性结尾。建议使用开放式过渡。")
-
-        if not recommendations:
-            recommendations.append("Transitions look natural. No major issues detected.")
-            recommendations_zh.append("衔接看起来自然。未检测到重大问题。")
+        # Use LLM handler for analysis
+        logger.info("Calling Step1_4Handler for LLM-based connector analysis")
+        result = await step1_4_handler.analyze(
+            document_text=request.text,
+            locked_terms=[]
+        )
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
+        # Extract issues
+        issues = result.get("issues", [])
+
+        # Convert issues to DetectionIssue format
+        detection_issues = []
+        for issue in issues:
+            detection_issues.append(DetectionIssue(
+                type=issue.get("type", "unknown"),
+                description=issue.get("description", ""),
+                description_zh=issue.get("description_zh", ""),
+                severity=IssueSeverity(issue.get("severity", "medium")),
+                layer=LayerLevel.DOCUMENT,
+                # Convert int to str for join operation
+                # 将整数转换为字符串以进行 join 操作
+                position=", ".join(str(p) for p in issue.get("affected_positions", [])),
+                suggestion="\n".join(str(s) for s in issue.get("fix_suggestions", [])),
+                suggestion_zh="\n".join(str(s) for s in issue.get("fix_suggestions_zh", [])),
+                details=issue,
+            ))
+
+        # Calculate basic stats
+        paragraphs = _split_paragraphs(request.text)
+        num_transitions = max(0, len(paragraphs) - 1)
+
+        # Determine risk level from result
+        risk_level = RiskLevel(result.get("risk_level", "low"))
+
         return ConnectorAnalysisResponse(
             total_transitions=num_transitions,
-            problematic_transitions=problematic_count,
-            overall_smoothness_score=overall_score,
-            overall_risk_level=overall_risk,
-            total_explicit_connectors=len(all_connectors),
-            connector_density=connector_density,
-            connector_list=list(set(all_connectors)),  # Deduplicate
-            transitions=transitions,
-            issues=all_issues,
-            recommendations=recommendations,
-            recommendations_zh=recommendations_zh,
+            problematic_transitions=len(issues),
+            overall_smoothness_score=result.get("risk_score", 0),
+            overall_risk_level=risk_level,
+            total_explicit_connectors=sum(1 for i in issues if "explicit_connector" in i.get("type", "")),
+            connector_density=0,
+            connector_list=[],
+            transitions=[],
+            issues=detection_issues,
+            recommendations=result.get("recommendations", []),
+            recommendations_zh=result.get("recommendations_zh", []),
             processing_time_ms=processing_time_ms
         )
 
     except Exception as e:
-        logger.error(f"Connector analysis failed: {e}")
+        logger.error(f"Connector analysis failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -594,178 +626,84 @@ def _determine_strategy(
 @router.post("/paragraph-length", response_model=ParagraphLengthAnalysisResponse)
 async def analyze_paragraph_length(request: ParagraphLengthAnalysisRequest):
     """
-    Step 1.2: Paragraph Length Regularity Analysis
-    步骤 1.2：段落长度规律性分析
+    Step 1.2: Paragraph Length Regularity Analysis (NOW WITH LLM!)
+    步骤 1.2：段落长度规律性分析（现在使用LLM！）
 
-    Analyzes paragraph length distribution to detect AI-like uniformity:
-    - CV (Coefficient of Variation) < 0.3 indicates too uniform (AI-like)
-    - Target CV >= 0.4 for human-like writing
-    - Provides merge/split/expand/compress suggestions
-
-    分析段落长度分布以检测AI风格的均匀性：
-    - CV（变异系数）< 0.3 表示过于均匀（AI风格）
-    - 目标 CV >= 0.4 以达到人类写作风格
-    - 提供合并/拆分/扩展/压缩建议
+    Uses LLM to analyze paragraph length distribution for AI-like uniformity.
+    使用LLM分析段落长度分布中的AI特征。
     """
     start_time = time.time()
 
     try:
-        # Split text into paragraphs
-        # 将文本分割为段落
-        paragraphs = _split_paragraphs(request.text)
-
-        if len(paragraphs) < 2:
-            # Not enough paragraphs for meaningful analysis
-            # 段落数量不足，无法进行有意义的分析
-            return ParagraphLengthAnalysisResponse(
-                paragraph_count=len(paragraphs),
-                total_word_count=len(request.text.split()),
-                mean_length=len(request.text.split()),
-                stdev_length=0,
-                cv=0,
-                min_length=len(request.text.split()),
-                max_length=len(request.text.split()),
-                length_regularity_score=50,
-                risk_level=RiskLevel.LOW,
-                target_cv=0.4,
-                recommendations=["Document too short for paragraph length analysis."],
-                recommendations_zh=["文档过短，无法进行段落长度分析。"],
-                processing_time_ms=int((time.time() - start_time) * 1000)
-            )
-
-        # Calculate length statistics
-        # 计算长度统计
-        lengths = [len(p.split()) for p in paragraphs]
-        total_word_count = sum(lengths)
-        mean_len = statistics.mean(lengths)
-        stdev_len = statistics.stdev(lengths) if len(lengths) > 1 else 0
-        cv = stdev_len / mean_len if mean_len > 0 else 0
-        min_len = min(lengths)
-        max_len = max(lengths)
-
-        # Calculate length regularity score (higher = more uniform = more AI-like)
-        # 计算长度规律性分数（越高越均匀，越像AI）
-        if cv < 0.2:
-            score = 90  # Very uniform
-        elif cv < 0.3:
-            score = 70  # Quite uniform
-        elif cv < 0.4:
-            score = 50  # Moderate
-        elif cv < 0.5:
-            score = 30  # Good variation
-        else:
-            score = 15  # High variation (human-like)
-
-        # Determine risk level
-        # 确定风险等级
-        if score >= 60:
-            risk_level = RiskLevel.HIGH
-        elif score >= 35:
-            risk_level = RiskLevel.MEDIUM
-        else:
-            risk_level = RiskLevel.LOW
-
-        # Build per-paragraph info with strategies
-        # 构建每个段落的信息和策略
-        paragraph_infos: List[ParagraphLengthInfo] = []
-        merge_suggestions: List[int] = []
-        split_suggestions: List[int] = []
-        expand_suggestions: List[int] = []
-        compress_suggestions: List[int] = []
-
-        for idx, (para, word_count) in enumerate(zip(paragraphs, lengths)):
-            # Calculate deviation from mean
-            deviation = (word_count - mean_len) / stdev_len if stdev_len > 0 else 0
-
-            # Determine strategy
-            strategy, reason, reason_zh = _determine_strategy(
-                word_count, mean_len, stdev_len, idx, len(paragraphs)
-            )
-
-            # Track suggestions by category
-            if strategy == ParagraphLengthStrategy.MERGE:
-                merge_suggestions.append(idx)
-            elif strategy == ParagraphLengthStrategy.SPLIT:
-                split_suggestions.append(idx)
-            elif strategy == ParagraphLengthStrategy.EXPAND:
-                expand_suggestions.append(idx)
-            elif strategy == ParagraphLengthStrategy.COMPRESS:
-                compress_suggestions.append(idx)
-
-            paragraph_infos.append(ParagraphLengthInfo(
-                index=idx,
-                word_count=word_count,
-                char_count=len(para),
-                sentence_count=_count_sentences(para),
-                preview=para[:100] + "..." if len(para) > 100 else para,
-                deviation_from_mean=round(deviation, 2),
-                suggested_strategy=strategy,
-                strategy_reason=reason,
-                strategy_reason_zh=reason_zh
-            ))
-
-        # Generate recommendations
-        # 生成建议
-        recommendations = []
-        recommendations_zh = []
-
-        if cv < 0.3:
-            recommendations.append(
-                f"Paragraph lengths are too uniform (CV={cv:.2f}). "
-                f"Target CV >= 0.40 for natural variation. "
-                f"Mix short paragraphs (50-80 words) with longer ones (150-200 words)."
-            )
-            recommendations_zh.append(
-                f"段落长度过于均匀（CV={cv:.2f}）。"
-                f"目标CV >= 0.40以达到自然变化。"
-                f"混合短段落（50-80词）和长段落（150-200词）。"
-            )
-
-        if merge_suggestions:
-            recommendations.append(
-                f"Consider merging paragraphs {', '.join(map(str, [i+1 for i in merge_suggestions]))} with adjacent paragraphs."
-            )
-            recommendations_zh.append(
-                f"建议将第 {', '.join(map(str, [i+1 for i in merge_suggestions]))} 段与相邻段落合并。"
-            )
-
-        if split_suggestions:
-            recommendations.append(
-                f"Consider splitting paragraphs {', '.join(map(str, [i+1 for i in split_suggestions]))} into smaller sections."
-            )
-            recommendations_zh.append(
-                f"建议将第 {', '.join(map(str, [i+1 for i in split_suggestions]))} 段拆分为较小的部分。"
-            )
-
-        if not recommendations:
-            recommendations.append("Paragraph lengths show good variation. No major issues detected.")
-            recommendations_zh.append("段落长度变化良好。未检测到重大问题。")
+        # Use LLM handler for analysis with caching support
+        logger.info("Calling Step1_2Handler for LLM-based paragraph length analysis")
+        result = await step1_2_handler.analyze(
+            document_text=request.text,
+            locked_terms=[],
+            session_id=request.session_id,  # Pass session_id for caching
+            step_name="layer5-step1-2",     # Unique step identifier
+            use_cache=True                   # Enable caching
+        )
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
+        # Extract LLM analysis data
+        # 提取LLM分析数据
+        issues = result.get("issues", [])
+        statistics_data = result.get("statistics", {})
+        paragraph_analysis = result.get("paragraph_analysis", {})
+
+        # Use LLM statistics if available, otherwise calculate from text
+        # 优先使用LLM统计数据，否则从文本计算
+        if statistics_data:
+            mean_len = statistics_data.get("mean_length", 0)
+            stdev_len = statistics_data.get("stdev_length", 0)
+            cv = statistics_data.get("cv", 0)
+            min_len = statistics_data.get("min_length", 0)
+            max_len = statistics_data.get("max_length", 0)
+            para_count = paragraph_analysis.get("total_body_paragraphs", 0)
+            lengths = paragraph_analysis.get("paragraph_lengths", [])
+            total_word_count = sum(lengths) if lengths else 0
+        else:
+            # Fallback: Calculate from text (with filtering)
+            # 回退：从文本计算（带过滤）
+            paragraphs = _split_paragraphs(request.text, exclude_non_body=True)
+            lengths = [len(p.split()) for p in paragraphs] if paragraphs else [0]
+            para_count = len(paragraphs)
+            total_word_count = sum(lengths)
+            mean_len = statistics.mean(lengths) if lengths else 0
+            stdev_len = statistics.stdev(lengths) if len(lengths) > 1 else 0
+            cv = stdev_len / mean_len if mean_len > 0 else 0
+            min_len = min(lengths) if lengths else 0
+            max_len = max(lengths) if lengths else 0
+
         return ParagraphLengthAnalysisResponse(
-            paragraph_count=len(paragraphs),
+            paragraph_count=para_count,
             total_word_count=total_word_count,
             mean_length=round(mean_len, 1),
             stdev_length=round(stdev_len, 1),
             cv=round(cv, 3),
             min_length=min_len,
             max_length=max_len,
-            length_regularity_score=score,
-            risk_level=risk_level,
+            length_regularity_score=result.get("risk_score", 0),
+            risk_level=RiskLevel(result.get("risk_level", "low")),
             target_cv=0.4,
-            paragraphs=paragraph_infos,
-            merge_suggestions=merge_suggestions,
-            split_suggestions=split_suggestions,
-            expand_suggestions=expand_suggestions,
-            compress_suggestions=compress_suggestions,
-            recommendations=recommendations,
-            recommendations_zh=recommendations_zh,
+            paragraphs=[],  # LLM provides analysis instead
+            merge_suggestions=[],
+            split_suggestions=[],
+            expand_suggestions=[],
+            compress_suggestions=[],
+            # LLM analysis results
+            issues=issues,
+            summary=result.get("summary", ""),
+            summary_zh=result.get("summary_zh", ""),
+            recommendations=result.get("recommendations", []),
+            recommendations_zh=result.get("recommendations_zh", []),
             processing_time_ms=processing_time_ms
         )
 
     except Exception as e:
-        logger.error(f"Paragraph length analysis failed: {e}")
+        logger.error(f"Paragraph length analysis failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -777,166 +715,61 @@ async def analyze_paragraph_length(request: ParagraphLengthAnalysisRequest):
 @router.post("/progression-closure", response_model=ProgressionClosureResponse)
 async def analyze_progression_closure(request: ProgressionClosureRequest):
     """
-    Step 1.3: Progression & Closure Analysis
-    步骤 1.3：推进模式与闭合分析
+    Step 1.3: Progression & Closure Analysis (NOW WITH LLM!)
+    步骤 1.3：推进模式与闭合分析（现在使用LLM！）
 
-    Analyzes document progression patterns and closure strength:
-    - Monotonic (AI-like): sequential, additive, one-directional flow
-    - Non-monotonic (Human-like): returns, conditionals, reversals
-    - Strong closure (AI-like): definitive conclusions
-    - Weak closure (Human-like): open questions, unresolved tensions
-
-    分析文档推进模式和闭合强度：
-    - 单调（AI风格）：顺序、递进、单向流动
-    - 非单调（人类风格）：回扣、条件、反转
-    - 强闭合（AI风格）：明确结论
-    - 弱闭合（人类风格）：开放问题、未解决的张力
+    Uses LLM to analyze document progression patterns and closure strength.
+    使用LLM分析文档推进模式和闭合强度。
     """
     start_time = time.time()
 
     try:
-        # Split text into paragraphs
-        # 将文本分割为段落
-        paragraphs = _split_paragraphs(request.text)
-
-        if len(paragraphs) < 3:
-            return ProgressionClosureResponse(
-                progression_score=0,
-                progression_type=ProgressionType.UNKNOWN,
-                closure_score=0,
-                closure_type=ClosureType.MODERATE,
-                combined_score=0,
-                risk_level=RiskLevel.LOW,
-                recommendations=["Document too short for progression/closure analysis."],
-                recommendations_zh=["文档过短，无法进行推进/闭合分析。"],
-                processing_time_ms=int((time.time() - start_time) * 1000)
-            )
-
-        # Use StructurePredictabilityAnalyzer for analysis
-        # 使用结构预测性分析器进行分析
-        analyzer = StructurePredictabilityAnalyzer()
-        result = analyzer.analyze(paragraphs)
-
-        # Extract progression details
-        # 提取推进详情
-        prog_details = result.details.get("progression", {})
-        markers_data = prog_details.get("markers", {"monotonic": [], "non_monotonic": []})
-
-        # Build progression markers list
-        # 构建推进标记列表
-        progression_markers: List[ProgressionMarker] = []
-        for m in markers_data.get("monotonic", []):
-            progression_markers.append(ProgressionMarker(
-                paragraph_index=m.get("paragraph", 0),
-                marker=m.get("marker", ""),
-                category=m.get("category", "unknown"),
-                is_monotonic=True
-            ))
-        for m in markers_data.get("non_monotonic", []):
-            progression_markers.append(ProgressionMarker(
-                paragraph_index=m.get("paragraph", 0),
-                marker=m.get("marker", ""),
-                category=m.get("category", "unknown"),
-                is_monotonic=False
-            ))
-
-        # Extract closure details
-        # 提取闭合详情
-        closure_details = result.details.get("closure", {})
-        last_para_preview = closure_details.get("last_paragraph_preview", "")
-
-        # Map progression type
-        # 映射推进类型
-        prog_type_map = {
-            "monotonic": ProgressionType.MONOTONIC,
-            "non_monotonic": ProgressionType.NON_MONOTONIC,
-            "mixed": ProgressionType.MIXED,
-        }
-        prog_type = prog_type_map.get(result.progression_type, ProgressionType.UNKNOWN)
-
-        # Map closure type
-        # 映射闭合类型
-        closure_type_map = {
-            "strong": ClosureType.STRONG,
-            "moderate": ClosureType.MODERATE,
-            "weak": ClosureType.WEAK,
-            "open": ClosureType.OPEN,
-        }
-        closure_type = closure_type_map.get(result.closure_type, ClosureType.MODERATE)
-
-        # Calculate combined score (average of progression and closure)
-        # 计算综合分数（推进和闭合的平均值）
-        combined_score = (result.progression_predictability + result.closure_strength) // 2
-
-        # Determine risk level
-        # 确定风险等级
-        if combined_score >= 60:
-            risk_level = RiskLevel.HIGH
-        elif combined_score >= 35:
-            risk_level = RiskLevel.MEDIUM
-        else:
-            risk_level = RiskLevel.LOW
-
-        # Generate recommendations
-        # 生成建议
-        recommendations = []
-        recommendations_zh = []
-
-        if result.progression_predictability > 60:
-            recommendations.append(
-                "Progression is too predictable (monotonic). Add returns to earlier points, "
-                "conditionals, or local reversals to break the linear flow."
-            )
-            recommendations_zh.append(
-                "推进过于可预测（单调）。添加回扣、条件触发或局部反转来打破线性流动。"
-            )
-
-        if result.closure_strength > 60:
-            recommendations.append(
-                "Closure is too strong. Consider ending with an open question or "
-                "unresolved tension instead of a definitive summary."
-            )
-            recommendations_zh.append(
-                "闭合过于强烈。考虑以开放问题或未解决的张力结尾，而非明确总结。"
-            )
-
-        if prog_details.get("sequential_markers", 0) >= 3:
-            recommendations.append(
-                "Multiple sequential markers detected (First, Second, Third...). "
-                "This is a strong AI signal. Vary your transitions."
-            )
-            recommendations_zh.append(
-                "检测到多个顺序标记（First, Second, Third...）。"
-                "这是强烈的AI信号。请变化您的过渡方式。"
-            )
-
-        if not recommendations:
-            recommendations.append("Progression and closure patterns look natural.")
-            recommendations_zh.append("推进和闭合模式看起来自然。")
+        # Use LLM handler for analysis
+        logger.info("Calling Step1_3Handler for LLM-based progression/closure analysis")
+        result = await step1_3_handler.analyze(
+            document_text=request.text,
+            locked_terms=[]
+        )
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
+        # Extract issues and infer types
+        issues = result.get("issues", [])
+        progression_type = ProgressionType.UNKNOWN
+        closure_type = ClosureType.MODERATE
+        progression_score = result.get("risk_score", 0)
+        closure_score = 0
+
+        for issue in issues:
+            if issue.get("type") == "monotonic_progression":
+                progression_type = ProgressionType.MONOTONIC
+            elif issue.get("type") == "too_strong_closure":
+                closure_type = ClosureType.STRONG
+                closure_score = 70
+
+        combined_score = (progression_score + closure_score) // 2
+
         return ProgressionClosureResponse(
-            progression_score=result.progression_predictability,
-            progression_type=prog_type,
-            monotonic_count=prog_details.get("monotonic_count", 0),
-            non_monotonic_count=prog_details.get("non_monotonic_count", 0),
-            sequential_markers_found=prog_details.get("sequential_markers", 0),
-            progression_markers=progression_markers,
-            closure_score=result.closure_strength,
+            progression_score=progression_score,
+            progression_type=progression_type,
+            monotonic_count=sum(1 for i in issues if "monotonic" in i.get("type", "")),
+            non_monotonic_count=0,
+            sequential_markers_found=0,
+            progression_markers=[],
+            closure_score=closure_score,
             closure_type=closure_type,
-            strong_closure_patterns=closure_details.get("strong_patterns", []),
-            weak_closure_patterns=closure_details.get("weak_patterns", []),
-            last_paragraph_preview=last_para_preview,
+            strong_closure_patterns=[],
+            weak_closure_patterns=[],
+            last_paragraph_preview="",
             combined_score=combined_score,
-            risk_level=risk_level,
-            recommendations=recommendations,
-            recommendations_zh=recommendations_zh,
+            risk_level=RiskLevel(result.get("risk_level", "low")),
+            recommendations=result.get("recommendations", []),
+            recommendations_zh=result.get("recommendations_zh", []),
             processing_time_ms=processing_time_ms
         )
 
     except Exception as e:
-        logger.error(f"Progression/closure analysis failed: {e}")
+        logger.error(f"Progression/closure analysis failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1075,143 +908,358 @@ def _analyze_paragraph_substantiality(para: str, idx: int) -> ParagraphSubstanti
 @router.post("/content-substantiality", response_model=ContentSubstantialityResponse)
 async def analyze_content_substantiality(request: ContentSubstantialityRequest):
     """
-    Step 1.5: Content Substantiality Analysis
-    步骤 1.5：内容实质性分析
+    Step 1.5: Content Substantiality Analysis (NOW WITH LLM!)
+    步骤 1.5：内容实质性分析（现在使用LLM！）
 
-    Analyzes content for specificity vs. generic AI-like patterns:
-    - Detects generic phrases common in AI text
-    - Identifies filler words
-    - Looks for specific details (numbers, names, dates)
-    - Calculates overall substantiality score
-
-    分析内容的具体性与泛泛的AI风格模式：
-    - 检测AI文本中常见的泛泛短语
-    - 识别填充词
-    - 查找具体细节（数字、名称、日期）
-    - 计算总体实质性分数
+    Uses LLM to analyze content for specificity vs. generic AI-like patterns.
+    使用LLM分析内容的具体性与泛泛的AI风格模式。
     """
     start_time = time.time()
 
     try:
-        # Split text into paragraphs
-        # 将文本分割为段落
-        paragraphs = _split_paragraphs(request.text)
-
-        if len(paragraphs) == 0:
-            return ContentSubstantialityResponse(
-                paragraph_count=0,
-                overall_specificity_score=0,
-                overall_substantiality=SubstantialityLevel.LOW,
-                risk_level=RiskLevel.LOW,
-                recommendations=["No content to analyze."],
-                recommendations_zh=["没有内容可分析。"],
-                processing_time_ms=int((time.time() - start_time) * 1000)
-            )
-
-        # Analyze each paragraph
-        # 分析每个段落
-        paragraph_results: List[ParagraphSubstantiality] = []
-        all_generic_phrases: List[str] = []
-        total_specific = 0
-        total_generic = 0
-        filler_ratios: List[float] = []
-
-        for idx, para in enumerate(paragraphs):
-            result = _analyze_paragraph_substantiality(para, idx)
-            paragraph_results.append(result)
-
-            all_generic_phrases.extend(result.generic_phrases)
-            total_specific += result.specific_detail_count
-            total_generic += result.generic_phrase_count
-            filler_ratios.append(result.filler_ratio)
-
-        # Calculate overall metrics
-        # 计算总体指标
-        avg_specificity = sum(p.specificity_score for p in paragraph_results) // len(paragraph_results)
-        avg_filler = sum(filler_ratios) / len(filler_ratios) if filler_ratios else 0
-
-        # Find low substantiality paragraphs
-        # 查找低实质性段落
-        low_sub_paragraphs = [
-            p.index for p in paragraph_results
-            if p.substantiality_level == SubstantialityLevel.LOW
-        ]
-
-        # Determine overall level
-        # 确定总体等级
-        if avg_specificity >= 60:
-            overall_level = SubstantialityLevel.HIGH
-            risk_level = RiskLevel.LOW
-        elif avg_specificity >= 35:
-            overall_level = SubstantialityLevel.MEDIUM
-            risk_level = RiskLevel.MEDIUM
-        else:
-            overall_level = SubstantialityLevel.LOW
-            risk_level = RiskLevel.HIGH
-
-        # Count common generic phrases
-        # 统计常见泛泛短语
-        from collections import Counter
-        phrase_counts = Counter(all_generic_phrases)
-        common_generic = [p for p, _ in phrase_counts.most_common(5)]
-
-        # Generate recommendations
-        # 生成建议
-        recommendations = []
-        recommendations_zh = []
-
-        if total_generic > len(paragraphs):
-            recommendations.append(
-                f"High density of generic phrases detected ({total_generic} total). "
-                "Replace vague language with specific facts, data, or examples."
-            )
-            recommendations_zh.append(
-                f"检测到高密度的泛泛短语（共{total_generic}个）。"
-                "将模糊语言替换为具体事实、数据或例子。"
-            )
-
-        if avg_filler > 0.05:
-            recommendations.append(
-                f"Filler word ratio is high ({avg_filler:.1%}). "
-                "Remove unnecessary qualifiers like 'very', 'really', 'quite'."
-            )
-            recommendations_zh.append(
-                f"填充词比例较高（{avg_filler:.1%}）。"
-                "删除不必要的修饰词如 'very', 'really', 'quite'。"
-            )
-
-        if low_sub_paragraphs:
-            recommendations.append(
-                f"Paragraphs {', '.join(str(i+1) for i in low_sub_paragraphs[:5])} "
-                "have low substantiality. Add specific details."
-            )
-            recommendations_zh.append(
-                f"第 {', '.join(str(i+1) for i in low_sub_paragraphs[:5])} 段"
-                "实质性较低。请添加具体细节。"
-            )
-
-        if not recommendations:
-            recommendations.append("Content appears to have good substantiality with specific details.")
-            recommendations_zh.append("内容具有良好的实质性和具体细节。")
+        # Use LLM handler for analysis
+        logger.info("Calling Step1_5Handler for LLM-based content substantiality analysis")
+        result = await step1_5_handler.analyze(
+            document_text=request.text,
+            locked_terms=[]
+        )
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
+        # Extract issues
+        issues = result.get("issues", [])
+
+        # Count from issues
+        total_generic = sum(1 for i in issues if "generic" in i.get("type", ""))
+        total_specific = 0
+
+        # Determine overall level based on risk score
+        risk_score = result.get("risk_score", 0)
+        if risk_score < 35:
+            overall_level = SubstantialityLevel.HIGH
+        elif risk_score < 60:
+            overall_level = SubstantialityLevel.MEDIUM
+        else:
+            overall_level = SubstantialityLevel.LOW
+
+        # Calculate paragraph count
+        paragraphs = _split_paragraphs(request.text)
+
         return ContentSubstantialityResponse(
             paragraph_count=len(paragraphs),
-            overall_specificity_score=avg_specificity,
+            overall_specificity_score=max(0, 100 - risk_score),
             overall_substantiality=overall_level,
-            risk_level=risk_level,
+            risk_level=RiskLevel(result.get("risk_level", "low")),
             total_generic_phrases=total_generic,
             total_specific_details=total_specific,
-            average_filler_ratio=round(avg_filler, 3),
-            low_substantiality_paragraphs=low_sub_paragraphs,
-            paragraphs=paragraph_results,
-            common_generic_phrases=common_generic,
-            recommendations=recommendations,
-            recommendations_zh=recommendations_zh,
+            average_filler_ratio=0,
+            low_substantiality_paragraphs=[],
+            paragraphs=[],
+            common_generic_phrases=[],
+            recommendations=result.get("recommendations", []),
+            recommendations_zh=result.get("recommendations_zh", []),
             processing_time_ms=processing_time_ms
         )
 
     except Exception as e:
-        logger.error(f"Content substantiality analysis failed: {e}")
+        logger.error(f"Content substantiality analysis failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# Merge-Modify Endpoints for Layer 5 Steps
+# Layer 5步骤的合并修改端点
+# =============================================================================
+
+from src.api.routes.substeps.schemas import (
+    MergeModifyRequest,
+    MergeModifyPromptResponse,
+    MergeModifyApplyResponse,
+)
+
+
+@router.post("/step1-1/merge-modify/prompt", response_model=MergeModifyPromptResponse)
+async def generate_step1_1_prompt(request: MergeModifyRequest):
+    """
+    Step 1.1: Generate modification prompt for structure issues
+    步骤 1.1：为结构问题生成修改提示词
+    """
+    try:
+        prompt = await step1_1_handler.generate_rewrite_prompt(
+            issues=request.selected_issues,
+            user_notes=request.user_notes
+        )
+        return MergeModifyPromptResponse(
+            prompt=prompt,
+            prompt_zh="根据选定的结构问题生成的修改提示词",
+            issues_summary_zh=f"选中了{len(request.selected_issues)}个问题",
+            estimated_changes=len(request.selected_issues)
+        )
+    except Exception as e:
+        logger.error(f"Step 1.1 prompt generation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/step1-1/merge-modify/apply", response_model=MergeModifyApplyResponse)
+async def apply_step1_1_modification(request: MergeModifyRequest):
+    """
+    Step 1.1: Apply AI modification for structure issues
+    步骤 1.1：应用AI修改结构问题
+    """
+    try:
+        # Get the document text from session or request
+        from src.services.session_service import SessionService
+        session_service = SessionService()
+        session_data = await session_service.get_session(request.session_id) if request.session_id else None
+        document_text = session_data.get("document_text", "") if session_data else ""
+
+        if not document_text:
+            raise HTTPException(status_code=400, detail="Document text not found in session")
+
+        result = await step1_1_handler.apply_rewrite(
+            document_text=document_text,
+            issues=request.selected_issues,
+            user_notes=request.user_notes,
+            locked_terms=session_data.get("locked_terms", []) if session_data else []
+        )
+        return MergeModifyApplyResponse(
+            modified_text=result.get("modified_text", ""),
+            changes_summary_zh=result.get("changes_summary_zh", ""),
+            changes_count=result.get("changes_count", 0),
+            issues_addressed=[i.type for i in request.selected_issues],
+            remaining_attempts=3
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Step 1.1 modification failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/step1-2/merge-modify/prompt", response_model=MergeModifyPromptResponse)
+async def generate_step1_2_prompt(request: MergeModifyRequest):
+    """
+    Step 1.2: Generate modification prompt for paragraph length issues
+    步骤 1.2：为段落长度问题生成修改提示词
+    """
+    try:
+        prompt = await step1_2_handler.generate_rewrite_prompt(
+            issues=request.selected_issues,
+            user_notes=request.user_notes
+        )
+        return MergeModifyPromptResponse(
+            prompt=prompt,
+            prompt_zh="根据选定的段落长度问题生成的修改提示词",
+            issues_summary_zh=f"选中了{len(request.selected_issues)}个问题",
+            estimated_changes=len(request.selected_issues)
+        )
+    except Exception as e:
+        logger.error(f"Step 1.2 prompt generation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/step1-2/merge-modify/apply", response_model=MergeModifyApplyResponse)
+async def apply_step1_2_modification(request: MergeModifyRequest):
+    """
+    Step 1.2: Apply AI modification for paragraph length issues
+    步骤 1.2：应用AI修改段落长度问题
+    """
+    try:
+        from src.services.session_service import SessionService
+        session_service = SessionService()
+        session_data = await session_service.get_session(request.session_id) if request.session_id else None
+        document_text = session_data.get("document_text", "") if session_data else ""
+
+        if not document_text:
+            raise HTTPException(status_code=400, detail="Document text not found in session")
+
+        result = await step1_2_handler.apply_rewrite(
+            document_text=document_text,
+            issues=request.selected_issues,
+            user_notes=request.user_notes,
+            locked_terms=session_data.get("locked_terms", []) if session_data else []
+        )
+        return MergeModifyApplyResponse(
+            modified_text=result.get("modified_text", ""),
+            changes_summary_zh=result.get("changes_summary_zh", ""),
+            changes_count=result.get("changes_count", 0),
+            issues_addressed=[i.type for i in request.selected_issues],
+            remaining_attempts=3
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Step 1.2 modification failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/step1-3/merge-modify/prompt", response_model=MergeModifyPromptResponse)
+async def generate_step1_3_prompt(request: MergeModifyRequest):
+    """
+    Step 1.3: Generate modification prompt for progression/closure issues
+    步骤 1.3：为推进/闭合问题生成修改提示词
+    """
+    try:
+        prompt = await step1_3_handler.generate_rewrite_prompt(
+            issues=request.selected_issues,
+            user_notes=request.user_notes
+        )
+        return MergeModifyPromptResponse(
+            prompt=prompt,
+            prompt_zh="根据选定的推进/闭合问题生成的修改提示词",
+            issues_summary_zh=f"选中了{len(request.selected_issues)}个问题",
+            estimated_changes=len(request.selected_issues)
+        )
+    except Exception as e:
+        logger.error(f"Step 1.3 prompt generation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/step1-3/merge-modify/apply", response_model=MergeModifyApplyResponse)
+async def apply_step1_3_modification(request: MergeModifyRequest):
+    """
+    Step 1.3: Apply AI modification for progression/closure issues
+    步骤 1.3：应用AI修改推进/闭合问题
+    """
+    try:
+        from src.services.session_service import SessionService
+        session_service = SessionService()
+        session_data = await session_service.get_session(request.session_id) if request.session_id else None
+        document_text = session_data.get("document_text", "") if session_data else ""
+
+        if not document_text:
+            raise HTTPException(status_code=400, detail="Document text not found in session")
+
+        result = await step1_3_handler.apply_rewrite(
+            document_text=document_text,
+            issues=request.selected_issues,
+            user_notes=request.user_notes,
+            locked_terms=session_data.get("locked_terms", []) if session_data else []
+        )
+        return MergeModifyApplyResponse(
+            modified_text=result.get("modified_text", ""),
+            changes_summary_zh=result.get("changes_summary_zh", ""),
+            changes_count=result.get("changes_count", 0),
+            issues_addressed=[i.type for i in request.selected_issues],
+            remaining_attempts=3
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Step 1.3 modification failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/step1-4/merge-modify/prompt", response_model=MergeModifyPromptResponse)
+async def generate_step1_4_prompt(request: MergeModifyRequest):
+    """
+    Step 1.4: Generate modification prompt for connector issues
+    步骤 1.4：为连接词问题生成修改提示词
+    """
+    try:
+        prompt = await step1_4_handler.generate_rewrite_prompt(
+            issues=request.selected_issues,
+            user_notes=request.user_notes
+        )
+        return MergeModifyPromptResponse(
+            prompt=prompt,
+            prompt_zh="根据选定的连接词问题生成的修改提示词",
+            issues_summary_zh=f"选中了{len(request.selected_issues)}个问题",
+            estimated_changes=len(request.selected_issues)
+        )
+    except Exception as e:
+        logger.error(f"Step 1.4 prompt generation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/step1-4/merge-modify/apply", response_model=MergeModifyApplyResponse)
+async def apply_step1_4_modification(request: MergeModifyRequest):
+    """
+    Step 1.4: Apply AI modification for connector issues
+    步骤 1.4：应用AI修改连接词问题
+    """
+    try:
+        from src.services.session_service import SessionService
+        session_service = SessionService()
+        session_data = await session_service.get_session(request.session_id) if request.session_id else None
+        document_text = session_data.get("document_text", "") if session_data else ""
+
+        if not document_text:
+            raise HTTPException(status_code=400, detail="Document text not found in session")
+
+        result = await step1_4_handler.apply_rewrite(
+            document_text=document_text,
+            issues=request.selected_issues,
+            user_notes=request.user_notes,
+            locked_terms=session_data.get("locked_terms", []) if session_data else []
+        )
+        return MergeModifyApplyResponse(
+            modified_text=result.get("modified_text", ""),
+            changes_summary_zh=result.get("changes_summary_zh", ""),
+            changes_count=result.get("changes_count", 0),
+            issues_addressed=[i.type for i in request.selected_issues],
+            remaining_attempts=3
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Step 1.4 modification failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/step1-5/merge-modify/prompt", response_model=MergeModifyPromptResponse)
+async def generate_step1_5_prompt(request: MergeModifyRequest):
+    """
+    Step 1.5: Generate modification prompt for substantiality issues
+    步骤 1.5：为实质性问题生成修改提示词
+    """
+    try:
+        prompt = await step1_5_handler.generate_rewrite_prompt(
+            issues=request.selected_issues,
+            user_notes=request.user_notes
+        )
+        return MergeModifyPromptResponse(
+            prompt=prompt,
+            prompt_zh="根据选定的实质性问题生成的修改提示词",
+            issues_summary_zh=f"选中了{len(request.selected_issues)}个问题",
+            estimated_changes=len(request.selected_issues)
+        )
+    except Exception as e:
+        logger.error(f"Step 1.5 prompt generation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/step1-5/merge-modify/apply", response_model=MergeModifyApplyResponse)
+async def apply_step1_5_modification(request: MergeModifyRequest):
+    """
+    Step 1.5: Apply AI modification for substantiality issues
+    步骤 1.5：应用AI修改实质性问题
+    """
+    try:
+        from src.services.session_service import SessionService
+        session_service = SessionService()
+        session_data = await session_service.get_session(request.session_id) if request.session_id else None
+        document_text = session_data.get("document_text", "") if session_data else ""
+
+        if not document_text:
+            raise HTTPException(status_code=400, detail="Document text not found in session")
+
+        result = await step1_5_handler.apply_rewrite(
+            document_text=document_text,
+            issues=request.selected_issues,
+            user_notes=request.user_notes,
+            locked_terms=session_data.get("locked_terms", []) if session_data else []
+        )
+        return MergeModifyApplyResponse(
+            modified_text=result.get("modified_text", ""),
+            changes_summary_zh=result.get("changes_summary_zh", ""),
+            changes_count=result.get("changes_count", 0),
+            issues_addressed=[i.type for i in request.selected_issues],
+            remaining_attempts=3
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Step 1.5 modification failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+# Force reload

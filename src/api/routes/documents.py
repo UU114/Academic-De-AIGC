@@ -220,12 +220,66 @@ async def upload_document(
                 }
             )
 
-    # Try to decode as UTF-8, fallback to latin-1
-    # 尝试UTF-8解码，回退到latin-1
-    try:
-        text = content.decode("utf-8")
-    except UnicodeDecodeError:
-        text = content.decode("latin-1")
+    # Extract text based on file type
+    # 根据文件类型提取文本
+    if file_ext == '.docx':
+        # For .docx files, extract text using python-docx to avoid XML/metadata
+        # 对于.docx文件，使用python-docx提取文本以避免XML/元数据
+        if not DOCX_AVAILABLE:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error": "docx_library_missing",
+                    "message": "python-docx library is required to process .docx files",
+                    "message_zh": "处理.docx文件需要python-docx库"
+                }
+            )
+
+        try:
+            # Parse .docx and extract only paragraph text (excludes headers, footers, comments, etc.)
+            # 解析.docx并只提取段落文本（排除页眉、页脚、批注等）
+            doc = DocxDocument(io.BytesIO(content))
+            paragraphs = []
+            for para in doc.paragraphs:
+                # Only include non-empty paragraphs
+                # 只包含非空段落
+                para_text = para.text.strip()
+                if para_text:
+                    paragraphs.append(para_text)
+
+            # Join paragraphs with double newline to preserve paragraph structure
+            # 使用双换行连接段落以保留段落结构
+            text = '\n\n'.join(paragraphs)
+
+            if not text:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "empty_document",
+                        "message": "No text content found in DOCX file",
+                        "message_zh": "DOCX文件中未找到文本内容"
+                    }
+                )
+        except Exception as e:
+            # If already an HTTPException, re-raise it
+            # 如果已经是HTTPException，重新抛出
+            if isinstance(e, HTTPException):
+                raise
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "docx_parsing_failed",
+                    "message": f"Failed to extract text from DOCX: {str(e)}",
+                    "message_zh": f"从DOCX提取文本失败: {str(e)}"
+                }
+            )
+    else:
+        # For .txt files, decode as text
+        # 对于.txt文件，解码为文本
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            text = content.decode("latin-1")
 
     doc_id = str(uuid.uuid4())
     now = datetime.utcnow()

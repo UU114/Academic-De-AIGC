@@ -29,8 +29,26 @@ from src.api.routes.analysis.schemas import (
 from src.core.analyzer.layers import ParagraphOrchestrator, LayerContext
 from src.core.preprocessor.segmenter import SentenceSegmenter, ContentType
 
+# Import LLM handlers for Layer 3 substeps
+# 导入 Layer 3 子步骤的 LLM handler
+from src.api.routes.substeps.layer3.step3_0_handler import Step3_0Handler
+from src.api.routes.substeps.layer3.step3_1_handler import Step3_1Handler
+from src.api.routes.substeps.layer3.step3_2_handler import Step3_2Handler
+from src.api.routes.substeps.layer3.step3_3_handler import Step3_3Handler
+from src.api.routes.substeps.layer3.step3_4_handler import Step3_4Handler
+from src.api.routes.substeps.layer3.step3_5_handler import Step3_5Handler
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Initialize LLM handlers for Layer 3 substeps
+# 初始化 Layer 3 子步骤的 LLM handler
+step3_0_handler = Step3_0Handler()
+step3_1_handler = Step3_1Handler()
+step3_2_handler = Step3_2Handler()
+step3_3_handler = Step3_3Handler()
+step3_4_handler = Step3_4Handler()
+step3_5_handler = Step3_5Handler()
 
 # Reusable segmenter instance
 # 可重用的分句器实例
@@ -77,128 +95,76 @@ class ParagraphIdentificationResponse(BaseModel):
 @router.post("/step3-0/identify", response_model=ParagraphIdentificationResponse)
 async def identify_paragraphs(request: ParagraphIdentificationRequest):
     """
-    Step 3.0: Paragraph Identification & Segmentation
-    步骤 3.0：段落识别与分割
+    Step 3.0: Paragraph Identification & Segmentation (LLM-based)
+    步骤 3.0：段落识别与分割（基于LLM）
 
     This is the foundational step for Layer 3 (Paragraph Level Analysis).
-    Receives section context from Layer 4 and identifies paragraph boundaries.
-
-    功能：
-    - 正确识别段落边界
-    - 过滤非正文内容（标题、关键词、表头等）
-    - 将段落映射到Section
-    - 提取段落元数据
+    Uses LLM to identify paragraph boundaries and filter non-body content.
+    使用LLM识别段落边界并过滤非正文内容。
     """
     start_time = time.time()
 
     try:
-        # Split text into paragraphs with filtering
-        # 分割文本为段落并过滤
-        raw_paragraphs = [p.strip() for p in request.text.split('\n\n') if p.strip()]
-        if len(raw_paragraphs) <= 1:
-            raw_paragraphs = [p.strip() for p in request.text.split('\n') if p.strip()]
+        document_text = request.text
+        if not document_text:
+            return ParagraphIdentificationResponse(
+                paragraphs=[],
+                paragraph_count=0,
+                paragraph_section_map=[],
+                paragraph_metadata=[],
+                filtered_count=0,
+                total_word_count=0,
+                risk_level="low",
+                recommendations=[],
+                recommendations_zh=[],
+                processing_time_ms=int((time.time() - start_time) * 1000),
+            )
 
-        filtered_paragraphs = []
+        # Call LLM handler for analysis
+        # 调用LLM handler进行分析
+        logger.info("Calling Step3_0Handler for LLM-based paragraph identification")
+        result = await step3_0_handler.analyze(
+            document_text=document_text,
+            locked_terms=[],
+            session_id=request.session_id,
+            step_name="layer3-step3-0",
+            use_cache=True
+        )
+
+        # Convert LLM result to response model
+        # 将LLM结果转换为响应模型
+        paragraphs = []
         paragraph_metadata = []
-        filtered_count = 0
 
-        for i, para in enumerate(raw_paragraphs):
-            # Segment the paragraph to detect content types
-            # 分割段落以检测内容类型
-            sentences = _segmenter.segment(para)
+        for para_data in result.get("paragraphs", []):
+            if para_data.get("is_body", True):
+                preview = para_data.get("preview", "")
+                paragraphs.append(preview)
+                paragraph_metadata.append(ParagraphMeta(
+                    index=para_data.get("index", len(paragraph_metadata)),
+                    word_count=para_data.get("word_count", 0),
+                    sentence_count=para_data.get("sentence_count", 0),
+                    char_count=len(preview),
+                    preview=preview[:100] + "..." if len(preview) > 100 else preview,
+                    section_index=0,
+                    content_type="body"
+                ))
 
-            if not sentences:
-                filtered_count += 1
-                continue
-
-            # If the first sentence is not processable, skip
-            # 如果第一个句子不可处理，跳过
-            first_sent = sentences[0]
-            if not first_sent.should_process:
-                filtered_count += 1
-                continue
-
-            # Count processable sentences
-            # 统计可处理的句子数量
-            processable = [s for s in sentences if s.should_process]
-            if not processable:
-                filtered_count += 1
-                continue
-
-            # Use original or rebuild
-            # 使用原文或重建
-            if len(processable) == len(sentences):
-                filtered_paragraphs.append(para)
-            else:
-                filtered_text = ' '.join(s.text for s in processable)
-                if filtered_text.strip():
-                    filtered_paragraphs.append(filtered_text)
-                else:
-                    filtered_count += 1
-                    continue
-
-            # Calculate metadata
-            # 计算元数据
-            para_text = filtered_paragraphs[-1]
-            word_count = len(para_text.split())
-            preview = para_text[:100] + "..." if len(para_text) > 100 else para_text
-
-            # Determine section index from context
-            # 从上下文确定Section索引
-            section_index = 0
-            if request.section_context and "sections" in request.section_context:
-                sections = request.section_context["sections"]
-                para_idx = len(filtered_paragraphs) - 1
-                for sec in sections:
-                    start = sec.get("startParagraphIdx", sec.get("start_paragraph_idx", 0))
-                    end = sec.get("endParagraphIdx", sec.get("end_paragraph_idx", 0))
-                    if start <= para_idx <= end:
-                        section_index = sec.get("index", 0)
-                        break
-
-            paragraph_metadata.append(ParagraphMeta(
-                index=len(filtered_paragraphs) - 1,
-                word_count=word_count,
-                sentence_count=len(processable),
-                char_count=len(para_text),
-                preview=preview,
-                section_index=section_index,
-                content_type="body",
-            ))
-
-        # Build section map
-        # 构建Section映射
         paragraph_section_map = [m.section_index or 0 for m in paragraph_metadata]
-
-        # Calculate total word count
-        # 计算总词数
         total_word_count = sum(m.word_count for m in paragraph_metadata)
-
-        # Generate recommendations
-        # 生成建议
-        recommendations = []
-        recommendations_zh = []
-
-        if len(filtered_paragraphs) < 3:
-            recommendations.append("Document has very few paragraphs. Consider adding more content structure.")
-            recommendations_zh.append("文档段落较少，建议添加更多内容结构。")
-
-        if filtered_count > len(filtered_paragraphs):
-            recommendations.append(f"Filtered {filtered_count} non-body paragraphs (headers, keywords, etc.).")
-            recommendations_zh.append(f"已过滤{filtered_count}个非正文段落（标题、关键词等）。")
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
         return ParagraphIdentificationResponse(
-            paragraphs=filtered_paragraphs,
-            paragraph_count=len(filtered_paragraphs),
+            paragraphs=paragraphs,
+            paragraph_count=result.get("paragraph_count", len(paragraphs)),
             paragraph_section_map=paragraph_section_map,
             paragraph_metadata=paragraph_metadata,
-            filtered_count=filtered_count,
+            filtered_count=result.get("filtered_count", 0),
             total_word_count=total_word_count,
-            risk_level="low",
-            recommendations=recommendations,
-            recommendations_zh=recommendations_zh,
+            risk_level=result.get("risk_level", "low"),
+            recommendations=result.get("recommendations", []),
+            recommendations_zh=result.get("recommendations_zh", []),
             processing_time_ms=processing_time_ms,
         )
 
@@ -294,44 +260,76 @@ def _convert_issue(issue) -> DetectionIssue:
 @router.post("/role", response_model=ParagraphAnalysisResponse)
 async def analyze_paragraph_roles(request: ParagraphAnalysisRequest):
     """
-    Step 3.1: Paragraph Role Detection
-    步骤 3.1：段落角色识别
+    Step 3.1: Paragraph Role Detection (LLM-based)
+    步骤 3.1：段落角色识别（基于LLM）
 
-    Classifies each paragraph's function:
-    - Introduction, background, methodology, results, discussion, conclusion
-    - Transition paragraphs
-    - Detects role distribution anomalies
+    Classifies each paragraph's function using LLM.
+    使用LLM分类每个段落的功能。
     """
     start_time = time.time()
 
     try:
-        orchestrator = ParagraphOrchestrator()
+        # Get document text
+        # 获取文档文本
+        document_text = request.text if request.text else ""
+        if not document_text and request.paragraphs:
+            document_text = "\n\n".join(request.paragraphs)
 
-        # Create context with paragraphs
-        context = LayerContext(
-            paragraphs=_get_paragraphs(request),
-            paragraph_roles=request.paragraph_roles,
-            sections=request.section_context.get("sections") if request.section_context else None,
+        if not document_text:
+            return ParagraphAnalysisResponse(
+                risk_score=0,
+                risk_level=RiskLevel.LOW,
+                issues=[],
+                recommendations=[],
+                recommendations_zh=[],
+                details={},
+                processing_time_ms=int((time.time() - start_time) * 1000),
+                paragraph_roles=[],
+                coherence_scores=[],
+                anchor_densities=[],
+                sentence_length_cvs=[],
+                low_burstiness_paragraphs=[],
+            )
+
+        # Call LLM handler for analysis
+        # 调用LLM handler进行分析
+        logger.info("Calling Step3_1Handler for LLM-based paragraph role detection")
+        result = await step3_1_handler.analyze(
+            document_text=document_text,
+            locked_terms=[],
+            session_id=request.session_id,
+            step_name="layer3-step3-1",
+            use_cache=True
         )
 
-        # Run analysis
-        result = await orchestrator.analyze(context)
+        # Convert issues
+        issues: List[DetectionIssue] = []
+        for issue_data in result.get("issues", []):
+            issues.append(DetectionIssue(
+                type=issue_data.get("type", "role_issue"),
+                description=issue_data.get("description", ""),
+                description_zh=issue_data.get("description_zh", ""),
+                severity=IssueSeverity(issue_data.get("severity", "medium")),
+                layer=LayerLevel.PARAGRAPH,
+                location=", ".join(issue_data.get("affected_positions", [])) if issue_data.get("affected_positions") else None,
+                suggestion=issue_data.get("fix_suggestions", [""])[0] if issue_data.get("fix_suggestions") else "",
+                suggestion_zh=issue_data.get("fix_suggestions_zh", [""])[0] if issue_data.get("fix_suggestions_zh") else ""
+            ))
 
-        # Calculate processing time
         processing_time_ms = int((time.time() - start_time) * 1000)
 
-        # Extract role-specific details
-        role_details = result.details.get("roles", {})
+        # Extract paragraph roles
+        paragraph_roles = [pr.get("role", "body") for pr in result.get("paragraph_roles", [])]
 
         return ParagraphAnalysisResponse(
-            risk_score=result.risk_score,
-            risk_level=RiskLevel(result.risk_level.value),
-            issues=[_convert_issue(i) for i in result.issues if "role" in i.type or "homogeneous" in i.type or "transition" in i.type],
-            recommendations=result.recommendations,
-            recommendations_zh=result.recommendations_zh,
-            details=role_details,
+            risk_score=result.get("risk_score", 0),
+            risk_level=RiskLevel(result.get("risk_level", "low")),
+            issues=issues,
+            recommendations=result.get("recommendations", []),
+            recommendations_zh=result.get("recommendations_zh", []),
+            details={"role_distribution": result.get("role_distribution", {}), "uniformity_score": result.get("uniformity_score", 0)},
             processing_time_ms=processing_time_ms,
-            paragraph_roles=result.updated_context.paragraph_roles or [],
+            paragraph_roles=paragraph_roles,
             coherence_scores=[],
             anchor_densities=[],
             sentence_length_cvs=[],
@@ -346,45 +344,77 @@ async def analyze_paragraph_roles(request: ParagraphAnalysisRequest):
 @router.post("/coherence", response_model=ParagraphAnalysisResponse)
 async def analyze_paragraph_coherence(request: ParagraphAnalysisRequest):
     """
-    Step 3.2: Paragraph Internal Coherence
-    步骤 3.2：段落内部连贯性
+    Step 3.2: Paragraph Internal Coherence (LLM-based)
+    步骤 3.2：段落内部连贯性（基于LLM）
 
-    Analyzes sentence relationships within paragraphs:
-    - Subject diversity
-    - Logic structure
-    - Connector density
-    - Overall coherence score
+    Analyzes sentence relationships within paragraphs using LLM.
+    使用LLM分析段落内部句子关系。
     """
     start_time = time.time()
 
     try:
-        orchestrator = ParagraphOrchestrator()
+        # Get document text
+        # 获取文档文本
+        document_text = request.text if request.text else ""
+        if not document_text and request.paragraphs:
+            document_text = "\n\n".join(request.paragraphs)
 
-        # Create context with paragraphs
-        context = LayerContext(
-            paragraphs=_get_paragraphs(request),
-            paragraph_roles=request.paragraph_roles,
+        if not document_text:
+            return ParagraphAnalysisResponse(
+                risk_score=0,
+                risk_level=RiskLevel.LOW,
+                issues=[],
+                recommendations=[],
+                recommendations_zh=[],
+                details={},
+                processing_time_ms=int((time.time() - start_time) * 1000),
+                paragraph_roles=[],
+                coherence_scores=[],
+                anchor_densities=[],
+                sentence_length_cvs=[],
+                low_burstiness_paragraphs=[],
+            )
+
+        # Call LLM handler for analysis
+        # 调用LLM handler进行分析
+        logger.info("Calling Step3_2Handler for LLM-based paragraph coherence analysis")
+        result = await step3_2_handler.analyze(
+            document_text=document_text,
+            locked_terms=[],
+            session_id=request.session_id,
+            step_name="layer3-step3-2",
+            use_cache=True
         )
 
-        # Run analysis
-        result = await orchestrator.analyze(context)
+        # Convert issues
+        issues: List[DetectionIssue] = []
+        for issue_data in result.get("issues", []):
+            issues.append(DetectionIssue(
+                type=issue_data.get("type", "coherence_issue"),
+                description=issue_data.get("description", ""),
+                description_zh=issue_data.get("description_zh", ""),
+                severity=IssueSeverity(issue_data.get("severity", "medium")),
+                layer=LayerLevel.PARAGRAPH,
+                location=", ".join(issue_data.get("affected_positions", [])) if issue_data.get("affected_positions") else None,
+                suggestion=issue_data.get("fix_suggestions", [""])[0] if issue_data.get("fix_suggestions") else "",
+                suggestion_zh=issue_data.get("fix_suggestions_zh", [""])[0] if issue_data.get("fix_suggestions_zh") else ""
+            ))
 
-        # Calculate processing time
         processing_time_ms = int((time.time() - start_time) * 1000)
 
-        # Extract coherence-specific details
-        coherence_details = result.details.get("coherence", {})
+        # Extract coherence scores
+        coherence_scores = [pc.get("coherence_score", 0) for pc in result.get("paragraph_coherence", [])]
 
         return ParagraphAnalysisResponse(
-            risk_score=result.risk_score,
-            risk_level=RiskLevel(result.risk_level.value),
-            issues=[_convert_issue(i) for i in result.issues if "coherence" in i.type],
-            recommendations=result.recommendations,
-            recommendations_zh=result.recommendations_zh,
-            details=coherence_details,
+            risk_score=result.get("risk_score", 0),
+            risk_level=RiskLevel(result.get("risk_level", "low")),
+            issues=issues,
+            recommendations=result.get("recommendations", []),
+            recommendations_zh=result.get("recommendations_zh", []),
+            details=result.get("details", {}),
             processing_time_ms=processing_time_ms,
-            paragraph_roles=result.updated_context.paragraph_roles or [],
-            coherence_scores=result.updated_context.paragraph_coherence or [],
+            paragraph_roles=[],
+            coherence_scores=coherence_scores,
             anchor_densities=[],
             sentence_length_cvs=[],
             low_burstiness_paragraphs=[],
@@ -398,45 +428,122 @@ async def analyze_paragraph_coherence(request: ParagraphAnalysisRequest):
 @router.post("/anchor", response_model=ParagraphAnalysisResponse)
 async def analyze_anchor_density(request: ParagraphAnalysisRequest):
     """
-    Step 3.3: Anchor Density Analysis
-    步骤 3.3：锚点密度分析
+    Step 3.3: Anchor Density Analysis (LLM-based)
+    步骤 3.3：锚点密度分析（基于LLM）
 
-    Analyzes evidence density in paragraphs:
-    - 13 anchor types (citations, numbers, proper nouns, etc.)
-    - Calculates anchors per 100 words
-    - Flags high hallucination risk (<5 anchors/100 words)
+    Analyzes evidence density in paragraphs using LLM.
+    使用LLM分析段落中的证据密度。
     """
     start_time = time.time()
 
     try:
-        orchestrator = ParagraphOrchestrator()
+        # Get document text
+        # 获取文档文本
+        document_text = request.text if request.text else ""
+        if not document_text and request.paragraphs:
+            document_text = "\n\n".join(request.paragraphs)
 
-        # Create context with paragraphs
-        context = LayerContext(
-            paragraphs=_get_paragraphs(request),
-            paragraph_roles=request.paragraph_roles,
+        if not document_text:
+            return ParagraphAnalysisResponse(
+                risk_score=0,
+                risk_level=RiskLevel.LOW,
+                issues=[],
+                recommendations=[],
+                recommendations_zh=[],
+                details={},
+                processing_time_ms=int((time.time() - start_time) * 1000),
+                paragraph_roles=[],
+                coherence_scores=[],
+                anchor_densities=[],
+                sentence_length_cvs=[],
+                low_burstiness_paragraphs=[],
+            )
+
+        # Call LLM handler for analysis
+        # 调用LLM handler进行分析
+        logger.info("Calling Step3_3Handler for LLM-based anchor density analysis")
+        result = await step3_3_handler.analyze(
+            document_text=document_text,
+            locked_terms=[],
+            session_id=request.session_id,
+            step_name="layer3-step3-3",
+            use_cache=False  # Temporarily disable cache for debugging
         )
 
-        # Run analysis
-        result = await orchestrator.analyze(context)
+        # Debug log: Print LLM result keys and structure
+        # 调试日志：打印LLM返回结果的键和结构
+        logger.info(f"LLM result keys: {list(result.keys())}")
+        logger.info(f"LLM result risk_score: {result.get('risk_score')}")
+        logger.info(f"LLM result overall_density: {result.get('overall_density')}")
+        logger.info(f"LLM result paragraph_densities count: {len(result.get('paragraph_densities', []))}")
+        logger.info(f"LLM result high_risk_paragraphs: {result.get('high_risk_paragraphs')}")
+        logger.info(f"LLM result recommendations: {result.get('recommendations')}")
 
-        # Calculate processing time
+        # Convert issues
+        issues: List[DetectionIssue] = []
+        for issue_data in result.get("issues", []):
+            issues.append(DetectionIssue(
+                type=issue_data.get("type", "anchor_issue"),
+                description=issue_data.get("description", ""),
+                description_zh=issue_data.get("description_zh", ""),
+                severity=IssueSeverity(issue_data.get("severity", "medium")),
+                layer=LayerLevel.PARAGRAPH,
+                location=", ".join(issue_data.get("affected_positions", [])) if issue_data.get("affected_positions") else None,
+                suggestion=issue_data.get("fix_suggestions", [""])[0] if issue_data.get("fix_suggestions") else "",
+                suggestion_zh=issue_data.get("fix_suggestions_zh", [""])[0] if issue_data.get("fix_suggestions_zh") else ""
+            ))
+
         processing_time_ms = int((time.time() - start_time) * 1000)
 
-        # Extract anchor-specific details
-        anchor_details = result.details.get("anchor_density", {})
+        # Extract paragraph densities from LLM result
+        # LLM returns "paragraph_densities" field with anchor info
+        # LLM 返回 "paragraph_densities" 字段包含锚点信息
+        paragraph_densities = result.get("paragraph_densities", [])
+        anchor_densities = [pa.get("density", 0) for pa in paragraph_densities]
+
+        # Build paragraph details for frontend
+        # 构建前端需要的段落详情
+        paragraph_details = []
+        for pd in paragraph_densities:
+            paragraph_details.append({
+                "index": pd.get("paragraph_index", 0),
+                "role": "body",  # Default role, can be enhanced later
+                "coherenceScore": 0,  # Not analyzed in this step
+                "anchorCount": pd.get("anchor_count", 0),
+                "sentenceLengthCv": 0,  # Not analyzed in this step
+                "issues": [],
+                "wordCount": pd.get("word_count", 0),
+                "density": pd.get("density", 0),
+                "hasHallucinationRisk": pd.get("has_hallucination_risk", False),
+                "riskLevel": pd.get("risk_level", "low"),
+                "anchorTypes": pd.get("anchor_types", {})
+            })
+
+        # Calculate overall anchor density
+        # 计算整体锚点密度
+        overall_density = result.get("overall_density", 0.0)
+        high_risk_paragraphs = result.get("high_risk_paragraphs", [])
 
         return ParagraphAnalysisResponse(
-            risk_score=result.risk_score,
-            risk_level=RiskLevel(result.risk_level.value),
-            issues=[_convert_issue(i) for i in result.issues if "anchor" in i.type or "density" in i.type],
-            recommendations=result.recommendations,
-            recommendations_zh=result.recommendations_zh,
-            details=anchor_details,
+            risk_score=result.get("risk_score", 0),
+            risk_level=RiskLevel(result.get("risk_level", "low")),
+            issues=issues,
+            recommendations=result.get("recommendations", []),
+            recommendations_zh=result.get("recommendations_zh", []),
+            details={
+                "overall_density": overall_density,
+                "high_risk_paragraphs": high_risk_paragraphs,
+                "anchor_type_distribution": result.get("anchor_type_distribution", {}),
+                "document_hallucination_risk": result.get("document_hallucination_risk", "low"),
+                "paragraph_details": paragraph_details
+            },
             processing_time_ms=processing_time_ms,
-            paragraph_roles=result.updated_context.paragraph_roles or [],
+            paragraph_roles=[],
             coherence_scores=[],
-            anchor_densities=result.updated_context.paragraph_anchor_density or [],
+            anchor_densities=anchor_densities,
+            anchor_density=overall_density,
+            paragraph_count=len(paragraph_densities),
+            paragraph_details=paragraph_details,
             sentence_length_cvs=[],
             low_burstiness_paragraphs=[],
         )
@@ -449,48 +556,120 @@ async def analyze_anchor_density(request: ParagraphAnalysisRequest):
 @router.post("/sentence-length", response_model=ParagraphAnalysisResponse)
 async def analyze_sentence_length_distribution(request: ParagraphAnalysisRequest):
     """
-    Step 3.4: Sentence Length Distribution
-    步骤 3.4：段内句子长度分布
+    Step 3.4: Sentence Length Distribution (LLM-based)
+    步骤 3.4：段内句子长度分布（基于LLM）
 
-    Analyzes sentence length variation within each paragraph:
-    - Calculates within-paragraph length CV (coefficient of variation)
-    - Detects monotonous length patterns (AI pattern)
-    - Flags paragraphs with low burstiness
+    Analyzes sentence length variation within each paragraph using LLM.
+    使用LLM分析每个段落内句子长度变化。
     """
     start_time = time.time()
 
     try:
-        orchestrator = ParagraphOrchestrator()
+        # Get document text
+        # 获取文档文本
+        document_text = request.text if request.text else ""
+        if not document_text and request.paragraphs:
+            document_text = "\n\n".join(request.paragraphs)
 
-        # Create context with paragraphs
-        context = LayerContext(
-            paragraphs=_get_paragraphs(request),
-            paragraph_roles=request.paragraph_roles,
+        if not document_text:
+            return ParagraphAnalysisResponse(
+                risk_score=0,
+                risk_level=RiskLevel.LOW,
+                issues=[],
+                recommendations=[],
+                recommendations_zh=[],
+                details={},
+                processing_time_ms=int((time.time() - start_time) * 1000),
+                paragraph_roles=[],
+                coherence_scores=[],
+                anchor_densities=[],
+                sentence_length_cvs=[],
+                low_burstiness_paragraphs=[],
+            )
+
+        # Call LLM handler for analysis
+        # 调用LLM handler进行分析
+        logger.info("Calling Step3_4Handler for LLM-based sentence length distribution analysis")
+        result = await step3_4_handler.analyze(
+            document_text=document_text,
+            locked_terms=[],
+            session_id=request.session_id,
+            step_name="layer3-step3-4",
+            use_cache=True
         )
 
-        # Run analysis
-        result = await orchestrator.analyze(context)
+        # Convert issues
+        issues: List[DetectionIssue] = []
+        for issue_data in result.get("issues", []):
+            issues.append(DetectionIssue(
+                type=issue_data.get("type", "length_issue"),
+                description=issue_data.get("description", ""),
+                description_zh=issue_data.get("description_zh", ""),
+                severity=IssueSeverity(issue_data.get("severity", "medium")),
+                layer=LayerLevel.PARAGRAPH,
+                location=", ".join(issue_data.get("affected_positions", [])) if issue_data.get("affected_positions") else None,
+                suggestion=issue_data.get("fix_suggestions", [""])[0] if issue_data.get("fix_suggestions") else "",
+                suggestion_zh=issue_data.get("fix_suggestions_zh", [""])[0] if issue_data.get("fix_suggestions_zh") else ""
+            ))
 
-        # Calculate processing time
         processing_time_ms = int((time.time() - start_time) * 1000)
 
-        # Extract sentence length-specific details
-        length_details = result.details.get("sentence_lengths", {})
-        low_burst_paras = length_details.get("low_burstiness_paragraphs", [])
+        # Extract sentence length CVs and low burstiness paragraphs
+        # low_burstiness_paragraphs is a list of paragraph indices (integers), not dicts
+        # 低突发性段落是段落索引的整数列表，而不是字典
+        low_burst_paras = result.get("low_burstiness_paragraphs", [])
+        paragraph_lengths = result.get("paragraph_lengths", [])
+        overall_cv = result.get("overall_cv", 0)
+
+        # Build paragraph_details with sentence length CV for frontend
+        # 构建包含句长CV的段落详情供前端使用
+        paragraph_details = []
+        for pl in paragraph_lengths:
+            paragraph_details.append({
+                "index": pl.get("paragraph_index", 0),
+                "sentenceCount": pl.get("sentence_count", 0),
+                "meanLength": pl.get("mean_length", 0),
+                "sentenceLengthCv": pl.get("cv", 0),
+                "burstiness": pl.get("burstiness", 0),
+                "hasShortSentence": pl.get("has_short_sentence", False),
+                "hasLongSentence": pl.get("has_long_sentence", False),
+                "rhythmScore": pl.get("rhythm_score", 0),
+            })
+
+        # Build a map of paragraph_index -> cv for quick lookup
+        # 构建段落索引到CV值的映射
+        cv_map = {pl.get("paragraph_index", i): pl.get("cv", 0) for i, pl in enumerate(paragraph_lengths)}
+
+        # Get CVs for low burstiness paragraphs
+        # 获取低突发性段落的CV值
+        sentence_length_cvs = [cv_map.get(idx, 0) for idx in low_burst_paras] if low_burst_paras else []
+
+        # Build details with sentence_length_analysis for frontend
+        # 构建包含句长分析的详情供前端使用
+        details = result.get("details", {})
+        details["sentenceLengthAnalysis"] = {
+            "meanCv": overall_cv,
+            "paragraphCount": len(paragraph_lengths),
+            "lowCvCount": len(low_burst_paras),
+        }
+
+        logger.info(f"Sentence length analysis result: overall_cv={overall_cv}, paragraphs={len(paragraph_lengths)}, low_cv_paras={len(low_burst_paras)}")
 
         return ParagraphAnalysisResponse(
-            risk_score=result.risk_score,
-            risk_level=RiskLevel(result.risk_level.value),
-            issues=[_convert_issue(i) for i in result.issues if "length" in i.type or "burstiness" in i.type],
-            recommendations=result.recommendations,
-            recommendations_zh=result.recommendations_zh,
-            details=length_details,
+            risk_score=result.get("risk_score", 0),
+            risk_level=RiskLevel(result.get("risk_level", "low")),
+            issues=issues,
+            recommendations=result.get("recommendations", []),
+            recommendations_zh=result.get("recommendations_zh", []),
+            details=details,
             processing_time_ms=processing_time_ms,
-            paragraph_roles=result.updated_context.paragraph_roles or [],
+            paragraph_roles=[],
             coherence_scores=[],
             anchor_densities=[],
-            sentence_length_cvs=[p.get("cv", 0) for p in low_burst_paras] if low_burst_paras else [],
-            low_burstiness_paragraphs=[p.get("index", 0) for p in low_burst_paras] if low_burst_paras else [],
+            sentence_length_cvs=sentence_length_cvs,
+            low_burstiness_paragraphs=low_burst_paras,  # Already a list of integers
+            paragraph_count=len(paragraph_lengths),
+            paragraph_details=paragraph_details,
         )
 
     except Exception as e:
@@ -537,7 +716,18 @@ async def analyze_paragraph(request: ParagraphAnalysisRequest):
 
         # Extract all details
         length_details = result.details.get("sentence_lengths", {})
+        # low_burstiness_paragraphs is a list of paragraph indices (integers)
+        # 低突发性段落是段落索引的整数列表
         low_burst_paras = length_details.get("low_burstiness_paragraphs", [])
+        paragraph_lengths = length_details.get("paragraph_lengths", [])
+
+        # Build a map of paragraph_index -> cv for quick lookup
+        # 构建段落索引到CV值的映射
+        cv_map = {pl.get("paragraph_index", i): pl.get("cv", 0) for i, pl in enumerate(paragraph_lengths)}
+
+        # Get CVs for low burstiness paragraphs
+        # 获取低突发性段落的CV值
+        sentence_length_cvs = [cv_map.get(idx, 0) for idx in low_burst_paras] if low_burst_paras else []
 
         return ParagraphAnalysisResponse(
             risk_score=result.risk_score,
@@ -551,8 +741,8 @@ async def analyze_paragraph(request: ParagraphAnalysisRequest):
             paragraph_roles=result.updated_context.paragraph_roles or [],
             coherence_scores=result.updated_context.paragraph_coherence or [],
             anchor_densities=result.updated_context.paragraph_anchor_density or [],
-            sentence_length_cvs=[p.get("cv", 0) for p in low_burst_paras] if low_burst_paras else [],
-            low_burstiness_paragraphs=[p.get("index", 0) for p in low_burst_paras] if low_burst_paras else [],
+            sentence_length_cvs=sentence_length_cvs,
+            low_burstiness_paragraphs=low_burst_paras,  # Already a list of integers
         )
 
     except Exception as e:
@@ -667,34 +857,22 @@ import re
 @router.post("/step3-5/transition", response_model=ParagraphTransitionResponse)
 async def analyze_paragraph_transitions(request: ParagraphTransitionRequest):
     """
-    Step 3.5: Paragraph Transition Analysis
-    步骤 3.5：段落间过渡分析
+    Step 3.5: Paragraph Transition Analysis (LLM-based)
+    步骤 3.5：段落间过渡分析（基于LLM）
 
-    Analyzes transitions between adjacent paragraphs:
-    - Detects explicit connectors at paragraph openings
-    - Calculates semantic echo scores (keyword overlap)
-    - Identifies formulaic opener patterns
-    - Provides transition quality assessment
-
-    功能：
-    - 检测段首显性连接词
-    - 计算语义回声分数（关键词重叠）
-    - 识别公式化开头模式
-    - 提供过渡质量评估
+    Analyzes transitions between adjacent paragraphs using LLM.
+    使用LLM分析相邻段落之间的过渡。
     """
     start_time = time.time()
 
     try:
-        # Get paragraphs
-        # 获取段落
-        if request.paragraphs:
-            paragraphs = request.paragraphs
-        elif request.text:
-            paragraphs = _split_text_to_paragraphs(request.text)
-        else:
-            raise HTTPException(status_code=400, detail="Either text or paragraphs must be provided")
+        # Get document text
+        # 获取文档文本
+        document_text = request.text if request.text else ""
+        if not document_text and request.paragraphs:
+            document_text = "\n\n".join(request.paragraphs)
 
-        if len(paragraphs) < 2:
+        if not document_text:
             return ParagraphTransitionResponse(
                 risk_score=0,
                 risk_level="low",
@@ -704,160 +882,64 @@ async def analyze_paragraph_transitions(request: ParagraphTransitionRequest):
                 avg_semantic_echo=0.0,
                 formulaic_opener_count=0,
                 transitions=[],
-                recommendations=["Document has fewer than 2 paragraphs, no transitions to analyze."],
-                recommendations_zh=["文档段落少于2个，无法进行过渡分析。"],
+                recommendations=["Document is empty, no transitions to analyze."],
+                recommendations_zh=["文档为空，无法进行过渡分析。"],
                 processing_time_ms=int((time.time() - start_time) * 1000),
             )
 
-        transitions = []
-        explicit_count = 0
-        formulaic_count = 0
-        echo_scores = []
+        # Call LLM handler for analysis
+        # 调用LLM handler进行分析
+        logger.info("Calling Step3_5Handler for LLM-based paragraph transition analysis")
+        result = await step3_5_handler.analyze(
+            document_text=document_text,
+            locked_terms=[],
+            session_id=request.session_id,
+            step_name="layer3-step3-5",
+            use_cache=True
+        )
 
-        # Compile formulaic patterns
-        # 编译公式化模式
-        formulaic_patterns = [re.compile(p, re.IGNORECASE) for p in FORMULAIC_OPENERS]
-
-        # Flatten all connectors
-        # 展平所有连接词
-        all_connectors = []
-        for category, words in EXPLICIT_CONNECTORS.items():
-            all_connectors.extend(words)
-
-        for i in range(len(paragraphs) - 1):
-            para_a = paragraphs[i]
-            para_b = paragraphs[i + 1]
-
-            # Get opening of paragraph B (first ~50 words)
-            # 获取段落B的开头（前50词左右）
-            opener_words = para_b.split()[:50]
-            opener_text = ' '.join(opener_words[:15]) + "..." if len(opener_words) > 15 else ' '.join(opener_words)
-            opener_lower = para_b.lower()
-
-            # Check for explicit connectors
-            # 检查显性连接词
-            found_connectors = []
-            for conn in all_connectors:
-                if opener_lower.startswith(conn) or opener_lower.startswith(conn + ","):
-                    found_connectors.append(conn)
-            has_explicit = len(found_connectors) > 0
-            if has_explicit:
-                explicit_count += 1
-
-            # Check for formulaic openers
-            # 检查公式化开头
-            opener_pattern = ""
-            is_formulaic = False
-            for pattern in formulaic_patterns:
-                match = pattern.match(para_b)
-                if match:
-                    is_formulaic = True
-                    opener_pattern = match.group(0)
-                    break
-            if is_formulaic:
-                formulaic_count += 1
-
-            # Calculate semantic echo (simple keyword overlap)
-            # 计算语义回声（简单关键词重叠）
-            para_a_words = set(w.lower() for w in para_a.split() if len(w) > 4)
-            para_b_words = set(w.lower() for w in para_b.split() if len(w) > 4)
-            common_words = para_a_words & para_b_words
-            echoed_keywords = list(common_words)[:5]  # Top 5 echoed keywords
-
-            if len(para_a_words) > 0:
-                echo_score = len(common_words) / len(para_a_words)
-            else:
-                echo_score = 0.0
-            echo_scores.append(echo_score)
-
-            # Determine transition quality
-            # 确定过渡质量
-            if has_explicit or is_formulaic:
-                quality = "formulaic"
-                risk = 60
-            elif echo_score > 0.1:
-                quality = "smooth"
-                risk = 20
-            else:
-                quality = "abrupt"
-                risk = 40
-
+        # Convert LLM result to response model
+        # 将LLM结果转换为响应模型
+        transitions: List[ParagraphTransitionInfo] = []
+        for trans_data in result.get("transitions", []):
             transitions.append(ParagraphTransitionInfo(
-                from_paragraph=i,
-                to_paragraph=i + 1,
-                has_explicit_connector=has_explicit,
-                connector_words=found_connectors,
-                semantic_echo_score=round(echo_score, 3),
-                echoed_keywords=echoed_keywords,
-                transition_quality=quality,
-                opener_text=opener_text,
-                opener_pattern=opener_pattern,
-                is_formulaic_opener=is_formulaic,
-                risk_score=risk,
+                from_paragraph=trans_data.get("from_paragraph", 0),
+                to_paragraph=trans_data.get("to_paragraph", 0),
+                has_explicit_connector=trans_data.get("has_explicit_connector", False),
+                connector_words=trans_data.get("connector_words", []),
+                semantic_echo_score=trans_data.get("semantic_echo_score", 0.0),
+                echoed_keywords=trans_data.get("echoed_keywords", []),
+                transition_quality=trans_data.get("transition_quality", "smooth"),
+                opener_text=trans_data.get("opener_text", ""),
+                opener_pattern=trans_data.get("opener_pattern", ""),
+                is_formulaic_opener=trans_data.get("is_formulaic_opener", False),
+                risk_score=trans_data.get("risk_score", 0),
             ))
 
-        # Calculate overall metrics
-        # 计算整体指标
-        total_transitions = len(transitions)
-        explicit_ratio = explicit_count / total_transitions if total_transitions > 0 else 0.0
-        avg_echo = sum(echo_scores) / len(echo_scores) if echo_scores else 0.0
-
-        # Calculate overall risk score
-        # 计算整体风险分数
-        if explicit_ratio > 0.5:
-            risk_score = 70
-            risk_level = "high"
-        elif explicit_ratio > 0.3 or formulaic_count > 2:
-            risk_score = 50
-            risk_level = "medium"
-        else:
-            risk_score = 25
-            risk_level = "low"
-
-        # Generate recommendations
-        # 生成建议
-        recommendations = []
-        recommendations_zh = []
+        # Convert issues
         issues = []
-
-        if explicit_ratio > 0.3:
-            recommendations.append(f"High explicit connector ratio ({explicit_ratio:.1%}). Consider using semantic echoes instead of explicit connectors like 'Furthermore', 'Moreover'.")
-            recommendations_zh.append(f"显性连接词比例较高 ({explicit_ratio:.1%})。建议用语义回声代替'Furthermore'、'Moreover'等显性连接词。")
+        for issue_data in result.get("issues", []):
             issues.append({
-                "type": "high_explicit_ratio",
-                "description": f"Explicit connector ratio is {explicit_ratio:.1%}",
-                "description_zh": f"显性连接词比例为 {explicit_ratio:.1%}",
-                "severity": "medium",
+                "type": issue_data.get("type", "transition_issue"),
+                "description": issue_data.get("description", ""),
+                "description_zh": issue_data.get("description_zh", ""),
+                "severity": issue_data.get("severity", "medium"),
             })
-
-        if formulaic_count > 2:
-            recommendations.append(f"Found {formulaic_count} formulaic openers. Vary your paragraph openings for more natural flow.")
-            recommendations_zh.append(f"发现{formulaic_count}个公式化开头。建议变化段落开头以获得更自然的行文。")
-            issues.append({
-                "type": "formulaic_openers",
-                "description": f"Found {formulaic_count} formulaic paragraph openers",
-                "description_zh": f"发现 {formulaic_count} 个公式化段落开头",
-                "severity": "medium",
-            })
-
-        if avg_echo < 0.05:
-            recommendations.append("Low semantic echo between paragraphs. Consider linking paragraphs by referencing key concepts from the previous paragraph.")
-            recommendations_zh.append("段落间语义回声较低。建议通过引用上一段的关键概念来连接段落。")
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
         return ParagraphTransitionResponse(
-            risk_score=risk_score,
-            risk_level=risk_level,
-            total_transitions=total_transitions,
-            explicit_connector_count=explicit_count,
-            explicit_ratio=round(explicit_ratio, 3),
-            avg_semantic_echo=round(avg_echo, 3),
-            formulaic_opener_count=formulaic_count,
+            risk_score=result.get("risk_score", 0),
+            risk_level=result.get("risk_level", "low"),
+            total_transitions=len(transitions),
+            explicit_connector_count=result.get("explicit_connector_count", 0),
+            explicit_ratio=result.get("explicit_ratio", 0.0),
+            avg_semantic_echo=result.get("avg_semantic_echo", 0.0),
+            formulaic_opener_count=result.get("formulaic_opener_count", 0),
             transitions=transitions,
             issues=issues,
-            recommendations=recommendations,
-            recommendations_zh=recommendations_zh,
+            recommendations=result.get("recommendations", []),
+            recommendations_zh=result.get("recommendations_zh", []),
             processing_time_ms=processing_time_ms,
         )
 

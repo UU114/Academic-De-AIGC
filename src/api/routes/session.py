@@ -504,6 +504,16 @@ async def get_review_stats(
     Get review statistics for completed session
     获取已完成会话的审核统计数据
     """
+    # Get session first
+    # 首先获取会话
+    session_result = await db.execute(
+        select(Session).where(Session.id == session_id)
+    )
+    session = session_result.scalar_one_or_none()
+
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
     # Get all modifications for this session
     # 获取此会话的所有修改记录
     result = await db.execute(
@@ -628,19 +638,35 @@ async def update_session_step(
     Valid steps:
     - Legacy: step1-1, step1-2, step2, step3, review
     - 5-Layer: term-lock, layer-document, layer-section, layer-paragraph, layer-sentence, layer-lexical
+    - Substeps: layer5-step1-0, layer5-step1-1, ..., layer1-step5-5
     """
-    valid_steps = [
+    import re
+
+    # Validate step format
+    # 验证步骤格式
+    valid_legacy_steps = [
         # Legacy steps (旧版步骤)
         "step1-1", "step1-2", "step2", "step3", "review",
         # 5-Layer architecture steps (5层架构步骤)
         # Step 1.0: Term Locking (must be first)
         "term-lock",
-        "layer-document", "layer-section", "layer-paragraph", "layer-sentence", "layer-lexical"
+        "layer-document", "layer-section", "layer-paragraph", "layer-sentence", "layer-lexical",
+        # V2 layer steps (V2版本步骤)
+        "layer-lexical-v2"
     ]
-    if step not in valid_steps:
+
+    # Pattern for new substep format: layerX-stepY-Z
+    # X=1-5 (layer number), Y=1-5 (step group), Z=0-5 (substep number)
+    substep_pattern = re.compile(r'^layer[1-5]-step[1-5]-[0-5]$')
+
+    # Pattern for console steps: layerX-stepY-console
+    # X=1-5 (layer number), Y=1-5 (step group)
+    console_pattern = re.compile(r'^layer[1-5]-step[1-5]-console$')
+
+    if step not in valid_legacy_steps and not substep_pattern.match(step) and not console_pattern.match(step):
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid step. Valid steps: {', '.join(valid_steps)}"
+            detail=f"Invalid step format. Valid formats: legacy steps, old layer steps, substep format (layerX-stepY-Z), or console format (layerX-stepY-console)"
         )
 
     result = await db.execute(

@@ -1,164 +1,133 @@
 """
 Step 3.0: Paragraph Identification & Segmentation (段落识别与分割)
-Layer 3 Paragraph Level
+Layer 3 Paragraph Level - NOW WITH LLM!
 
-Automatically identify paragraph boundaries and filter non-body content.
-自动识别段落边界并过滤非正文内容。
+Automatically identify paragraph boundaries and filter non-body content using LLM.
+使用LLM自动识别段落边界并过滤非正文内容。
 """
 
 from fastapi import APIRouter, HTTPException
-from typing import List, Dict, Any
 import logging
 import time
-import re
 
 from src.api.routes.substeps.schemas import (
     SubstepBaseRequest,
     ParagraphIdentifyResponse,
     ParagraphMeta,
     RiskLevel,
+    MergeModifyRequest,
+    MergeModifyPromptResponse,
+    MergeModifyApplyResponse,
 )
+from src.api.routes.substeps.layer3.step3_0_handler import Step3_0Handler
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-
-# Patterns to identify non-body content
-NON_BODY_PATTERNS = [
-    r'^abstract\s*[:：]',           # Abstract header
-    r'^keywords?\s*[:：]',          # Keywords
-    r'^references?\s*$',            # References section
-    r'^bibliography\s*$',
-    r'^acknowledgments?\s*$',
-    r'^figure\s+\d+',               # Figure captions
-    r'^table\s+\d+',                # Table captions
-    r'^\[?\d+\]?\s+[\w\s,]+\d{4}',  # Reference entries
-]
-
-
-def _split_paragraphs(text: str) -> List[str]:
-    """Split text into paragraphs"""
-    paragraphs = re.split(r'\n\n+', text.strip())
-    if len(paragraphs) == 1:
-        paragraphs = re.split(r'\n', text.strip())
-    return [p.strip() for p in paragraphs if p.strip()]
-
-
-def _is_body_paragraph(para: str) -> bool:
-    """Check if paragraph is body content (not header, keywords, etc.)"""
-    para_lower = para.lower().strip()
-
-    # Check against non-body patterns
-    for pattern in NON_BODY_PATTERNS:
-        if re.match(pattern, para_lower, re.IGNORECASE):
-            return False
-
-    # Check minimum length (too short = likely header)
-    if len(para.split()) < 5:
-        return False
-
-    return True
-
-
-def _count_sentences(para: str) -> int:
-    """Count sentences in a paragraph"""
-    # Simple sentence counting
-    sentences = re.split(r'[.!?]+\s+', para)
-    return len([s for s in sentences if s.strip()])
-
-
-def _assign_section_index(para_index: int, total_paras: int) -> int:
-    """Assign section index based on paragraph position (simple heuristic)"""
-    if total_paras <= 3:
-        return 0
-    section_size = max(3, total_paras // 5)
-    return para_index // section_size
+# Initialize LLM handler
+handler = Step3_0Handler()
 
 
 @router.post("/identify", response_model=ParagraphIdentifyResponse)
 async def identify_paragraphs(request: SubstepBaseRequest):
     """
-    Step 3.0: Identify and segment paragraphs
-    步骤 3.0：识别和分割段落
-
-    - Splits text into paragraphs
-    - Filters non-body content (headers, keywords, references)
-    - Extracts paragraph metadata
+    Step 3.0: Identify and segment paragraphs (NOW WITH LLM!)
+    步骤 3.0：识别和分割段落（现在使用LLM！）
     """
     start_time = time.time()
 
     try:
-        raw_paragraphs = _split_paragraphs(request.text)
+        logger.info("Calling Step3_0Handler for LLM-based paragraph identification")
+        result = await handler.analyze(
+            document_text=request.text,
+            locked_terms=request.locked_terms or []
+        )
 
-        # Filter and collect paragraphs
-        filtered_paragraphs = []
+        processing_time_ms = int((time.time() - start_time) * 1000)
+
+        # Build paragraph metadata from result
         paragraph_metadata = []
-        filtered_count = 0
-
-        for i, para in enumerate(raw_paragraphs):
-            if _is_body_paragraph(para):
-                word_count = len(para.split())
-                sentence_count = _count_sentences(para)
-                section_index = _assign_section_index(len(filtered_paragraphs), len(raw_paragraphs))
-
+        paragraphs = result.get("paragraphs", [])
+        for i, para in enumerate(paragraphs):
+            if isinstance(para, dict):
                 paragraph_metadata.append(ParagraphMeta(
-                    index=len(filtered_paragraphs),
-                    word_count=word_count,
-                    sentence_count=sentence_count,
-                    section_index=section_index,
-                    preview=para[:100] + "..." if len(para) > 100 else para
+                    index=para.get("index", i),
+                    word_count=para.get("word_count", 0),
+                    sentence_count=para.get("sentence_count", 0),
+                    section_index=para.get("section_index", 0),
+                    preview=para.get("preview", "")
                 ))
-                filtered_paragraphs.append(para)
-            else:
-                filtered_count += 1
-
-        # Calculate risk based on paragraph distribution
-        paragraph_count = len(filtered_paragraphs)
-
-        if paragraph_count < 3:
-            risk_score = 50  # Too few paragraphs
-        elif paragraph_count > 20:
-            risk_score = 30  # Many paragraphs (normal)
-        else:
-            risk_score = 20  # Normal
-
-        risk_level = RiskLevel.LOW if risk_score < 40 else RiskLevel.MEDIUM
-
-        # Build recommendations
-        recommendations = []
-        recommendations_zh = []
-
-        if paragraph_count < 3:
-            recommendations.append("Document has very few paragraphs. Consider adding more structure.")
-            recommendations_zh.append("文档段落过少。考虑增加更多结构。")
-
-        if filtered_count > 0:
-            recommendations.append(f"Filtered {filtered_count} non-body elements (headers, keywords, etc.)")
-            recommendations_zh.append(f"过滤了 {filtered_count} 个非正文元素（标题、关键词等）")
-
-        if not recommendations:
-            recommendations.append(f"Identified {paragraph_count} paragraphs successfully.")
-            recommendations_zh.append(f"成功识别 {paragraph_count} 个段落。")
 
         return ParagraphIdentifyResponse(
-            risk_score=risk_score,
-            risk_level=risk_level,
-            issues=[],
-            recommendations=recommendations,
-            recommendations_zh=recommendations_zh,
-            processing_time_ms=int((time.time() - start_time) * 1000),
-            paragraphs=filtered_paragraphs,
-            paragraph_count=paragraph_count,
+            risk_score=result.get("risk_score", 0),
+            risk_level=RiskLevel(result.get("risk_level", "low")),
+            issues=result.get("issues", []),
+            recommendations=result.get("recommendations", []),
+            recommendations_zh=result.get("recommendations_zh", []),
+            processing_time_ms=processing_time_ms,
+            paragraphs=[p.get("preview", "") if isinstance(p, dict) else str(p) for p in paragraphs],
+            paragraph_count=result.get("paragraph_count", len(paragraphs)),
             paragraph_metadata=paragraph_metadata,
-            filtered_count=filtered_count
+            filtered_count=result.get("filtered_count", 0)
         )
 
     except Exception as e:
-        logger.error(f"Paragraph identification failed: {e}")
+        logger.error(f"Paragraph identification failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/analyze")
+@router.post("/analyze", response_model=ParagraphIdentifyResponse)
 async def analyze_paragraphs(request: SubstepBaseRequest):
     """Alias for identify endpoint"""
     return await identify_paragraphs(request)
+
+
+@router.post("/merge-modify/prompt", response_model=MergeModifyPromptResponse)
+async def generate_prompt(request: MergeModifyRequest):
+    """Generate modification prompt for paragraph identification issues"""
+    try:
+        prompt = await handler.generate_rewrite_prompt(
+            issues=request.selected_issues,
+            user_notes=request.user_notes
+        )
+        return MergeModifyPromptResponse(
+            prompt=prompt,
+            prompt_zh="根据选定的段落识别问题生成的修改提示词",
+            issues_summary_zh=f"选中了{len(request.selected_issues)}个问题",
+            estimated_changes=len(request.selected_issues)
+        )
+    except Exception as e:
+        logger.error(f"Prompt generation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/merge-modify/apply", response_model=MergeModifyApplyResponse)
+async def apply_modification(request: MergeModifyRequest):
+    """Apply AI modification for paragraph identification issues"""
+    try:
+        from src.services.session_service import SessionService
+        session_service = SessionService()
+        session_data = await session_service.get_session(request.session_id) if request.session_id else None
+        document_text = session_data.get("document_text", "") if session_data else ""
+
+        if not document_text:
+            raise HTTPException(status_code=400, detail="Document text not found in session")
+
+        result = await handler.apply_rewrite(
+            document_text=document_text,
+            issues=request.selected_issues,
+            user_notes=request.user_notes,
+            locked_terms=session_data.get("locked_terms", []) if session_data else []
+        )
+        return MergeModifyApplyResponse(
+            modified_text=result.get("modified_text", ""),
+            changes_summary_zh=result.get("changes_summary_zh", ""),
+            changes_count=result.get("changes_count", 0),
+            issues_addressed=[i.type for i in request.selected_issues],
+            remaining_attempts=3
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Modification failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))

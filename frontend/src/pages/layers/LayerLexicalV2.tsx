@@ -25,7 +25,7 @@ import LoadingMessage from '../../components/common/LoadingMessage';
 import { documentApi, sessionApi } from '../../services/api';
 
 // API base URL
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_URL || '';
 
 /**
  * Layer Lexical V2 (Layer 1) - Enhanced Lexical Analysis & Rewriting

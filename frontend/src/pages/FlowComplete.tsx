@@ -18,6 +18,7 @@ import { clsx } from 'clsx';
 import Button from '../components/common/Button';
 import LoadingMessage from '../components/common/LoadingMessage';
 import { documentApi, sessionApi, exportApi } from '../services/api';
+import { useSubstepStateStore } from '../stores/substepStateStore';
 
 /**
  * FlowComplete - Analysis completion and export page
@@ -52,6 +53,10 @@ export default function FlowComplete() {
   const sessionId = searchParams.get('session');
   const mode = searchParams.get('mode') || 'intervention';
 
+  // Substep state store for getting modified text
+  // 子步骤状态存储，用于获取修改后的文本
+  const substepStore = useSubstepStateStore();
+
   // State
   const [isLoading, setIsLoading] = useState(true);
   const [document, setDocument] = useState<DocumentInfo | null>(null);
@@ -60,6 +65,16 @@ export default function FlowComplete() {
   const [isExporting, setIsExporting] = useState(false);
   const [exportFormat, setExportFormat] = useState<'txt' | 'docx' | 'pdf'>('txt');
   const [copied, setCopied] = useState(false);
+
+  // Steps to check for modified text (from last to first)
+  // 检查修改文本的步骤顺序（从最后到最先）
+  const STEP_ORDER = [
+    'step5-5', 'step5-4', 'step5-3', 'step5-2', 'step5-1', 'step5-0',  // Layer 1
+    'step4-console', 'step4-5', 'step4-4', 'step4-3', 'step4-2', 'step4-1', 'step4-0',  // Layer 2
+    'step3-5', 'step3-4', 'step3-3', 'step3-2', 'step3-1', 'step3-0',  // Layer 3
+    'step2-5', 'step2-4', 'step2-3', 'step2-2', 'step2-1', 'step2-0',  // Layer 4
+    'step1-5', 'step1-4', 'step1-3', 'step1-2', 'step1-1',  // Layer 5
+  ];
 
   // Load document and stats
   // 加载文档和统计信息
@@ -76,17 +91,44 @@ export default function FlowComplete() {
         // Load document info
         // 加载文档信息
         const docInfo = await documentApi.get(documentId);
+
+        // Try to load modified text from substep states
+        // 尝试从子步骤状态加载修改后的文本
+        let modifiedText: string | undefined;
+
+        if (sessionId) {
+          try {
+            // Initialize substep store for this session
+            // 为此会话初始化子步骤存储
+            await substepStore.initForSession(sessionId);
+            console.log('[FlowComplete] Loaded substep states:', substepStore.states.size);
+
+            // Find the last step with modified text
+            // 找到最后一个有修改文本的步骤
+            for (const stepName of STEP_ORDER) {
+              const state = substepStore.getState(stepName);
+              if (state?.modifiedText) {
+                modifiedText = state.modifiedText;
+                console.log(`[FlowComplete] Found modified text from ${stepName}`);
+                break;
+              }
+            }
+          } catch (err) {
+            console.warn('[FlowComplete] Failed to load substep states:', err);
+          }
+        }
+
         setDocument({
           id: documentId,
           filename: docInfo.filename || 'document.txt',
           originalText: docInfo.originalText || '',
-          modifiedText: docInfo.modifiedText,
+          modifiedText: modifiedText || docInfo.modifiedText,
           createdAt: docInfo.createdAt || new Date().toISOString(),
         });
 
-        // Calculate basic stats
-        // 计算基本统计
-        const text = docInfo.modifiedText || docInfo.originalText || '';
+        // Calculate basic stats using the final text
+        // 使用最终文本计算基本统计
+        const text = modifiedText || docInfo.modifiedText || docInfo.originalText || '';
         const words = text.split(/\s+/).filter(w => w.length > 0).length;
         const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 0).length;
 
@@ -98,25 +140,6 @@ export default function FlowComplete() {
           riskReduction: 0,
         });
 
-        // Try to load session stats if available
-        // 如果可用，尝试加载会话统计
-        if (sessionId) {
-          try {
-            const sessionStats = await sessionApi.getReviewStats(sessionId);
-            if (sessionStats) {
-              setStats(prev => ({
-                ...prev!,
-                totalSentences: sessionStats.total_sentences || prev!.totalSentences,
-                issuesFound: sessionStats.modified_count || 0,
-                issuesResolved: sessionStats.modified_count || 0,
-                riskReduction: sessionStats.avg_risk_reduction || 0,
-              }));
-            }
-          } catch {
-            // Session stats not available, continue with basic stats
-            // 会话统计不可用，继续使用基本统计
-          }
-        }
       } catch (err) {
         console.error('Failed to load document:', err);
         setError('Failed to load document / 加载文档失败');
@@ -126,7 +149,7 @@ export default function FlowComplete() {
     };
 
     loadData();
-  }, [documentId, sessionId]);
+  }, [documentId, sessionId, substepStore]);
 
   // Handle export
   // 处理导出
@@ -138,15 +161,20 @@ export default function FlowComplete() {
 
     setIsExporting(true);
     try {
-      const blob = await exportApi.exportDocument(sessionId, exportFormat);
-      const url = window.URL.createObjectURL(blob);
-      const a = window.document.createElement('a');
-      a.href = url;
-      a.download = `${document?.filename || 'document'}.${exportFormat}`;
-      window.document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      window.document.body.removeChild(a);
+      const result = await exportApi.exportDocument(sessionId, exportFormat);
+
+      // Use the downloadUrl returned from API
+      // 使用API返回的downloadUrl
+      if (result.downloadUrl) {
+        const a = window.document.createElement('a');
+        a.href = result.downloadUrl;
+        a.download = result.filename || `${document?.filename || 'document'}.${exportFormat}`;
+        window.document.body.appendChild(a);
+        a.click();
+        window.document.body.removeChild(a);
+      } else {
+        throw new Error('No download URL returned / 未返回下载链接');
+      }
     } catch (err) {
       console.error('Export failed:', err);
       setError('Export failed / 导出失败');
@@ -258,7 +286,7 @@ export default function FlowComplete() {
             <BarChart2 className="w-5 h-5 text-gray-600" />
             Statistics / 统计信息
           </h2>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 gap-4">
             <div className="bg-blue-50 rounded-lg p-4">
               <p className="text-sm text-blue-600">Total Words / 总词数</p>
               <p className="text-2xl font-bold text-blue-700">{stats.totalWords}</p>
@@ -266,14 +294,6 @@ export default function FlowComplete() {
             <div className="bg-purple-50 rounded-lg p-4">
               <p className="text-sm text-purple-600">Sentences / 句子数</p>
               <p className="text-2xl font-bold text-purple-700">{stats.totalSentences}</p>
-            </div>
-            <div className="bg-orange-50 rounded-lg p-4">
-              <p className="text-sm text-orange-600">Issues Found / 发现问题</p>
-              <p className="text-2xl font-bold text-orange-700">{stats.issuesFound}</p>
-            </div>
-            <div className="bg-green-50 rounded-lg p-4">
-              <p className="text-sm text-green-600">Resolved / 已解决</p>
-              <p className="text-2xl font-bold text-green-700">{stats.issuesResolved}</p>
             </div>
           </div>
         </div>

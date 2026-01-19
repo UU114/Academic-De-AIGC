@@ -595,6 +595,12 @@ class SectionInfo(BaseModel):
     number: str  # Section number like "1", "1.1", "2.3.1"
     title: str  # Section title
     paragraphs: List[SmartParagraphInfo] = []
+    # Additional fields for frontend compatibility
+    # 前端兼容性所需的额外字段
+    index: int = 0  # Section index (0-based)
+    role: str = ""  # Section role (e.g., "Abstract", "Introduction", "Methodology")
+    paragraph_count: int = 0  # Number of paragraphs in section
+    word_count: int = 0  # Total word count in section
 
 
 class SmartStructureIssue(BaseModel):

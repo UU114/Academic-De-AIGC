@@ -6,10 +6,13 @@ Analyze human writing feature vocabulary coverage using LLM.
 使用LLM分析人类写作特征词汇覆盖率。
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 import time
 
+from src.db.database import get_db
+from src.services.document_service import get_working_text, save_modified_text
 from src.api.routes.substeps.schemas import (
     SubstepBaseRequest,
     HumanFeatureResponse,
@@ -86,23 +89,41 @@ async def generate_prompt(request: MergeModifyRequest):
 
 
 @router.post("/merge-modify/apply", response_model=MergeModifyApplyResponse)
-async def apply_modification(request: MergeModifyRequest):
+async def apply_modification(
+    request: MergeModifyRequest,
+    db: AsyncSession = Depends(get_db)
+):
     """Apply AI modification for human feature issues"""
     try:
-        from src.services.session_service import SessionService
-        session_service = SessionService()
-        session_data = await session_service.get_session(request.session_id) if request.session_id else None
-        document_text = session_data.get("document_text", "") if session_data else ""
+        # Use document_service to get working text
+        # 使用 document_service 获取工作文本
+        document_text, locked_terms = await get_working_text(
+            db=db,
+            session_id=request.session_id,
+            current_step="step5-2",
+            document_id=request.document_id
+        )
 
         if not document_text:
-            raise HTTPException(status_code=400, detail="Document text not found in session")
+            raise HTTPException(status_code=400, detail="Document text not found")
 
         result = await handler.apply_rewrite(
             document_text=document_text,
             issues=request.selected_issues,
             user_notes=request.user_notes,
-            locked_terms=session_data.get("locked_terms", []) if session_data else []
+            locked_terms=locked_terms
         )
+
+        # Save modified text to database
+        # 保存修改后的文本到数据库
+        if request.session_id and result.get("modified_text"):
+            await save_modified_text(
+                db=db,
+                session_id=request.session_id,
+                step_name="step5-2",
+                modified_text=result["modified_text"]
+            )
+
         return MergeModifyApplyResponse(
             modified_text=result.get("modified_text", ""),
             changes_summary_zh=result.get("changes_summary_zh", ""),

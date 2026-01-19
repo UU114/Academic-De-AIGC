@@ -32,6 +32,7 @@ import {
   ModifyPromptResponse,
   ApplyModifyResponse,
 } from '../../services/analysisApi';
+import { useSubstepStateStore } from '../../stores/substepStateStore';
 
 /**
  * Layer Step 1.4 - Connector & Transition Analysis
@@ -119,6 +120,7 @@ export default function LayerStep1_4({
   const [isLoading, setIsLoading] = useState(true);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [analysisStarted, setAnalysisStarted] = useState(false);
   const [documentText, setDocumentText] = useState<string>('');
   const [expandedParagraphIndex, setExpandedParagraphIndex] = useState<number | null>(null);
 
@@ -129,6 +131,10 @@ export default function LayerStep1_4({
   // Issue selection for merge modify
   // 用于合并修改的问题选择
   const [selectedIssueIndices, setSelectedIssueIndices] = useState<Set<number>>(new Set());
+
+  // Expanded issue index for showing details
+  // 展开的问题索引，用于显示详情
+  const [expandedIssueIndex, setExpandedIssueIndex] = useState<number | null>(null);
 
   // Issue suggestion state (LLM-based detailed suggestions)
   // 问题建议状态（基于LLM的详细建议）
@@ -148,6 +154,11 @@ export default function LayerStep1_4({
   // 跳过确认状态
   const [showSkipConfirm, setShowSkipConfirm] = useState(false);
 
+  // Data/Citation warning state for placeholder verification
+  // 数据/引用警告状态，用于占位符验证
+  const [showDataWarning, setShowDataWarning] = useState(false);
+  const [dataWarningAction, setDataWarningAction] = useState<'prompt' | 'apply' | 'accept' | 'continue' | null>(null);
+
   // Document modification state
   // 文档修改状态
   const [modifyMode, setModifyMode] = useState<'file' | 'text'>('file');
@@ -157,6 +168,13 @@ export default function LayerStep1_4({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const isAnalyzingRef = useRef(false);
+
+  // ============================================
+  // NEW CODE - Get substep state store reference for checking previous steps' modifiedText
+  // 新代码 - 获取子步骤状态存储引用用于检查前序步骤的修改后文本
+  // ============================================
+  const substepStore = useSubstepStateStore();
+  // ============================================
 
   // Load document
   // 加载文档
@@ -168,11 +186,42 @@ export default function LayerStep1_4({
       setError('Document ID not found. Please start from the document upload page. / 未找到文档ID，请从文档上传页面开始。');
       setIsLoading(false);
     }
-  }, [documentId, sessionFetchAttempted]);
+  }, [documentId, sessionFetchAttempted, sessionId, substepStore]);
 
   const loadDocumentText = async (docId: string) => {
     try {
+      // ============================================
+      // NEW CODE - Check previous steps' modifiedText from substep store
+      // 新代码 - 从子步骤存储检查前序步骤的修改后文本
+      // ============================================
+      if (sessionId && substepStore.currentSessionId !== sessionId) {
+        await substepStore.initForSession(sessionId);
+      }
+
+      // Check previous steps for modified text (step5-3, step5-2, step5-1 for LayerStep1_4)
+      // 检查前序步骤的修改后文本（LayerStep1_4检查step5-3, step5-2, step5-1）
+      const previousSteps = ['step5-3', 'step5-2', 'step5-1'];
+      let foundModifiedText: string | null = null;
+
+      for (const stepName of previousSteps) {
+        const stepState = substepStore.getState(stepName);
+        if (stepState?.modifiedText) {
+          console.log(`[LayerStep1_4] Using modified text from ${stepName}`);
+          foundModifiedText = stepState.modifiedText;
+          break;
+        }
+      }
+
+      if (foundModifiedText) {
+        setDocumentText(foundModifiedText);
+        setIsLoading(false);
+        return;
+      }
+      // ============================================
+
       const doc = await documentApi.get(docId);
+      // Fallback to originalText if no modified text found in substep store
+      // 如果子步骤存储中没有修改后的文本，则回退到originalText
       if (doc.originalText) {
         setDocumentText(doc.originalText);
       } else {
@@ -186,12 +235,12 @@ export default function LayerStep1_4({
     }
   };
 
-  // Run analysis
+  // Run analysis when user clicks start
   useEffect(() => {
-    if (documentText && !isAnalyzingRef.current) {
+    if (documentText && analysisStarted && !isAnalyzingRef.current) {
       runAnalysis();
     }
-  }, [documentText]);
+  }, [documentText, analysisStarted]);
 
   const runAnalysis = async () => {
     if (isAnalyzingRef.current || !documentText) return;
@@ -236,34 +285,53 @@ export default function LayerStep1_4({
     }
   };
 
-  // Load detailed suggestion for selected issues (LLM-based)
-  // 为选中的问题加载详细建议（基于LLM）
-  const loadIssueSuggestion = useCallback(async () => {
-    if (selectedIssueIndices.size === 0 || !documentText) return;
+  // Load suggestion for a specific issue (LLM-based)
+  // 为特定问题加载建议（基于LLM）
+  const loadIssueSuggestion = useCallback(async (index: number) => {
+    const issue = lengthIssues[index];
+    if (!issue || !documentId) return;
 
     setIsLoadingSuggestion(true);
+    setIssueSuggestion(null);
     setSuggestionError(null);
 
     try {
-      const selectedIssues = Array.from(selectedIssueIndices).map(i => lengthIssues[i]);
-      const response = await documentLayerApi.getIssueSuggestion(
-        documentText,
-        selectedIssues,
-        'step1_4',
-        sessionId || undefined
-      );
-      setIssueSuggestion(response);
+      // Call LLM to get detailed suggestion for this specific issue
+      // 调用LLM获取此特定问题的详细建议
+      const suggestion = await documentLayerApi.getIssueSuggestion(documentId, issue, false);
+      setIssueSuggestion(suggestion);
     } catch (err) {
-      console.error('Failed to load suggestion:', err);
+      console.error('Failed to load issue suggestion:', err);
       setSuggestionError('Failed to load detailed suggestion / 加载详细建议失败');
     } finally {
       setIsLoadingSuggestion(false);
     }
-  }, [selectedIssueIndices, documentText, lengthIssues, sessionId]);
+  }, [lengthIssues, documentId]);
 
-  // Handle issue selection toggle
-  // 处理问题选择切换
-  const handleIssueClick = useCallback((index: number) => {
+  // Handle issue click - toggle expand and load LLM suggestion
+  // 处理问题点击 - 切换展开并加载LLM建议
+  const handleIssueClick = useCallback(async (index: number) => {
+    const issue = lengthIssues[index];
+    if (!issue || !documentId) return;
+
+    // Collapse if already expanded
+    // 如果已展开则折叠
+    if (expandedIssueIndex === index) {
+      setExpandedIssueIndex(null);
+      setIssueSuggestion(null);
+      return;
+    }
+
+    // Expand and load LLM suggestion
+    // 展开并加载LLM建议
+    setExpandedIssueIndex(index);
+    await loadIssueSuggestion(index);
+  }, [lengthIssues, documentId, expandedIssueIndex, loadIssueSuggestion]);
+
+  // Handle issue checkbox selection (for merge modify)
+  // 处理问题复选框选择（用于合并修改）
+  const handleIssueSelect = useCallback((index: number, e: React.MouseEvent) => {
+    e.stopPropagation(); // Prevent triggering expand
     setSelectedIssueIndices(prev => {
       const newSet = new Set(prev);
       if (newSet.has(index)) {
@@ -273,19 +341,52 @@ export default function LayerStep1_4({
       }
       return newSet;
     });
-    // Clear previous suggestion when selection changes
-    // 当选择变化时清除之前的建议
-    setIssueSuggestion(null);
-    setMergeResult(null);
   }, []);
 
-  // Execute merge modify (generate prompt or apply modification)
-  // 执行合并修改（生成提示或应用修改）
-  const executeMergeModify = useCallback(async () => {
+  // Select all issues
+  // 全选所有问题
+  const selectAllIssues = useCallback(() => {
+    setSelectedIssueIndices(new Set(lengthIssues.map((_, idx) => idx)));
+  }, [lengthIssues]);
+
+  // Deselect all issues
+  // 取消全选所有问题
+  const deselectAllIssues = useCallback(() => {
+    setSelectedIssueIndices(new Set());
+  }, []);
+
+  // Check if selected issues involve adding data/citations/references
+  // 检查选中的问题是否涉及添加数据/引用/参考文献
+  const hasDataRelatedIssues = useCallback(() => {
+    const selectedIssues = Array.from(selectedIssueIndices).map(i => lengthIssues[i]);
+    const dataRelatedTypes = [
+      'low_anchor_density', 'low_density', 'no_anchors', 'very_low_anchor_density',
+      'suspected_hallucination', 'missing_evidence', 'abstract_claims'
+    ];
+    const dataRelatedKeywords = [
+      'anchor', 'citation', 'data', 'reference', 'statistic', 'number', 'evidence',
+      'measurement', 'concrete', 'abstract', 'claims', 'support',
+      '引用', '数据', '锚点', '统计', '证据', '测量', '具体', '抽象', '主张', '支持'
+    ];
+
+    return selectedIssues.some(issue => {
+      // Check issue type
+      if (dataRelatedTypes.includes(issue.type)) return true;
+      // Check description for keywords
+      const desc = (issue.description + ' ' + (issue.descriptionZh || '')).toLowerCase();
+      return dataRelatedKeywords.some(keyword => desc.includes(keyword.toLowerCase()));
+    });
+  }, [selectedIssueIndices, lengthIssues]);
+
+  // Actual merge modify execution (without warning check)
+  // 实际合并修改执行（不检查警告）
+  const executeActualMergeModify = useCallback(async () => {
     if (selectedIssueIndices.size === 0 || !documentText) return;
 
     setIsMerging(true);
     setShowMergeConfirm(false);
+    setShowDataWarning(false);
+    setDataWarningAction(null);
 
     try {
       const selectedIssues = Array.from(selectedIssueIndices).map(i => lengthIssues[i]);
@@ -321,7 +422,35 @@ export default function LayerStep1_4({
     } finally {
       setIsMerging(false);
     }
-  }, [selectedIssueIndices, documentId, lengthIssues, mergeMode, mergeUserNotes, sessionId]);
+  }, [selectedIssueIndices, documentId, documentText, lengthIssues, mergeMode, mergeUserNotes, sessionId]);
+
+  // Execute merge modify (wrapper that checks for data warning)
+  // 执行合并修改（检查数据警告的包装函数）
+  const executeMergeModify = useCallback(async () => {
+    if (selectedIssueIndices.size === 0 || !documentText) return;
+
+    if (hasDataRelatedIssues()) {
+      setDataWarningAction(mergeMode);
+      setShowDataWarning(true);
+    } else {
+      executeActualMergeModify();
+    }
+  }, [selectedIssueIndices, documentText, hasDataRelatedIssues, mergeMode, executeActualMergeModify]);
+
+  // Actual accept modification execution
+  // 实际接受修改执行
+  const executeActualAcceptModification = useCallback(() => {
+    if (mergeResult && 'modifiedText' in mergeResult && mergeResult.modifiedText) {
+      setNewText(mergeResult.modifiedText);
+      setModifyMode('text');
+      setMergeResult(null);
+      setShowDataWarning(false);
+      setDataWarningAction(null);
+    }
+  }, [mergeResult]);
+
+  // Handle data warning confirmation (defined after executeActualConfirmModify)
+  // 处理数据警告确认（定义在 executeActualConfirmModify 之后）
 
   // Handle regenerate (retry AI modification)
   // 处理重新生成（重试AI修改）
@@ -331,15 +460,16 @@ export default function LayerStep1_4({
     setMergeMode('apply');
   }, []);
 
-  // Handle accept modification (copy to text input)
-  // 处理接受修改（复制到文本输入）
+  // Handle accept modification (with data warning check)
+  // 处理接受修改（带数据警告检查）
   const handleAcceptModification = useCallback(() => {
-    if (mergeResult && 'modifiedText' in mergeResult && mergeResult.modifiedText) {
-      setNewText(mergeResult.modifiedText);
-      setModifyMode('text');
-      setMergeResult(null);
+    if (hasDataRelatedIssues()) {
+      setDataWarningAction('accept');
+      setShowDataWarning(true);
+    } else {
+      executeActualAcceptModification();
     }
-  }, [mergeResult]);
+  }, [hasDataRelatedIssues, executeActualAcceptModification]);
 
   // Handle file selection
   // 处理文件选择
@@ -350,11 +480,28 @@ export default function LayerStep1_4({
     }
   }, []);
 
-  // Handle confirm modification and navigate to next step
-  // 处理确认修改并导航到下一步
-  const handleConfirmModify = useCallback(async () => {
+  // Check if text contains unverified placeholders
+  // 检查文本是否包含未验证的占位符
+  const hasUnverifiedPlaceholders = useCallback((text: string) => {
+    const placeholderPatterns = [
+      /\[AUTHOR_X+.*?\]/gi,
+      /\[YEAR_X+\]/gi,
+      /\[X+\]%/gi,
+      /\[X+\]/gi,
+      /p\s*[<>=]\s*\[X+\.?X*\]/gi,
+      /\[AUTHOR.*?,\s*YEAR.*?\]/gi,
+      /\[\d*X+\d*\]/gi,
+    ];
+    return placeholderPatterns.some(pattern => pattern.test(text));
+  }, []);
+
+  // Actual confirm modification and navigate (without warning check)
+  // 实际确认修改并导航（不检查警告）
+  const executeActualConfirmModify = useCallback(async () => {
     setIsUploading(true);
     setError(null);
+    setShowDataWarning(false);
+    setDataWarningAction(null);
 
     try {
       let newDocId: string;
@@ -388,6 +535,101 @@ export default function LayerStep1_4({
       setIsUploading(false);
     }
   }, [modifyMode, newFile, newText, mode, sessionId, navigate]);
+
+  // Handle confirm modification (with placeholder warning check)
+  // 处理确认修改（带占位符警告检查）
+  const handleConfirmModify = useCallback(async () => {
+    // Check if text mode has unverified placeholders
+    // 检查文本模式是否有未验证的占位符
+    if (modifyMode === 'text' && newText.trim() && hasUnverifiedPlaceholders(newText)) {
+      setDataWarningAction('continue');
+      setShowDataWarning(true);
+      return;
+    }
+
+    // Check if data-related issues were selected (may have placeholders in modified text)
+    // 检查是否选择了数据相关问题（修改后的文本中可能有占位符）
+    if (hasDataRelatedIssues() && modifyMode === 'text' && newText.trim()) {
+      setDataWarningAction('continue');
+      setShowDataWarning(true);
+      return;
+    }
+
+    // No warning needed, proceed directly
+    // 无需警告，直接执行
+    setIsUploading(true);
+    setError(null);
+
+    try {
+      // ============================================
+      // NEW CODE - Save modified text to substep store
+      // 新代码 - 保存修改后的文本到子步骤存储
+      // ============================================
+      let modifiedText: string = '';
+      if (modifyMode === 'file' && newFile) {
+        modifiedText = await newFile.text();
+      } else if (modifyMode === 'text' && newText.trim()) {
+        modifiedText = newText.trim();
+      } else {
+        setError('Please select a file or enter text / 请选择文件或输入文本');
+        setIsUploading(false);
+        return;
+      }
+
+      if (sessionId && modifiedText) {
+        await substepStore.saveModifiedText('step5-4', modifiedText);
+        await substepStore.markCompleted('step5-4');
+        console.log('[LayerStep1_4] Saved modified text to substep store');
+      }
+      // ============================================
+
+      let newDocId: string;
+
+      if (modifyMode === 'file' && newFile) {
+        // Upload new file
+        // 上传新文件
+        const result = await documentApi.upload(newFile);
+        newDocId = result.documentId;
+      } else {
+        // Upload text as document
+        // 将文本作为文档上传
+        const result = await documentApi.uploadText(newText, `step1_4_modified_${Date.now()}.txt`);
+        newDocId = result.documentId;
+      }
+
+      // Navigate to next step with new document (use documentId from URL/props)
+      // 导航到下一步（使用URL/props中的documentId）
+      const params = new URLSearchParams();
+      if (mode) params.set('mode', mode);
+      if (sessionId) params.set('session', sessionId);
+      navigate(`/flow/layer5-step1-5/${documentId}?${params.toString()}`);
+    } catch (err) {
+      console.error('Upload failed:', err);
+      setError('Failed to upload modified document / 上传修改后的文档失败');
+    } finally {
+      setIsUploading(false);
+    }
+  }, [modifyMode, newFile, newText, mode, sessionId, navigate, hasUnverifiedPlaceholders, hasDataRelatedIssues, documentId, substepStore]);
+
+  // Handle data warning confirmation
+  // 处理数据警告确认
+  const handleDataWarningConfirm = useCallback(() => {
+    setShowDataWarning(false);
+    if (dataWarningAction === 'prompt') {
+      setMergeMode('prompt');
+      executeActualMergeModify();
+    } else if (dataWarningAction === 'apply') {
+      setMergeMode('apply');
+      executeActualMergeModify();
+    } else if (dataWarningAction === 'accept') {
+      executeActualAcceptModification();
+    } else if (dataWarningAction === 'continue') {
+      // User confirmed to continue with unverified placeholders
+      // 用户确认继续使用未验证的占位符
+      executeActualConfirmModify();
+    }
+    setDataWarningAction(null);
+  }, [dataWarningAction, executeActualMergeModify, executeActualAcceptModification, executeActualConfirmModify]);
 
   // Navigation
   const handleBack = () => {
@@ -473,6 +715,28 @@ export default function LayerStep1_4({
           连接词与衔接分析 - 使用LLM检测显性连接词、语义回声和逻辑断裂点
         </p>
       </div>
+
+      {/* Start Analysis / Skip Step */}
+      {documentText && !analysisStarted && !isAnalyzing && !result && (
+        <div className="mb-6 p-6 bg-gray-50 border border-gray-200 rounded-lg">
+          <div className="text-center">
+            <FileText className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+            <h3 className="text-lg font-medium text-gray-900 mb-2">Ready to Analyze / 准备分析</h3>
+            <p className="text-gray-600 mb-6">
+              Click "Start Analysis" to detect connectors and transitions, or skip this step.
+              <br />点击"开始分析"检测连接词与衔接模式，或跳过此步骤。
+            </p>
+            <div className="flex items-center justify-center gap-4">
+              <Button variant="primary" size="lg" onClick={() => setAnalysisStarted(true)}>
+                <Sparkles className="w-5 h-5 mr-2" />Start Analysis / 开始分析
+              </Button>
+              <Button variant="secondary" size="lg" onClick={handleNext}>
+                <ArrowRight className="w-5 h-5 mr-2" />Skip Step / 跳过此步
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Analysis Progress */}
       {isAnalyzing && (
@@ -573,60 +837,223 @@ export default function LayerStep1_4({
                   <AlertTriangle className="w-5 h-5 text-yellow-600" />
                   Detected Issues / 检测到的问题
                   <span className="text-sm font-normal text-gray-500">
-                    (Click to select / 点击选择)
+                    ({selectedIssueIndices.size}/{lengthIssues.length} selected / 已选择)
                   </span>
                 </h3>
-                {hasSelectedIssues && (
-                  <span className="text-sm text-blue-600">
-                    {selectedIssueIndices.size} selected / 已选择
-                  </span>
-                )}
+                <div className="flex items-center gap-2">
+                  {/* Select All / Deselect All buttons */}
+                  {/* 全选/取消全选按钮 */}
+                  <Button variant="secondary" size="sm" onClick={selectAllIssues}>
+                    Select All / 全选
+                  </Button>
+                  <Button variant="secondary" size="sm" onClick={deselectAllIssues}>
+                    Deselect All / 取消全选
+                  </Button>
+                </div>
               </div>
               <div className="space-y-2">
-                {lengthIssues.map((issue, idx) => (
-                  <button
-                    key={idx}
-                    onClick={() => handleIssueClick(idx)}
-                    className={clsx(
-                      'w-full text-left p-3 rounded-lg border transition-all',
-                      selectedIssueIndices.has(idx)
-                        ? 'bg-blue-50 border-blue-300 ring-2 ring-blue-200'
-                        : 'bg-white border-gray-200 hover:border-gray-300 hover:bg-gray-50'
-                    )}
-                  >
-                    <div className="flex items-start gap-3">
-                      <div className={clsx(
-                        'w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 mt-0.5',
+                {lengthIssues.map((issue, idx) => {
+                  const isExpanded = expandedIssueIndex === idx;
+                  const hasDetails = issue.suggestion || issue.suggestionZh || issue.details || issue.position;
+
+                  return (
+                    <div
+                      key={idx}
+                      className={clsx(
+                        'rounded-lg border transition-all overflow-hidden',
                         selectedIssueIndices.has(idx)
-                          ? 'bg-blue-600 border-blue-600'
-                          : 'border-gray-300'
-                      )}>
-                        {selectedIssueIndices.has(idx) && (
-                          <Check className="w-3 h-3 text-white" />
-                        )}
+                          ? 'bg-blue-50 border-blue-300 ring-2 ring-blue-200'
+                          : 'bg-white border-gray-200'
+                      )}
+                    >
+                      {/* Issue header - clickable for expand with LLM suggestion */}
+                      {/* 问题头部 - 点击展开并加载LLM建议 */}
+                      <div className="flex items-start gap-3 p-3">
+                        {/* Checkbox for selection (for merge modify) */}
+                        {/* 选择复选框（用于合并修改） */}
+                        <button
+                          onClick={(e) => handleIssueSelect(idx, e)}
+                          className={clsx(
+                            'w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 mt-0.5',
+                            selectedIssueIndices.has(idx)
+                              ? 'bg-blue-600 border-blue-600'
+                              : 'border-gray-300 hover:border-gray-400'
+                          )}
+                        >
+                          {selectedIssueIndices.has(idx) && (
+                            <Check className="w-3 h-3 text-white" />
+                          )}
+                        </button>
+
+                        {/* Issue content - clickable to expand and load LLM suggestion */}
+                        {/* 问题内容 - 点击展开并加载LLM建议 */}
+                        <button
+                          onClick={() => handleIssueClick(idx)}
+                          className="flex-1 text-left"
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className={clsx(
+                              'px-2 py-0.5 rounded text-xs font-medium',
+                              issue.severity === 'high' ? 'bg-red-100 text-red-700' :
+                              issue.severity === 'medium' ? 'bg-yellow-100 text-yellow-700' :
+                              'bg-gray-100 text-gray-700'
+                            )}>
+                              {issue.severity === 'high' ? 'High / 高' :
+                               issue.severity === 'medium' ? 'Medium / 中' : 'Low / 低'}
+                            </span>
+                            <span className="text-xs text-gray-500">{issue.layer}</span>
+                          </div>
+                          <p className="text-gray-900 mt-1">{issue.description}</p>
+                          <p className="text-gray-600 text-sm">{issue.descriptionZh}</p>
+                        </button>
+
+                        {/* Expand/Collapse icon */}
+                        {/* 展开/折叠图标 */}
+                        <button
+                          onClick={() => handleIssueClick(idx)}
+                          className="flex-shrink-0 p-1 hover:bg-gray-100 rounded"
+                        >
+                          {isExpanded ? (
+                            <ChevronUp className="w-5 h-5 text-gray-400" />
+                          ) : (
+                            <ChevronDown className="w-5 h-5 text-gray-400" />
+                          )}
+                        </button>
                       </div>
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className={clsx(
-                            'px-2 py-0.5 rounded text-xs font-medium',
-                            issue.severity === 'high' ? 'bg-red-100 text-red-700' :
-                            issue.severity === 'medium' ? 'bg-yellow-100 text-yellow-700' :
-                            'bg-gray-100 text-gray-700'
-                          )}>
-                            {issue.severity === 'high' ? 'High / 高' :
-                             issue.severity === 'medium' ? 'Medium / 中' : 'Low / 低'}
-                          </span>
-                          <span className="text-xs text-gray-500">{issue.layer}</span>
+
+                      {/* Expanded details section - shows LLM suggestion */}
+                      {/* 展开的详情部分 - 显示LLM建议 */}
+                      {isExpanded && (
+                        <div className="px-4 py-3 bg-gray-50 border-t space-y-3">
+                          {/* Loading state */}
+                          {/* 加载中状态 */}
+                          {isLoadingSuggestion && (
+                            <div className="flex items-center justify-center py-4">
+                              <Loader2 className="w-6 h-6 animate-spin text-blue-500 mr-2" />
+                              <span className="text-gray-600">Loading LLM analysis... / 加载LLM分析中...</span>
+                            </div>
+                          )}
+
+                          {/* Error state */}
+                          {/* 错误状态 */}
+                          {suggestionError && !isLoadingSuggestion && (
+                            <div className="flex items-center gap-2 text-red-600 bg-red-50 px-3 py-2 rounded">
+                              <AlertTriangle className="w-4 h-4" />
+                              <span className="text-sm">{suggestionError}</span>
+                              <button
+                                onClick={() => loadIssueSuggestion(idx)}
+                                className="ml-auto text-sm text-blue-600 hover:underline"
+                              >
+                                Retry / 重试
+                              </button>
+                            </div>
+                          )}
+
+                          {/* LLM Suggestion content */}
+                          {/* LLM建议内容 */}
+                          {issueSuggestion && !isLoadingSuggestion && (
+                            <>
+                              {/* Diagnosis */}
+                              {/* 诊断 */}
+                              {issueSuggestion.diagnosisZh && (
+                                <div>
+                                  <h5 className="text-sm font-medium text-gray-700 mb-1 flex items-center gap-1">
+                                    <Sparkles className="w-4 h-4 text-yellow-500" />
+                                    LLM Analysis / LLM分析
+                                  </h5>
+                                  <p className="text-sm text-gray-700 bg-white px-3 py-2 rounded border">
+                                    {issueSuggestion.diagnosisZh}
+                                  </p>
+                                </div>
+                              )}
+
+                              {/* Strategies */}
+                              {/* 修改策略 */}
+                              {issueSuggestion.strategies && issueSuggestion.strategies.length > 0 && (
+                                <div>
+                                  <h5 className="text-sm font-medium text-gray-700 mb-2">
+                                    Modification Strategies / 修改策略
+                                  </h5>
+                                  <div className="space-y-2">
+                                    {issueSuggestion.strategies.map((strategy, strategyIdx) => (
+                                      <div key={strategyIdx} className="bg-white rounded border p-3">
+                                        <div className="flex items-center justify-between mb-1">
+                                          <span className="font-medium text-sm text-gray-800">
+                                            {strategy.nameZh}
+                                          </span>
+                                          <div className="flex items-center gap-2">
+                                            <span className={clsx(
+                                              'text-xs px-2 py-0.5 rounded',
+                                              strategy.difficulty === 'high' ? 'bg-red-100 text-red-700' :
+                                              strategy.difficulty === 'medium' ? 'bg-yellow-100 text-yellow-700' :
+                                              'bg-green-100 text-green-700'
+                                            )}>
+                                              {strategy.difficulty === 'high' ? 'Hard / 难' :
+                                               strategy.difficulty === 'medium' ? 'Medium / 中' : 'Easy / 易'}
+                                            </span>
+                                            <span className="text-xs text-gray-500">
+                                              {strategy.effectiveness}% effective
+                                            </span>
+                                          </div>
+                                        </div>
+                                        <p className="text-sm text-gray-600">{strategy.descriptionZh}</p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Priority Tips */}
+                              {/* 优先提示 */}
+                              {issueSuggestion.priorityTipsZh && issueSuggestion.priorityTipsZh.length > 0 && (
+                                <div>
+                                  <h5 className="text-sm font-medium text-gray-700 mb-1">
+                                    Tips / 提示
+                                  </h5>
+                                  <ul className="list-disc list-inside text-sm text-gray-600 space-y-1">
+                                    {issueSuggestion.priorityTipsZh.map((tip, tipIdx) => (
+                                      <li key={tipIdx}>{tip}</li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+
+                              {/* Caution */}
+                              {/* 注意事项 */}
+                              {issueSuggestion.cautionZh && (
+                                <div className="bg-yellow-50 border border-yellow-200 rounded px-3 py-2">
+                                  <p className="text-sm text-yellow-800">
+                                    <span className="font-medium">Caution / 注意:</span> {issueSuggestion.cautionZh}
+                                  </p>
+                                </div>
+                              )}
+                            </>
+                          )}
+
+                          {/* Fallback: show basic issue info if no LLM suggestion yet */}
+                          {/* 后备：如果还没有LLM建议则显示基本问题信息 */}
+                          {!issueSuggestion && !isLoadingSuggestion && !suggestionError && (
+                            <>
+                              {issue.position && (
+                                <div>
+                                  <h5 className="text-sm font-medium text-gray-700 mb-1">Position / 位置</h5>
+                                  <p className="text-sm text-gray-600 font-mono bg-white px-2 py-1 rounded">{issue.position}</p>
+                                </div>
+                              )}
+                              {(issue.suggestion || issue.suggestionZh) && (
+                                <div>
+                                  <h5 className="text-sm font-medium text-gray-700 mb-1">Suggestion / 建议</h5>
+                                  {issue.suggestion && <p className="text-sm text-gray-600">{issue.suggestion}</p>}
+                                  {issue.suggestionZh && <p className="text-sm text-gray-500">{issue.suggestionZh}</p>}
+                                </div>
+                              )}
+                            </>
+                          )}
                         </div>
-                        <p className="text-gray-900 mt-1">{issue.description}</p>
-                        <p className="text-gray-600 text-sm">{issue.descriptionZh}</p>
-                        {issue.location && (
-                          <p className="text-gray-500 text-xs mt-1 font-mono">{issue.location}</p>
-                        )}
-                      </div>
+                      )}
                     </div>
-                  </button>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
@@ -640,19 +1067,6 @@ export default function LayerStep1_4({
                   {selectedIssueIndices.size} selected / 已选择 {selectedIssueIndices.size} 个问题
                 </div>
                 <div className="flex gap-2">
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={loadIssueSuggestion}
-                    disabled={selectedIssueIndices.size === 0 || isLoadingSuggestion}
-                  >
-                    {isLoadingSuggestion ? (
-                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    ) : (
-                      <Sparkles className="w-4 h-4 mr-2" />
-                    )}
-                    Load Suggestions / 加载建议
-                  </Button>
                   <Button
                     variant="secondary"
                     size="sm"
@@ -678,59 +1092,6 @@ export default function LayerStep1_4({
                     AI Modify / AI修改
                   </Button>
                 </div>
-              </div>
-            </div>
-          )}
-
-          {/* Suggestion Error */}
-          {suggestionError && (
-            <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg flex items-start gap-3">
-              <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
-              <div>
-                <p className="text-red-600">{suggestionError}</p>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  className="mt-2"
-                  onClick={() => setSuggestionError(null)}
-                >
-                  Dismiss / 关闭
-                </Button>
-              </div>
-            </div>
-          )}
-
-          {/* Issue Suggestion Display (LLM-based) */}
-          {/* 问题建议展示（基于LLM） */}
-          {issueSuggestion && (
-            <div className="mb-6 p-4 bg-purple-50 border border-purple-200 rounded-lg">
-              <h4 className="font-semibold text-purple-900 mb-3 flex items-center gap-2">
-                <Sparkles className="w-5 h-5" />
-                AI Suggestions / AI建议
-              </h4>
-              <div className="space-y-3">
-                <div>
-                  <h5 className="text-sm font-medium text-purple-800">Analysis / 分析:</h5>
-                  <p className="text-purple-700 mt-1">{issueSuggestion.analysis}</p>
-                </div>
-                {issueSuggestion.suggestions && issueSuggestion.suggestions.length > 0 && (
-                  <div>
-                    <h5 className="text-sm font-medium text-purple-800">Suggestions / 建议:</h5>
-                    <ul className="list-disc list-inside mt-1 space-y-1">
-                      {issueSuggestion.suggestions.map((s, i) => (
-                        <li key={i} className="text-purple-700">{s}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {issueSuggestion.exampleFix && (
-                  <div>
-                    <h5 className="text-sm font-medium text-purple-800">Example Fix / 示例修复:</h5>
-                    <pre className="mt-1 p-2 bg-white rounded text-sm text-gray-800 overflow-x-auto">
-                      {issueSuggestion.exampleFix}
-                    </pre>
-                  </div>
-                )}
               </div>
             </div>
           )}
@@ -1136,6 +1497,77 @@ export default function LayerStep1_4({
                 }}
               >
                 Confirm Skip / 确认跳过
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Data/Citation Warning Dialog */}
+      {/* 数据/引用警告对话框 */}
+      {showDataWarning && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-lg mx-4 shadow-xl">
+            <div className="flex items-start gap-3 mb-4">
+              <AlertTriangle className="w-8 h-8 text-red-600 flex-shrink-0" />
+              <div>
+                <h3 className="text-lg font-bold text-red-700">
+                  Data & Citation Risk Warning / 数据及引用风险警告
+                </h3>
+              </div>
+            </div>
+
+            <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
+              <h4 className="font-semibold text-red-800 mb-2">CRITICAL / 重要警告:</h4>
+              <ul className="text-sm text-red-700 space-y-1 list-disc list-inside">
+                <li>AI may add PLACEHOLDER data like <code className="bg-red-100 px-1 rounded">[AUTHOR_XXXXXXXXXX, YEAR_XXXX]</code></li>
+                <li>AI may add PLACEHOLDER statistics like <code className="bg-red-100 px-1 rounded">[XXXX]%</code></li>
+                <li>These placeholders are NOT real data - they are for YOU to replace</li>
+                <li className="text-red-600 font-semibold">AI可能添加占位符数据如 [AUTHOR_XXXXXXXXXX, YEAR_XXXX]</li>
+                <li className="text-red-600 font-semibold">这些占位符不是真实数据 - 需要您自行替换</li>
+              </ul>
+            </div>
+
+            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-4">
+              <h4 className="font-semibold text-yellow-800 mb-2">You MUST / 您必须:</h4>
+              <ul className="text-sm text-yellow-700 space-y-1 list-disc list-inside">
+                <li>Replace ALL <code className="bg-yellow-100 px-1 rounded">[XXXX]</code> placeholders with REAL verified data</li>
+                <li>Verify ALL citations against original sources</li>
+                <li>Never submit documents with unverified placeholders</li>
+                <li>用真实已验证的数据替换所有 [XXXX] 占位符</li>
+                <li>对照原始来源核实所有引用</li>
+                <li>永远不要提交包含未验证占位符的文档</li>
+              </ul>
+            </div>
+
+            <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 mb-4">
+              <p className="text-sm text-gray-700">
+                <strong>Placeholder format / 占位符格式:</strong>
+              </p>
+              <ul className="text-xs text-gray-600 mt-1 space-y-0.5 font-mono">
+                <li>[AUTHOR_XXXXXXXXXX, YEAR_XXXX] - for citations / 用于引用</li>
+                <li>[XXXX]% - for percentages / 用于百分比</li>
+                <li>p &lt; [X.XX] - for p-values / 用于p值</li>
+                <li>[XXXX] - for numbers / 用于数字</li>
+              </ul>
+            </div>
+
+            <div className="flex justify-end gap-3 pt-2">
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  setShowDataWarning(false);
+                  setDataWarningAction(null);
+                }}
+              >
+                Cancel / 取消
+              </Button>
+              <Button
+                variant="primary"
+                className="bg-red-600 hover:bg-red-700"
+                onClick={handleDataWarningConfirm}
+              >
+                I Understand, Proceed / 我理解，继续
               </Button>
             </div>
           </div>

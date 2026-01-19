@@ -26,6 +26,7 @@ import Button from '../../components/common/Button';
 import LoadingMessage from '../../components/common/LoadingMessage';
 import LoadingOverlay from '../../components/common/LoadingOverlay';
 import { documentApi, sessionApi } from '../../services/api';
+import { useSubstepStateStore } from '../../stores/substepStateStore';
 import {
   sectionLayerApi,
   documentLayerApi,
@@ -132,6 +133,7 @@ export default function LayerStep2_3({
   const [isLoading, setIsLoading] = useState(true);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [analysisStarted, setAnalysisStarted] = useState(false);
   const [documentText, setDocumentText] = useState<string>('');
   const [expandedSection, setExpandedSection] = useState<number | null>(null);
   const [showAiSuggestion, setShowAiSuggestion] = useState(false);
@@ -144,11 +146,19 @@ export default function LayerStep2_3({
   // 用于合并修改的问题选择
   const [selectedIssueIndices, setSelectedIssueIndices] = useState<Set<number>>(new Set());
 
+  // Click-expand state for individual issue analysis
+  // 点击展开状态，用于单个问题分析
+  const [expandedIssueIndex, setExpandedIssueIndex] = useState<number | null>(null);
+
   // Issue suggestion state (LLM-based detailed suggestions)
   // 问题建议状态（基于LLM的详细建议）
   const [issueSuggestion, setIssueSuggestion] = useState<IssueSuggestionResponse | null>(null);
   const [isLoadingSuggestion, setIsLoadingSuggestion] = useState(false);
   const [suggestionError, setSuggestionError] = useState<string | null>(null);
+
+  // Per-issue suggestion cache to avoid redundant API calls
+  // 每个问题的建议缓存，避免重复API调用
+  const suggestionCacheRef = useRef<Map<number, IssueSuggestionResponse>>(new Map());
 
   // Merge modify state
   // 合并修改状态
@@ -185,12 +195,39 @@ export default function LayerStep2_3({
   }, [documentId, sessionFetchAttempted]);
 
   const loadDocumentText = async (docId: string) => {
+    // Get substep state store for checking previous step's modified text
+    // 获取子步骤状态存储，用于检查前一个步骤的修改文本
+    const substepStore = useSubstepStateStore.getState();
+
     try {
-      const doc = await documentApi.get(docId);
-      if (doc.originalText) {
-        setDocumentText(doc.originalText);
+      // Initialize substep store for session if not already done
+      if (sessionId && substepStore.currentSessionId !== sessionId) {
+        await substepStore.initForSession(sessionId);
+      }
+
+      // Check for modified text from previous steps (most recent first)
+      const previousSteps = ['step2-2', 'step2-1', 'step2-0'];
+      let foundModifiedText: string | null = null;
+
+      for (const stepName of previousSteps) {
+        const stepState = substepStore.getState(stepName);
+        if (stepState?.modifiedText) {
+          console.log(`[LayerStep2_3] Using modified text from ${stepName}`);
+          foundModifiedText = stepState.modifiedText;
+          break;
+        }
+      }
+
+      if (foundModifiedText) {
+        setDocumentText(foundModifiedText);
       } else {
-        setError('Document text not found / 未找到文档文本');
+        // Fallback to original document text
+        const doc = await documentApi.get(docId);
+        if (doc.originalText) {
+          setDocumentText(doc.originalText);
+        } else {
+          setError('Document text not found / 未找到文档文本');
+        }
       }
     } catch (err) {
       console.error('Failed to load document:', err);
@@ -202,10 +239,10 @@ export default function LayerStep2_3({
 
   // Run analysis
   useEffect(() => {
-    if (documentText && !isAnalyzingRef.current) {
+    if (documentText && analysisStarted && !isAnalyzingRef.current) {
       runAnalysis();
     }
-  }, [documentText]);
+  }, [documentText, analysisStarted]);
 
   const runAnalysis = async () => {
     if (isAnalyzingRef.current || !documentText) return;
@@ -290,37 +327,69 @@ export default function LayerStep2_3({
     }
   };
 
-  // Load detailed suggestion for selected issues (LLM-based)
-  // 为选中的问题加载详细建议（基于LLM）
-  const loadIssueSuggestion = useCallback(async () => {
-    if (selectedIssueIndices.size === 0 || !documentId) return;
+  // Load detailed suggestion for a specific issue (LLM-based) with caching
+  // 为特定问题加载详细建议（基于LLM），带缓存
+  const loadIssueSuggestion = useCallback(async (index: number) => {
+    const issue = contentIssues[index];
+    if (!issue || !documentId) return;
+
+    // Check cache first
+    // 首先检查缓存
+    const cached = suggestionCacheRef.current.get(index);
+    if (cached) {
+      setIssueSuggestion(cached);
+      return;
+    }
 
     setIsLoadingSuggestion(true);
     setSuggestionError(null);
 
     try {
-      const selectedIssues = Array.from(selectedIssueIndices).map(i => contentIssues[i]);
       const response = await documentLayerApi.getIssueSuggestion(
         documentId,
-        selectedIssues[0],
+        issue,
         false
       );
-      setIssueSuggestion({
+      const suggestion: IssueSuggestionResponse = {
         analysis: response.diagnosisZh || '',
         suggestions: response.strategies?.map(s => `${s.nameZh}: ${s.descriptionZh}`) || [],
         exampleFix: response.strategies?.[0]?.exampleAfter || '',
-      });
+      };
+      // Store in cache
+      // 存入缓存
+      suggestionCacheRef.current.set(index, suggestion);
+      setIssueSuggestion(suggestion);
     } catch (err) {
       console.error('Failed to load suggestion:', err);
       setSuggestionError('Failed to load detailed suggestion / 加载详细建议失败');
     } finally {
       setIsLoadingSuggestion(false);
     }
-  }, [selectedIssueIndices, documentId, contentIssues]);
+  }, [contentIssues, documentId]);
 
-  // Handle issue selection toggle
-  // 处理问题选择切换
-  const handleIssueClick = useCallback((index: number) => {
+  // Handle issue click - toggle expand and auto-load suggestion
+  // 处理问题点击 - 切换展开并自动加载建议
+  const handleIssueClick = useCallback(async (index: number) => {
+    const issue = contentIssues[index];
+    if (!issue || !documentId) return;
+
+    // Collapse if already expanded
+    // 如果已展开则收起
+    if (expandedIssueIndex === index) {
+      setExpandedIssueIndex(null);
+      setIssueSuggestion(null);
+      return;
+    }
+
+    // Expand and load suggestion (from cache if available)
+    // 展开并加载建议（如有缓存则从缓存加载）
+    setExpandedIssueIndex(index);
+    await loadIssueSuggestion(index);
+  }, [contentIssues, documentId, expandedIssueIndex, loadIssueSuggestion]);
+
+  // Toggle issue selection (for checkbox only)
+  // 切换问题选择（仅用于复选框）
+  const toggleIssueSelection = useCallback((index: number) => {
     setSelectedIssueIndices(prev => {
       const newSet = new Set(prev);
       if (newSet.has(index)) {
@@ -330,8 +399,19 @@ export default function LayerStep2_3({
       }
       return newSet;
     });
-    setIssueSuggestion(null);
     setMergeResult(null);
+  }, []);
+
+  // Select all issues
+  // 全选所有问题
+  const selectAllIssues = useCallback(() => {
+    setSelectedIssueIndices(new Set(contentIssues.map((_, idx) => idx)));
+  }, [contentIssues]);
+
+  // Deselect all issues
+  // 取消全选所有问题
+  const deselectAllIssues = useCallback(() => {
+    setSelectedIssueIndices(new Set());
   }, []);
 
   // Execute merge modify (generate prompt or apply modification)
@@ -412,34 +492,42 @@ export default function LayerStep2_3({
     setIsUploading(true);
     setError(null);
 
+    // Get substep state store for saving modified text
+    // 获取子步骤状态存储，用于保存修改文本
+    const substepStore = useSubstepStateStore.getState();
+
     try {
-      let newDocId: string;
+      let modifiedText: string = '';
 
       if (modifyMode === 'file' && newFile) {
-        const result = await documentApi.upload(newFile);
-        newDocId = result.documentId;
+        modifiedText = await newFile.text();
       } else if (modifyMode === 'text' && newText.trim()) {
-        const result = await documentApi.uploadText(newText, `step2_3_modified_${Date.now()}.txt`);
-        newDocId = result.documentId;
+        modifiedText = newText.trim();
       } else {
         setError('Please select a file or enter text / 请选择文件或输入文本');
         setIsUploading(false);
         return;
       }
 
-      // Navigate to next step with new document
-      // 使用新文档导航到下一步
+      // Save modified text to substep store
+      if (sessionId && modifiedText) {
+        await substepStore.saveModifiedText('step2-3', modifiedText);
+        await substepStore.markCompleted('step2-3');
+        console.log('[LayerStep2_3] Saved modified text to substep store');
+      }
+
+      // Navigate with same documentId
       const params = new URLSearchParams();
       if (mode) params.set('mode', mode);
       if (sessionId) params.set('session', sessionId);
-      navigate(`/flow/layer4-step2-4/${newDocId}?${params.toString()}`);
+      navigate(`/flow/layer4-step2-4/${documentId}?${params.toString()}`);
     } catch (err) {
       console.error('Upload failed:', err);
       setError('Failed to upload modified document / 上传修改后的文档失败');
     } finally {
       setIsUploading(false);
     }
-  }, [modifyMode, newFile, newText, mode, sessionId, navigate]);
+  }, [modifyMode, newFile, newText, mode, sessionId, navigate, documentId]);
 
   // Navigation
   const handleBack = () => {
@@ -525,6 +613,32 @@ export default function LayerStep2_3({
           章节内部结构相似性检测 - 比较不同章节的内部逻辑模式是否高度相似（AI模板特征）
         </p>
       </div>
+
+      {/* Start Analysis / Skip Step */}
+      {/* 开始分析 / 跳过此步 */}
+      {documentText && !analysisStarted && !isAnalyzing && !result && (
+        <div className="mb-6 p-6 bg-gray-50 border border-gray-200 rounded-lg">
+          <div className="text-center">
+            <GitCompare className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+            <h3 className="text-lg font-medium text-gray-900 mb-2">Ready to Analyze / 准备分析</h3>
+            <p className="text-gray-600 mb-6">
+              Click to analyze internal structure similarity and detect AI template patterns
+              <br />
+              <span className="text-gray-500">点击分析内部结构相似性并检测AI模板模式</span>
+            </p>
+            <div className="flex items-center justify-center gap-4">
+              <Button variant="primary" size="lg" onClick={() => setAnalysisStarted(true)}>
+                <Sparkles className="w-5 h-5 mr-2" />
+                Start Analysis / 开始分析
+              </Button>
+              <Button variant="secondary" size="lg" onClick={() => setShowSkipConfirm(true)}>
+                <ArrowRight className="w-5 h-5 mr-2" />
+                Skip Step / 跳过此步
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Analysis Progress */}
       {isAnalyzing && (
@@ -625,39 +739,58 @@ export default function LayerStep2_3({
                   <AlertTriangle className="w-5 h-5 text-yellow-600" />
                   Detected Issues / 检测到的问题
                   <span className="text-sm font-normal text-gray-500">
-                    (Click to select / 点击选择)
+                    ({selectedIssueIndices.size}/{contentIssues.length} selected / 已选择)
                   </span>
                 </h3>
-                {hasSelectedIssues && (
-                  <span className="text-sm text-blue-600">
-                    {selectedIssueIndices.size} selected / 已选择
-                  </span>
-                )}
+                <div className="flex items-center gap-2">
+                  {/* Select All / Deselect All buttons */}
+                  {/* 全选/取消全选按钮 */}
+                  <Button variant="secondary" size="sm" onClick={selectAllIssues}>
+                    Select All / 全选
+                  </Button>
+                  <Button variant="secondary" size="sm" onClick={deselectAllIssues}>
+                    Deselect All / 取消全选
+                  </Button>
+                </div>
               </div>
               <div className="space-y-2">
                 {contentIssues.map((issue, idx) => (
-                  <button
+                  <div
                     key={idx}
-                    onClick={() => handleIssueClick(idx)}
                     className={clsx(
-                      'w-full text-left p-3 rounded-lg border transition-all',
+                      'rounded-lg border transition-all',
                       selectedIssueIndices.has(idx)
                         ? 'bg-blue-50 border-blue-300 ring-2 ring-blue-200'
-                        : 'bg-white border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+                        : expandedIssueIndex === idx
+                        ? 'bg-gray-50 border-gray-300'
+                        : 'bg-white border-gray-200 hover:border-gray-300'
                     )}
                   >
-                    <div className="flex items-start gap-3">
-                      <div className={clsx(
-                        'w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 mt-0.5',
-                        selectedIssueIndices.has(idx)
-                          ? 'bg-blue-600 border-blue-600'
-                          : 'border-gray-300'
-                      )}>
+                    <div className="p-3 flex items-start gap-3">
+                      {/* Checkbox - separate click handler */}
+                      {/* 复选框 - 独立的点击处理 */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleIssueSelection(idx);
+                        }}
+                        className={clsx(
+                          'w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 mt-0.5 transition-colors',
+                          selectedIssueIndices.has(idx)
+                            ? 'bg-blue-600 border-blue-600'
+                            : 'border-gray-300 hover:border-blue-400'
+                        )}
+                      >
                         {selectedIssueIndices.has(idx) && (
                           <Check className="w-3 h-3 text-white" />
                         )}
-                      </div>
-                      <div className="flex-1">
+                      </button>
+                      {/* Issue content - click to expand */}
+                      {/* 问题内容 - 点击展开 */}
+                      <button
+                        onClick={() => handleIssueClick(idx)}
+                        className="flex-1 text-left"
+                      >
                         <div className="flex items-center gap-2">
                           <span className={clsx(
                             'px-2 py-0.5 rounded text-xs font-medium',
@@ -669,22 +802,67 @@ export default function LayerStep2_3({
                              issue.severity === 'medium' ? 'Medium / 中' : 'Low / 低'}
                           </span>
                           <span className="text-xs text-gray-500">{issue.layer}</span>
+                          <span className="text-xs text-blue-500 ml-auto">
+                            {expandedIssueIndex === idx ? '▼ Click to collapse' : '▶ Click for AI analysis'}
+                          </span>
                         </div>
                         <p className="text-gray-900 mt-1">{issue.description}</p>
                         <p className="text-gray-600 text-sm">{issue.descriptionZh}</p>
                         {issue.location && (
                           <p className="text-gray-500 text-xs mt-1 font-mono">{issue.location}</p>
                         )}
-                      </div>
+                      </button>
                     </div>
-                  </button>
+                    {/* Expanded content - LLM analysis */}
+                    {/* 展开内容 - LLM分析 */}
+                    {expandedIssueIndex === idx && (
+                      <div className="px-3 pb-3 pt-0 ml-8 border-t border-gray-200">
+                        {isLoadingSuggestion ? (
+                          <div className="flex items-center gap-2 py-3 text-blue-600">
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            <span className="text-sm">Loading AI analysis... / 加载AI分析中...</span>
+                          </div>
+                        ) : issueSuggestion ? (
+                          <div className="py-3 space-y-3">
+                            <div>
+                              <h5 className="text-sm font-medium text-purple-800">Analysis / 分析:</h5>
+                              <p className="text-purple-700 text-sm mt-1">{issueSuggestion.analysis}</p>
+                            </div>
+                            {issueSuggestion.suggestions && issueSuggestion.suggestions.length > 0 && (
+                              <div>
+                                <h5 className="text-sm font-medium text-purple-800">Suggestions / 建议:</h5>
+                                <ul className="list-disc list-inside mt-1 space-y-1">
+                                  {issueSuggestion.suggestions.map((s, i) => (
+                                    <li key={i} className="text-purple-700 text-sm">{s}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                            {issueSuggestion.exampleFix && (
+                              <div>
+                                <h5 className="text-sm font-medium text-purple-800">Example / 示例:</h5>
+                                <pre className="mt-1 p-2 bg-white rounded text-xs text-gray-800 overflow-x-auto">
+                                  {issueSuggestion.exampleFix}
+                                </pre>
+                              </div>
+                            )}
+                            {suggestionCacheRef.current.has(idx) && (
+                              <p className="text-xs text-gray-400">✓ Cached / 已缓存</p>
+                            )}
+                          </div>
+                        ) : suggestionError ? (
+                          <div className="py-3 text-red-600 text-sm">{suggestionError}</div>
+                        ) : null}
+                      </div>
+                    )}
+                  </div>
                 ))}
               </div>
             </div>
           )}
 
           {/* Action Buttons for Selected Issues */}
-          {/* 选中问题的操作按钮 - Style matched with LayerStep2_0 */}
+          {/* 选中问题的操作按钮 */}
           {contentIssues.length > 0 && (
             <div className="mb-6 pb-6 border-b">
               <div className="flex items-center justify-between">
@@ -692,19 +870,6 @@ export default function LayerStep2_3({
                   {selectedIssueIndices.size} selected / 已选择 {selectedIssueIndices.size} 个问题
                 </div>
                 <div className="flex gap-2">
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={loadIssueSuggestion}
-                    disabled={selectedIssueIndices.size === 0 || isLoadingSuggestion}
-                  >
-                    {isLoadingSuggestion ? (
-                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    ) : (
-                      <Sparkles className="w-4 h-4 mr-2" />
-                    )}
-                    Load Suggestions / 加载建议
-                  </Button>
                   <Button
                     variant="secondary"
                     size="sm"
@@ -730,59 +895,6 @@ export default function LayerStep2_3({
                     AI Modify / AI修改
                   </Button>
                 </div>
-              </div>
-            </div>
-          )}
-
-          {/* Suggestion Error */}
-          {suggestionError && (
-            <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg flex items-start gap-3">
-              <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
-              <div>
-                <p className="text-red-600">{suggestionError}</p>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  className="mt-2"
-                  onClick={() => setSuggestionError(null)}
-                >
-                  Dismiss / 关闭
-                </Button>
-              </div>
-            </div>
-          )}
-
-          {/* Issue Suggestion Display (LLM-based) */}
-          {/* 问题建议展示（基于LLM） */}
-          {issueSuggestion && (
-            <div className="mb-6 p-4 bg-purple-50 border border-purple-200 rounded-lg">
-              <h4 className="font-semibold text-purple-900 mb-3 flex items-center gap-2">
-                <Sparkles className="w-5 h-5" />
-                AI Suggestions / AI建议
-              </h4>
-              <div className="space-y-3">
-                <div>
-                  <h5 className="text-sm font-medium text-purple-800">Analysis / 分析:</h5>
-                  <p className="text-purple-700 mt-1">{issueSuggestion.analysis}</p>
-                </div>
-                {issueSuggestion.suggestions && issueSuggestion.suggestions.length > 0 && (
-                  <div>
-                    <h5 className="text-sm font-medium text-purple-800">Suggestions / 建议:</h5>
-                    <ul className="list-disc list-inside mt-1 space-y-1">
-                      {issueSuggestion.suggestions.map((s, i) => (
-                        <li key={i} className="text-purple-700">{s}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {issueSuggestion.exampleFix && (
-                  <div>
-                    <h5 className="text-sm font-medium text-purple-800">Example Fix / 示例修复:</h5>
-                    <pre className="mt-1 p-2 bg-white rounded text-sm text-gray-800 overflow-x-auto">
-                      {issueSuggestion.exampleFix}
-                    </pre>
-                  </div>
-                )}
               </div>
             </div>
           )}

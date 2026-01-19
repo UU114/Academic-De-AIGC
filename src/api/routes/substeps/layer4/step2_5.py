@@ -6,10 +6,13 @@ Analyze inter-section logic using LLM.
 使用LLM分析章节间逻辑关系。
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 import time
 
+from src.db.database import get_db
+from src.services.document_service import get_working_text, save_modified_text
 from src.api.routes.substeps.schemas import (
     SubstepBaseRequest,
     InterSectionLogicResponse,
@@ -82,13 +85,16 @@ async def generate_prompt(request: MergeModifyRequest):
 
 
 @router.post("/merge-modify/apply", response_model=MergeModifyApplyResponse)
-async def apply_modification(request: MergeModifyRequest):
+async def apply_modification(
+    request: MergeModifyRequest,
+    db: AsyncSession = Depends(get_db)
+):
     """Apply AI modification for inter-section logic issues"""
     try:
-        from src.services.session_service import SessionService
-        session_service = SessionService()
-        session_data = await session_service.get_session(request.session_id) if request.session_id else None
-        document_text = session_data.get("document_text", "") if session_data else ""
+        # Get working text using document_service
+        document_text, locked_terms = await get_working_text(
+            db, request.session_id, "step2-5", request.document_id
+        )
 
         if not document_text:
             raise HTTPException(status_code=400, detail="Document text not found in session")
@@ -97,10 +103,18 @@ async def apply_modification(request: MergeModifyRequest):
             document_text=document_text,
             issues=request.selected_issues,
             user_notes=request.user_notes,
-            locked_terms=session_data.get("locked_terms", []) if session_data else []
+            locked_terms=locked_terms
         )
+
+        # Save modified text to database
+        modified_text = result.get("modified_text", "")
+        if modified_text and request.session_id:
+            await save_modified_text(
+                db, request.session_id, "step2-5", modified_text
+            )
+
         return MergeModifyApplyResponse(
-            modified_text=result.get("modified_text", ""),
+            modified_text=modified_text,
             changes_summary_zh=result.get("changes_summary_zh", ""),
             changes_count=result.get("changes_count", 0),
             issues_addressed=[i.type for i in request.selected_issues],

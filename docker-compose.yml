@@ -1,12 +1,35 @@
 version: '3.8'
 
 services:
+  api:
+    build: .
+    container_name: academicguard-api
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://academicguard:AG_Pass_2026@db/academicguard
+      - REDIS_URL=redis://redis:6379/0
+      - SYSTEM_MODE=debug
+      - JWT_SECRET_KEY=auF1ZkhWg8b6m_SiJjcaMdIyb1390Z1xLhWIzR1NiCM
+      - INTERNAL_SERVICE_SECRET=gpW1h0nud5boEbu1u6uX0kyGfuV_lPMgzyTTuzBVCV0
+      - DASHSCOPE_API_KEY=sk-4dac6cf7f81a447981bd28f843e2103d
+      - DASHSCOPE_MODEL=qwen-plus-2025-12-01
+      - LLM_PROVIDER=dashscope
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - .:/app
+      - ./data:/app/data
+
   db:
     image: postgres:15-alpine
+    container_name: academicguard-db
     restart: always
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: password
+      POSTGRES_USER: academicguard
+      POSTGRES_PASSWORD: AG_Pass_2026
       POSTGRES_DB: academicguard
     ports:
       - "5432:5432"
@@ -15,6 +38,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    container_name: academicguard-redis
     restart: always
     ports:
       - "6379:6379"

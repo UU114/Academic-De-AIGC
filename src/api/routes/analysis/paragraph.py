@@ -95,12 +95,12 @@ class ParagraphIdentificationResponse(BaseModel):
 @router.post("/step3-0/identify", response_model=ParagraphIdentificationResponse)
 async def identify_paragraphs(request: ParagraphIdentificationRequest):
     """
-    Step 3.0: Paragraph Identification & Segmentation (LLM-based)
-    步骤 3.0：段落识别与分割（基于LLM）
+    Step 3.0: Paragraph Identification & Segmentation (LLM-based with pre-calculated statistics)
+    步骤 3.0：段落识别与分割（基于LLM，使用预计算统计数据）
 
     This is the foundational step for Layer 3 (Paragraph Level Analysis).
-    Uses LLM to identify paragraph boundaries and filter non-body content.
-    使用LLM识别段落边界并过滤非正文内容。
+    Pre-calculates paragraph statistics and passes to LLM for analysis.
+    使用预计算统计数据并传递给LLM进行分析。
     """
     start_time = time.time()
 
@@ -120,15 +120,48 @@ async def identify_paragraphs(request: ParagraphIdentificationRequest):
                 processing_time_ms=int((time.time() - start_time) * 1000),
             )
 
-        # Call LLM handler for analysis
-        # 调用LLM handler进行分析
+        # STEP 1: Pre-calculate paragraph statistics from text
+        # 步骤1：从文本预计算段落统计数据
+        raw_paragraphs = _split_text_to_paragraphs(document_text)
+        paragraph_count = len(raw_paragraphs)
+        total_word_count = sum(len(p.split()) for p in raw_paragraphs)
+
+        # Calculate per-paragraph statistics
+        # 计算每个段落的统计数据
+        para_stats = []
+        for i, para in enumerate(raw_paragraphs):
+            sentences = _segmenter.segment(para)
+            para_stats.append({
+                "index": i,
+                "word_count": len(para.split()),
+                "sentence_count": len(sentences) if sentences else 1,
+                "char_count": len(para),
+                "preview": para[:100] + "..." if len(para) > 100 else para
+            })
+
+        # Build pre-calculated statistics JSON
+        # 构建预计算统计数据JSON
+        import json
+        parsed_statistics = {
+            "paragraph_count": paragraph_count,
+            "total_word_count": total_word_count,
+            "paragraph_details": para_stats[:20],  # Limit for prompt size
+            "avg_paragraph_words": round(total_word_count / paragraph_count, 1) if paragraph_count > 0 else 0
+        }
+        parsed_statistics_str = json.dumps(parsed_statistics, indent=2, ensure_ascii=False)
+
+        logger.info(f"Step 3.0: Pre-calculated {paragraph_count} paragraphs, {total_word_count} words")
+
+        # STEP 2: Pass pre-calculated statistics to LLM
+        # 步骤2：将预计算统计数据传递给LLM
         logger.info("Calling Step3_0Handler for LLM-based paragraph identification")
         result = await step3_0_handler.analyze(
             document_text=document_text,
             locked_terms=[],
             session_id=request.session_id,
-            step_name="layer3-step3-0",
-            use_cache=True
+            step_name="step3-0",
+            use_cache=True,
+            parsed_statistics=parsed_statistics_str
         )
 
         # Convert LLM result to response model
@@ -298,7 +331,7 @@ async def analyze_paragraph_roles(request: ParagraphAnalysisRequest):
             document_text=document_text,
             locked_terms=[],
             session_id=request.session_id,
-            step_name="layer3-step3-1",
+            step_name="step3-1",
             use_cache=True
         )
 
@@ -382,7 +415,7 @@ async def analyze_paragraph_coherence(request: ParagraphAnalysisRequest):
             document_text=document_text,
             locked_terms=[],
             session_id=request.session_id,
-            step_name="layer3-step3-2",
+            step_name="step3-2",
             use_cache=True
         )
 
@@ -428,11 +461,11 @@ async def analyze_paragraph_coherence(request: ParagraphAnalysisRequest):
 @router.post("/anchor", response_model=ParagraphAnalysisResponse)
 async def analyze_anchor_density(request: ParagraphAnalysisRequest):
     """
-    Step 3.3: Anchor Density Analysis (LLM-based)
-    步骤 3.3：锚点密度分析（基于LLM）
+    Step 3.3: Anchor Density Analysis (LLM-based with pre-calculated statistics)
+    步骤 3.3：锚点密度分析（基于LLM，使用预计算统计数据）
 
-    Analyzes evidence density in paragraphs using LLM.
-    使用LLM分析段落中的证据密度。
+    Pre-calculates anchor counts and density, then passes to LLM for analysis.
+    预计算锚点数量和密度，然后传递给LLM进行分析。
     """
     start_time = time.time()
 
@@ -459,15 +492,81 @@ async def analyze_anchor_density(request: ParagraphAnalysisRequest):
                 low_burstiness_paragraphs=[],
             )
 
-        # Call LLM handler for analysis
-        # 调用LLM handler进行分析
+        # STEP 1: Pre-calculate anchor statistics from text
+        # 步骤1：从文本预计算锚点统计数据
+        import re
+        import json
+
+        paragraphs = _split_text_to_paragraphs(document_text)
+
+        # Anchor detection patterns
+        # 锚点检测模式
+        anchor_patterns = {
+            "numbers": r'\b\d+(?:\.\d+)?%?\b|\b\d{1,3}(?:,\d{3})*(?:\.\d+)?\b',
+            "dates": r'\b(?:19|20)\d{2}\b|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2}\b',
+            "citations": r'\[\d+\]|\(\w+(?:\s+et\s+al\.?)?,?\s*(?:19|20)\d{2}\)|\(\d{4}\)',
+            "names": r'\b(?:Dr\.|Prof\.|Mr\.|Mrs\.|Ms\.)\s+[A-Z][a-z]+|\b[A-Z][a-z]+\s+(?:University|Institute|Lab)\b'
+        }
+
+        para_anchor_stats = []
+        total_anchors = 0
+        total_words = 0
+        high_risk_paragraphs = []
+
+        for i, para in enumerate(paragraphs):
+            word_count = len(para.split())
+            total_words += word_count
+
+            anchor_counts = {}
+            for anchor_type, pattern in anchor_patterns.items():
+                matches = re.findall(pattern, para)
+                anchor_counts[anchor_type] = len(matches)
+
+            total_anchor_count = sum(anchor_counts.values())
+            total_anchors += total_anchor_count
+            density = round((total_anchor_count / word_count) * 100, 2) if word_count > 0 else 0
+
+            has_risk = total_anchor_count == 0 or density < 1.0  # Less than 1 anchor per 100 words
+            if has_risk:
+                high_risk_paragraphs.append(i)
+
+            para_anchor_stats.append({
+                "paragraph_index": i,
+                "word_count": word_count,
+                "anchor_count": total_anchor_count,
+                "density": density,
+                "has_hallucination_risk": has_risk,
+                "anchor_types": anchor_counts
+            })
+
+        overall_density = round((total_anchors / total_words) * 100, 2) if total_words > 0 else 0
+
+        # Build pre-calculated statistics JSON
+        # 构建预计算统计数据JSON
+        parsed_statistics = {
+            "paragraph_count": len(paragraphs),
+            "total_words": total_words,
+            "total_anchors": total_anchors,
+            "overall_density": overall_density,
+            "high_risk_count": len(high_risk_paragraphs),
+            "high_risk_paragraphs": high_risk_paragraphs[:10],  # Limit for prompt
+            "paragraph_anchor_stats": para_anchor_stats[:15]  # Limit for prompt
+        }
+        parsed_statistics_str = json.dumps(parsed_statistics, indent=2, ensure_ascii=False)
+
+        logger.info(f"Step 3.3: Pre-calculated overall_density={overall_density}, high_risk={len(high_risk_paragraphs)}")
+
+        # STEP 2: Pass pre-calculated statistics to LLM
+        # 步骤2：将预计算统计数据传递给LLM
         logger.info("Calling Step3_3Handler for LLM-based anchor density analysis")
         result = await step3_3_handler.analyze(
             document_text=document_text,
             locked_terms=[],
             session_id=request.session_id,
-            step_name="layer3-step3-3",
-            use_cache=False  # Temporarily disable cache for debugging
+            step_name="step3-3",
+            use_cache=True,
+            parsed_statistics=parsed_statistics_str,
+            overall_density=overall_density
         )
 
         # Debug log: Print LLM result keys and structure
@@ -495,34 +594,50 @@ async def analyze_anchor_density(request: ParagraphAnalysisRequest):
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
-        # Extract paragraph densities from LLM result
-        # LLM returns "paragraph_densities" field with anchor info
-        # LLM 返回 "paragraph_densities" 字段包含锚点信息
-        paragraph_densities = result.get("paragraph_densities", [])
-        anchor_densities = [pa.get("density", 0) for pa in paragraph_densities]
+        # STEP 3: Use PRE-CALCULATED statistics (not LLM's)
+        # 步骤3：使用预计算的统计数据（不是LLM的）
 
-        # Build paragraph details for frontend
-        # 构建前端需要的段落详情
+        # Aggregate anchor type distribution from pre-calculated data
+        # 从预计算数据汇总锚点类型分布
+        aggregated_anchor_types = {
+            "numbers": 0,
+            "dates": 0,
+            "citations": 0,
+            "names": 0
+        }
+        for ps in para_anchor_stats:
+            for anchor_type, count in ps["anchor_types"].items():
+                if anchor_type in aggregated_anchor_types:
+                    aggregated_anchor_types[anchor_type] += count
+
+        # Build paragraph details from pre-calculated data
+        # 从预计算数据构建段落详情
         paragraph_details = []
-        for pd in paragraph_densities:
-            paragraph_details.append({
-                "index": pd.get("paragraph_index", 0),
-                "role": "body",  # Default role, can be enhanced later
-                "coherenceScore": 0,  # Not analyzed in this step
-                "anchorCount": pd.get("anchor_count", 0),
-                "sentenceLengthCv": 0,  # Not analyzed in this step
-                "issues": [],
-                "wordCount": pd.get("word_count", 0),
-                "density": pd.get("density", 0),
-                "hasHallucinationRisk": pd.get("has_hallucination_risk", False),
-                "riskLevel": pd.get("risk_level", "low"),
-                "anchorTypes": pd.get("anchor_types", {})
-            })
+        anchor_densities_list = []
+        for i, ps in enumerate(para_anchor_stats):
+            # Get first 3 words of paragraph for preview
+            # 获取段落前3个单词作为预览
+            para_text = paragraphs[i] if i < len(paragraphs) else ""
+            words = para_text.split()[:5]  # First 5 words
+            preview = " ".join(words)
+            if len(words) < len(para_text.split()):
+                preview += "..."
 
-        # Calculate overall anchor density
-        # 计算整体锚点密度
-        overall_density = result.get("overall_density", 0.0)
-        high_risk_paragraphs = result.get("high_risk_paragraphs", [])
+            paragraph_details.append({
+                "index": ps["paragraph_index"],
+                "role": "body",
+                "preview": preview,  # Add paragraph preview
+                "coherenceScore": 0,
+                "anchorCount": ps["anchor_count"],
+                "sentenceLengthCv": 0,
+                "issues": [],
+                "wordCount": ps["word_count"],
+                "density": ps["density"],
+                "hasHallucinationRisk": ps["has_hallucination_risk"],
+                "riskLevel": "high" if ps["has_hallucination_risk"] else "low",
+                "anchorTypes": ps["anchor_types"]
+            })
+            anchor_densities_list.append(ps["density"])
 
         return ParagraphAnalysisResponse(
             risk_score=result.get("risk_score", 0),
@@ -531,18 +646,18 @@ async def analyze_anchor_density(request: ParagraphAnalysisRequest):
             recommendations=result.get("recommendations", []),
             recommendations_zh=result.get("recommendations_zh", []),
             details={
-                "overall_density": overall_density,
-                "high_risk_paragraphs": high_risk_paragraphs,
-                "anchor_type_distribution": result.get("anchor_type_distribution", {}),
+                "overall_density": overall_density,  # Use pre-calculated value
+                "high_risk_paragraphs": high_risk_paragraphs,  # Use pre-calculated value
+                "anchor_type_distribution": aggregated_anchor_types,  # Use PRE-CALCULATED, not LLM
                 "document_hallucination_risk": result.get("document_hallucination_risk", "low"),
                 "paragraph_details": paragraph_details
             },
             processing_time_ms=processing_time_ms,
             paragraph_roles=[],
             coherence_scores=[],
-            anchor_densities=anchor_densities,
-            anchor_density=overall_density,
-            paragraph_count=len(paragraph_densities),
+            anchor_densities=anchor_densities_list,  # Use pre-calculated value
+            anchor_density=overall_density,  # Use pre-calculated value
+            paragraph_count=len(para_anchor_stats),  # Use pre-calculated value
             paragraph_details=paragraph_details,
             sentence_length_cvs=[],
             low_burstiness_paragraphs=[],
@@ -556,11 +671,11 @@ async def analyze_anchor_density(request: ParagraphAnalysisRequest):
 @router.post("/sentence-length", response_model=ParagraphAnalysisResponse)
 async def analyze_sentence_length_distribution(request: ParagraphAnalysisRequest):
     """
-    Step 3.4: Sentence Length Distribution (LLM-based)
-    步骤 3.4：段内句子长度分布（基于LLM）
+    Step 3.4: Sentence Length Distribution (LLM-based with pre-calculated statistics)
+    步骤 3.4：段内句子长度分布（基于LLM，使用预计算统计数据）
 
-    Analyzes sentence length variation within each paragraph using LLM.
-    使用LLM分析每个段落内句子长度变化。
+    Pre-calculates sentence length CV and burstiness, then passes to LLM for analysis.
+    预计算句子长度CV和突发性，然后传递给LLM进行分析。
     """
     start_time = time.time()
 
@@ -587,15 +702,88 @@ async def analyze_sentence_length_distribution(request: ParagraphAnalysisRequest
                 low_burstiness_paragraphs=[],
             )
 
-        # Call LLM handler for analysis
-        # 调用LLM handler进行分析
+        # STEP 1: Pre-calculate sentence length statistics from text
+        # 步骤1：从文本预计算句子长度统计数据
+        import statistics as stat_module
+        import json
+
+        paragraphs = _split_text_to_paragraphs(document_text)
+
+        para_length_stats = []
+        low_burstiness_paragraphs = []
+        all_cvs = []
+
+        for i, para in enumerate(paragraphs):
+            sentences = _segmenter.segment(para)
+            # Extract text from Sentence objects and calculate word counts
+            # 从Sentence对象中提取文本并计算词数
+            sentence_lengths = [len(s.text.split()) for s in sentences] if sentences else []
+
+            if len(sentence_lengths) >= 2:
+                mean_len = stat_module.mean(sentence_lengths)
+                stdev_len = stat_module.stdev(sentence_lengths)
+                cv = round(stdev_len / mean_len, 3) if mean_len > 0 else 0
+            else:
+                mean_len = sentence_lengths[0] if sentence_lengths else 0
+                stdev_len = 0
+                cv = 0
+
+            all_cvs.append(cv)
+
+            # Burstiness: variance in consecutive sentence length differences
+            # 突发性：连续句子长度差异的方差
+            burstiness = 0
+            if len(sentence_lengths) >= 3:
+                diffs = [abs(sentence_lengths[j+1] - sentence_lengths[j]) for j in range(len(sentence_lengths)-1)]
+                burstiness = round(stat_module.stdev(diffs) / stat_module.mean(diffs), 2) if stat_module.mean(diffs) > 0 else 0
+
+            has_short = any(l < 10 for l in sentence_lengths)
+            has_long = any(l > 40 for l in sentence_lengths)
+
+            # Low burstiness = uniform sentence lengths (AI-like)
+            if cv < 0.3:
+                low_burstiness_paragraphs.append(i)
+
+            para_length_stats.append({
+                "paragraph_index": i,
+                "sentence_count": len(sentences) if sentences else 0,
+                "sentence_lengths": sentence_lengths[:10],  # Limit for prompt
+                "mean_length": round(mean_len, 1),
+                "std_length": round(stdev_len, 1),
+                "cv": cv,
+                "burstiness": burstiness,
+                "has_short_sentence": has_short,
+                "has_long_sentence": has_long,
+                "rhythm_score": round(burstiness * 0.5 + (0.5 if has_short and has_long else 0), 2)
+            })
+
+        overall_cv = round(stat_module.mean(all_cvs), 3) if all_cvs else 0
+
+        # Build pre-calculated statistics JSON
+        # 构建预计算统计数据JSON
+        parsed_statistics = {
+            "paragraph_count": len(paragraphs),
+            "overall_cv": overall_cv,
+            "cv_evaluation": "AI-like (too uniform)" if overall_cv < 0.3 else ("Borderline" if overall_cv < 0.4 else "Human-like (good variation)"),
+            "low_burstiness_count": len(low_burstiness_paragraphs),
+            "low_burstiness_paragraphs": low_burstiness_paragraphs[:10],
+            "paragraph_length_stats": para_length_stats[:15]
+        }
+        parsed_statistics_str = json.dumps(parsed_statistics, indent=2, ensure_ascii=False)
+
+        logger.info(f"Step 3.4: Pre-calculated overall_cv={overall_cv}, low_burstiness={len(low_burstiness_paragraphs)}")
+
+        # STEP 2: Pass pre-calculated statistics to LLM
+        # 步骤2：将预计算统计数据传递给LLM
         logger.info("Calling Step3_4Handler for LLM-based sentence length distribution analysis")
         result = await step3_4_handler.analyze(
             document_text=document_text,
             locked_terms=[],
             session_id=request.session_id,
-            step_name="layer3-step3-4",
-            use_cache=True
+            step_name="step3-4",
+            use_cache=True,
+            parsed_statistics=parsed_statistics_str,
+            overall_cv=overall_cv
         )
 
         # Convert issues
@@ -614,46 +802,54 @@ async def analyze_sentence_length_distribution(request: ParagraphAnalysisRequest
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
-        # Extract sentence length CVs and low burstiness paragraphs
-        # low_burstiness_paragraphs is a list of paragraph indices (integers), not dicts
-        # 低突发性段落是段落索引的整数列表，而不是字典
-        low_burst_paras = result.get("low_burstiness_paragraphs", [])
-        paragraph_lengths = result.get("paragraph_lengths", [])
-        overall_cv = result.get("overall_cv", 0)
+        # STEP 3: Use PRE-CALCULATED statistics (not LLM's)
+        # 步骤3：使用预计算的统计数据（不是LLM的）
 
-        # Build paragraph_details with sentence length CV for frontend
-        # 构建包含句长CV的段落详情供前端使用
+        # Build paragraph_details from pre-calculated data
+        # 从预计算数据构建段落详情
+        def _get_preview(text: str, max_words: int = 8) -> str:
+            """Get first few words as preview / 获取前几个单词作为预览"""
+            words = text.split()
+            if len(words) <= max_words:
+                return text.strip()
+            return " ".join(words[:max_words]) + "..."
+
         paragraph_details = []
-        for pl in paragraph_lengths:
+        for pl in para_length_stats:
+            para_idx = pl["paragraph_index"]
+            # Get preview from original paragraph text
+            # 从原始段落文本获取预览
+            preview = _get_preview(paragraphs[para_idx]) if para_idx < len(paragraphs) else ""
             paragraph_details.append({
-                "index": pl.get("paragraph_index", 0),
-                "sentenceCount": pl.get("sentence_count", 0),
-                "meanLength": pl.get("mean_length", 0),
-                "sentenceLengthCv": pl.get("cv", 0),
-                "burstiness": pl.get("burstiness", 0),
-                "hasShortSentence": pl.get("has_short_sentence", False),
-                "hasLongSentence": pl.get("has_long_sentence", False),
-                "rhythmScore": pl.get("rhythm_score", 0),
+                "index": para_idx,
+                "sentenceCount": pl["sentence_count"],
+                "meanLength": pl["mean_length"],
+                "sentenceLengthCv": pl["cv"],
+                "burstiness": pl["burstiness"],
+                "hasShortSentence": pl["has_short_sentence"],
+                "hasLongSentence": pl["has_long_sentence"],
+                "rhythmScore": pl["rhythm_score"],
+                "preview": preview,
             })
 
         # Build a map of paragraph_index -> cv for quick lookup
         # 构建段落索引到CV值的映射
-        cv_map = {pl.get("paragraph_index", i): pl.get("cv", 0) for i, pl in enumerate(paragraph_lengths)}
+        cv_map = {pl["paragraph_index"]: pl["cv"] for pl in para_length_stats}
 
         # Get CVs for low burstiness paragraphs
         # 获取低突发性段落的CV值
-        sentence_length_cvs = [cv_map.get(idx, 0) for idx in low_burst_paras] if low_burst_paras else []
+        sentence_length_cvs = [cv_map.get(idx, 0) for idx in low_burstiness_paragraphs] if low_burstiness_paragraphs else []
 
         # Build details with sentence_length_analysis for frontend
         # 构建包含句长分析的详情供前端使用
         details = result.get("details", {})
         details["sentenceLengthAnalysis"] = {
-            "meanCv": overall_cv,
-            "paragraphCount": len(paragraph_lengths),
-            "lowCvCount": len(low_burst_paras),
+            "meanCv": overall_cv,  # Use pre-calculated value
+            "paragraphCount": len(para_length_stats),  # Use pre-calculated value
+            "lowCvCount": len(low_burstiness_paragraphs),  # Use pre-calculated value
         }
 
-        logger.info(f"Sentence length analysis result: overall_cv={overall_cv}, paragraphs={len(paragraph_lengths)}, low_cv_paras={len(low_burst_paras)}")
+        logger.info(f"Sentence length analysis result: overall_cv={overall_cv}, paragraphs={len(para_length_stats)}, low_cv_paras={len(low_burstiness_paragraphs)}")
 
         return ParagraphAnalysisResponse(
             risk_score=result.get("risk_score", 0),
@@ -667,8 +863,8 @@ async def analyze_sentence_length_distribution(request: ParagraphAnalysisRequest
             coherence_scores=[],
             anchor_densities=[],
             sentence_length_cvs=sentence_length_cvs,
-            low_burstiness_paragraphs=low_burst_paras,  # Already a list of integers
-            paragraph_count=len(paragraph_lengths),
+            low_burstiness_paragraphs=low_burstiness_paragraphs,  # Use pre-calculated value
+            paragraph_count=len(para_length_stats),  # Use pre-calculated value
             paragraph_details=paragraph_details,
         )
 
@@ -857,11 +1053,11 @@ import re
 @router.post("/step3-5/transition", response_model=ParagraphTransitionResponse)
 async def analyze_paragraph_transitions(request: ParagraphTransitionRequest):
     """
-    Step 3.5: Paragraph Transition Analysis (LLM-based)
-    步骤 3.5：段落间过渡分析（基于LLM）
+    Step 3.5: Paragraph Transition Analysis (LLM-based with pre-calculated statistics)
+    步骤 3.5：段落间过渡分析（基于LLM，使用预计算统计数据）
 
-    Analyzes transitions between adjacent paragraphs using LLM.
-    使用LLM分析相邻段落之间的过渡。
+    Pre-calculates explicit connector counts, then passes to LLM for semantic analysis.
+    预计算显性连接词数量，然后传递给LLM进行语义分析。
     """
     start_time = time.time()
 
@@ -887,15 +1083,81 @@ async def analyze_paragraph_transitions(request: ParagraphTransitionRequest):
                 processing_time_ms=int((time.time() - start_time) * 1000),
             )
 
-        # Call LLM handler for analysis
-        # 调用LLM handler进行分析
+        # STEP 1: Pre-calculate transition statistics from text
+        # 步骤1：从文本预计算过渡统计数据
+        import json
+
+        paragraphs = _split_text_to_paragraphs(document_text)
+        paragraph_count = len(paragraphs)
+        total_transitions = max(0, paragraph_count - 1)
+
+        # Detect explicit connectors at paragraph starts
+        # 检测段落开头的显性连接词
+        all_connectors = []
+        for cat, words in EXPLICIT_CONNECTORS.items():
+            all_connectors.extend(words)
+
+        explicit_connector_details = []
+        explicit_count = 0
+        formulaic_count = 0
+
+        for i, para in enumerate(paragraphs):
+            para_lower = para.lower().strip()
+            first_words = para_lower.split()[:5]  # Check first 5 words
+
+            # Check for explicit connectors
+            has_explicit = False
+            found_connectors = []
+            for word in first_words:
+                word_clean = word.strip(',.;:')
+                if word_clean in all_connectors:
+                    has_explicit = True
+                    found_connectors.append(word_clean)
+
+            if has_explicit:
+                explicit_count += 1
+                explicit_connector_details.append({
+                    "paragraph_index": i,
+                    "connectors": found_connectors
+                })
+
+            # Check for formulaic openers
+            is_formulaic = False
+            for pattern in FORMULAIC_OPENERS:
+                if re.match(pattern, para_lower, re.IGNORECASE):
+                    is_formulaic = True
+                    formulaic_count += 1
+                    break
+
+        explicit_ratio = round(explicit_count / total_transitions, 3) if total_transitions > 0 else 0
+
+        # Build pre-calculated statistics JSON
+        # 构建预计算统计数据JSON
+        parsed_statistics = {
+            "paragraph_count": paragraph_count,
+            "total_transitions": total_transitions,
+            "explicit_connector_count": explicit_count,
+            "explicit_ratio": explicit_ratio,
+            "formulaic_opener_count": formulaic_count,
+            "is_high_explicit": explicit_ratio > 0.3,
+            "evaluation": "AI-like (too many explicit connectors)" if explicit_ratio > 0.3 else "Human-like (natural transitions)",
+            "explicit_connector_details": explicit_connector_details[:10]
+        }
+        parsed_statistics_str = json.dumps(parsed_statistics, indent=2, ensure_ascii=False)
+
+        logger.info(f"Step 3.5: Pre-calculated explicit_ratio={explicit_ratio}, formulaic={formulaic_count}")
+
+        # STEP 2: Pass pre-calculated statistics to LLM
+        # 步骤2：将预计算统计数据传递给LLM
         logger.info("Calling Step3_5Handler for LLM-based paragraph transition analysis")
         result = await step3_5_handler.analyze(
             document_text=document_text,
             locked_terms=[],
             session_id=request.session_id,
-            step_name="layer3-step3-5",
-            use_cache=True
+            step_name="step3-5",
+            use_cache=True,
+            parsed_statistics=parsed_statistics_str,
+            explicit_ratio=explicit_ratio
         )
 
         # Convert LLM result to response model
@@ -928,14 +1190,16 @@ async def analyze_paragraph_transitions(request: ParagraphTransitionRequest):
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
+        # STEP 3: Return PRE-CALCULATED statistics (not LLM's)
+        # 步骤3：返回预计算的统计数据（不是LLM的）
         return ParagraphTransitionResponse(
             risk_score=result.get("risk_score", 0),
             risk_level=result.get("risk_level", "low"),
-            total_transitions=len(transitions),
-            explicit_connector_count=result.get("explicit_connector_count", 0),
-            explicit_ratio=result.get("explicit_ratio", 0.0),
+            total_transitions=total_transitions,  # Use pre-calculated value
+            explicit_connector_count=explicit_count,  # Use pre-calculated value
+            explicit_ratio=explicit_ratio,  # Use pre-calculated value
             avg_semantic_echo=result.get("avg_semantic_echo", 0.0),
-            formulaic_opener_count=result.get("formulaic_opener_count", 0),
+            formulaic_opener_count=formulaic_count,  # Use pre-calculated value
             transitions=transitions,
             issues=issues,
             recommendations=result.get("recommendations", []),

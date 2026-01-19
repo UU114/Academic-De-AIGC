@@ -42,45 +42,178 @@ class BaseSubstepHandler(ABC):
         self.settings = get_settings()
 
     # ==========================================================================
-    # Section Detection Helper (for chain-call pattern)
-    # 章节检测辅助方法（用于链式调用模式）
+    # Two-Stage Section Analysis (LLM Structure + Rule Statistics)
+    # 两阶段章节分析（LLM结构识别 + 规则统计）
     # ==========================================================================
 
-    SECTION_DETECTION_PROMPT = """Analyze the document and identify its logical sections.
+    # LLM prompt for identifying section structure ONLY (no statistics)
+    # LLM提示词仅用于识别章节结构（不做统计）
+    SECTION_STRUCTURE_PROMPT = """Identify the MAIN SECTIONS of this academic document.
 
 ## DOCUMENT TEXT:
 {document_text}
 
-## YOUR TASK:
-Identify section boundaries based on:
-- Explicit headers (e.g., "Introduction", "Methods", "1.", "2.")
-- Topic shifts between paragraphs
-- Structural markers (transition words, conclusion phrases)
+## STRICT RULES - VIOLATIONS WILL CAUSE ERRORS:
 
-For each section, determine:
-- role: introduction|background|literature_review|method|methodology|results|discussion|conclusion|body|abstract
-- title: The section's explicit title or a brief descriptive title
-- start_paragraph: 0-indexed paragraph number where section starts
-- end_paragraph: 0-indexed paragraph number where section ends (inclusive)
-- paragraph_count: Number of paragraphs in this section
-- word_count: Approximate word count for this section
+### ⚠️ ABSOLUTELY DO NOT INCLUDE THESE (CRITICAL):
+- "1.1", "1.2", "2.1", "2.2", "3.1", "4.1", "4.2" etc. - These are SUBSECTIONS, NOT main sections!
+- Any header with TWO OR MORE numbers separated by dots (X.Y, X.Y.Z) is a SUBSECTION
+- If you see "2.1 Background" or "4.2 Results" - SKIP IT, it's a subsection!
 
-## OUTPUT FORMAT (JSON only, no markdown code blocks):
+### ✓ ONLY INCLUDE THESE (main sections):
+- Headers starting with SINGLE number: "1.", "2.", "3.", "4.", "5." (NOT "1.1", "2.1")
+- Standalone titles: "Abstract", "Introduction", "Conclusion", "References"
+
+### ✓ EACH ROLE APPEARS EXACTLY ONCE:
+A typical paper has 5-8 main sections total, NOT 12-15!
+Example of correct output: abstract, introduction, methodology, experiments, results, conclusion
+If you output more than 8 sections, you are probably including subsections by mistake!
+
+### Role mapping:
+- title: Document title only
+- abstract: Abstract
+- introduction: Introduction (1. Introduction)
+- background: Background (2. Background) - use ONLY if it's a main section "2.", not "2.1"
+- literature_review: Related Work / Literature Review
+- methodology: Methods/Methodology (use for the MAIN methodology section only)
+- experiments: Experiments
+- results: Results
+- discussion: Discussion
+- conclusion: Conclusion
+- references: References
+- body: Other
+
+## OUTPUT (JSON only):
 {{
+  "document_title": "Paper Title",
   "sections": [
-    {{
-      "index": 0,
-      "role": "introduction",
-      "title": "Introduction",
-      "start_paragraph": 0,
-      "end_paragraph": 1,
-      "paragraph_count": 2,
-      "word_count": 150
-    }}
+    {{"role": "title", "title": "Paper Title", "start_line": 0}},
+    {{"role": "abstract", "title": "Abstract", "start_line": 2}},
+    {{"role": "introduction", "title": "1. Introduction", "start_line": 5}},
+    {{"role": "methodology", "title": "2. Methodology", "start_line": 15}},
+    {{"role": "experiments", "title": "3. Experiments", "start_line": 30}},
+    {{"role": "conclusion", "title": "4. Conclusion", "start_line": 50}}
   ]
 }}
+
+FINAL CHECK: If your output has more than 8 sections, DELETE the subsections (X.Y format)!
 """
 
+    async def identify_section_structure(
+        self,
+        document_text: str,
+        session_id: str = None,
+        use_cache: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Stage 1: Use LLM to identify section structure (cacheable)
+        阶段1：使用LLM识别章节结构（可缓存）
+
+        LLM is good at semantic understanding - identifying titles, section headers, and roles.
+        LLM擅长语义理解 - 识别标题、章节标题和角色。
+
+        Args:
+            document_text: Document text to analyze
+            session_id: Session ID for caching
+            use_cache: Whether to use cached structure
+
+        Returns:
+            Dict with 'document_title' and 'sections' (structure only, no statistics)
+        """
+        # Check cache first
+        # 先检查缓存
+        cache_key = "section-structure"
+        if use_cache and session_id:
+            cached_result = await self._load_from_cache(session_id, cache_key)
+            if cached_result and cached_result.get("sections"):
+                logger.info(f"Using cached section structure for session {session_id}")
+                return cached_result
+
+        # Build prompt - use line-based truncation to preserve line number accuracy
+        # 构建提示词 - 使用基于行的截断以保持行号准确性
+        lines = document_text.replace('\r\n', '\n').replace('\r', '\n').split('\n')
+        max_lines = 200  # Limit to first 200 lines for structure identification
+        truncated_lines = lines[:max_lines]
+        truncated_text = '\n'.join(truncated_lines)
+
+        # If document is longer, add note to LLM
+        # 如果文档更长，向LLM添加说明
+        if len(lines) > max_lines:
+            truncated_text += f"\n\n[NOTE: Document continues beyond line {max_lines}. Total lines: {len(lines)}]"
+
+        prompt = self.SECTION_STRUCTURE_PROMPT.format(
+            document_text=truncated_text
+        )
+
+        # Call LLM with low temperature for consistency
+        logger.info("Identifying section structure via LLM")
+        response_text = await self._call_llm(prompt, max_tokens=2048, temperature=0.2)
+
+        # Parse response
+        result = self._parse_json_response(response_text)
+
+        # Validate result has required fields
+        if "sections" not in result:
+            result["sections"] = []
+        if "document_title" not in result:
+            result["document_title"] = ""
+
+        # Cache the result
+        if use_cache and session_id and result.get("sections"):
+            await self._save_to_cache(session_id, cache_key, result, status="completed")
+            logger.info(f"Cached section structure with {len(result['sections'])} sections for session {session_id}")
+
+        return result
+
+    async def get_sections_with_statistics(
+        self,
+        document_text: str,
+        session_id: str = None,
+        use_cache: bool = True
+    ) -> List[Dict[str, Any]]:
+        """
+        Two-stage section analysis: LLM structure + Rule statistics
+        两阶段章节分析：LLM结构识别 + 规则统计
+
+        Stage 1 (LLM, cacheable): Identify section structure (titles, roles, boundaries)
+        Stage 2 (Rules, fresh): Calculate accurate statistics (word count, paragraph count, etc.)
+
+        阶段1（LLM，可缓存）：识别章节结构（标题、角色、边界）
+        阶段2（规则，新鲜计算）：计算准确统计数据（词数、段落数等）
+
+        Args:
+            document_text: Document text to analyze
+            session_id: Session ID for caching section structure
+            use_cache: Whether to use cached structure (statistics always fresh)
+
+        Returns:
+            List of section dictionaries with both structure and statistics
+        """
+        # Import here to avoid circular import
+        # 在此导入以避免循环导入
+        from src.services.text_parsing_service import get_text_parsing_service
+
+        # Stage 1: Get section structure from LLM (cacheable)
+        # 阶段1：从LLM获取章节结构（可缓存）
+        structure = await self.identify_section_structure(document_text, session_id, use_cache)
+        llm_sections = structure.get("sections", [])
+        document_title = structure.get("document_title", "")
+
+        logger.info(f"LLM identified {len(llm_sections)} sections, document title: '{document_title}'")
+
+        # Stage 2: Calculate statistics using rules (always fresh)
+        # 阶段2：使用规则计算统计数据（总是新鲜计算）
+        parsing_service = get_text_parsing_service()
+        sections_with_stats = parsing_service.calculate_section_statistics(
+            document_text, llm_sections
+        )
+
+        logger.info(f"Calculated statistics for {len(sections_with_stats)} sections")
+
+        return sections_with_stats
+
+    # Keep old method for backward compatibility, but redirect to new implementation
+    # 保留旧方法以保持向后兼容，但重定向到新实现
     async def detect_sections(
         self,
         document_text: str,
@@ -88,48 +221,14 @@ For each section, determine:
         use_cache: bool = True
     ) -> list:
         """
-        Detect sections in document using LLM (chain-call helper)
-        使用LLM检测文档中的章节（链式调用辅助方法）
+        [DEPRECATED] Use get_sections_with_statistics() instead
+        [已弃用] 请使用 get_sections_with_statistics()
 
-        This method can be called by substeps that need section data.
-        此方法可被需要章节数据的子步骤调用。
-
-        Args:
-            document_text: Document text to analyze
-            session_id: Session ID for caching
-            use_cache: Whether to use cached sections
-
-        Returns:
-            List of section dictionaries with role, title, paragraph_count, etc.
+        This method is kept for backward compatibility.
+        此方法保留以保持向后兼容。
         """
-        # Check cache first
-        # 先检查缓存
-        cache_key = "sections-detection"
-        if use_cache and session_id:
-            cached_result = await self._load_from_cache(session_id, cache_key)
-            if cached_result and cached_result.get("sections"):
-                logger.info(f"Using cached sections for session {session_id}")
-                return cached_result.get("sections", [])
-
-        # Build prompt
-        prompt = self.SECTION_DETECTION_PROMPT.format(
-            document_text=document_text[:8000]  # Limit for section detection
-        )
-
-        # Call LLM with low temperature for consistency
-        logger.info("Detecting sections via LLM chain-call")
-        response_text = await self._call_llm(prompt, max_tokens=2048, temperature=0.2)
-
-        # Parse response
-        result = self._parse_json_response(response_text)
-        sections = result.get("sections", [])
-
-        # Cache the result
-        if use_cache and session_id and sections:
-            await self._save_to_cache(session_id, cache_key, {"sections": sections}, status="completed")
-            logger.info(f"Cached {len(sections)} sections for session {session_id}")
-
-        return sections
+        logger.warning("detect_sections() is deprecated, use get_sections_with_statistics() instead")
+        return await self.get_sections_with_statistics(document_text, session_id, use_cache)
 
     @abstractmethod
     def get_analysis_prompt(self) -> str:
@@ -319,9 +418,22 @@ For each section, determine:
         # Parse JSON response
         result = self._parse_json_response(response_text)
 
-        # Validate response has required fields
+        # Handle missing modified_text - use original text as fallback
+        # 处理缺少modified_text的情况 - 使用原始文本作为备用
         if "modified_text" not in result:
-            raise ValueError("LLM response missing 'modified_text' field")
+            logger.warning("LLM response missing 'modified_text' field, using original text")
+            # Check if LLM returned plain text instead of JSON
+            # 检查LLM是否返回了纯文本而不是JSON
+            if response_text and not response_text.strip().startswith('{'):
+                # LLM returned plain text, use it as modified text
+                # LLM返回了纯文本，将其用作修改后的文本
+                result["modified_text"] = response_text.strip()
+                result["changes_summary_zh"] = "LLM直接返回了修改后的文本"
+            else:
+                # Fallback to original text
+                # 回退到原始文本
+                result["modified_text"] = document_text
+                result["changes_summary_zh"] = "修改失败，保留原文"
 
         # Verify locked terms are preserved
         preserved = self._verify_locked_terms_preserved(
@@ -345,17 +457,43 @@ For each section, determine:
     # 辅助方法
     # =========================================================================
 
-    def _format_issues_list(self, selected_issues: List[Dict[str, Any]]) -> str:
-        """Format selected issues into a readable list"""
+    def _format_issues_list(self, selected_issues: List[Any]) -> str:
+        """
+        Format selected issues into a readable list
+        格式化选定问题为可读列表
+
+        IMPORTANT: Includes issue TYPE so LLM knows which strategy to apply
+        重要：包含问题类型，以便LLM知道应用哪种修改策略
+
+        Supports both dict and Pydantic model objects
+        支持字典和Pydantic模型对象
+        """
         issues_list = ""
         for i, issue in enumerate(selected_issues, 1):
+            # Handle both dict and Pydantic model objects
+            # 处理字典和Pydantic模型对象
+            if hasattr(issue, 'model_dump'):
+                # Pydantic v2 model
+                issue = issue.model_dump()
+            elif hasattr(issue, 'dict'):
+                # Pydantic v1 model
+                issue = issue.dict()
+            elif not isinstance(issue, dict):
+                # Try to convert to dict using __dict__
+                issue = vars(issue) if hasattr(issue, '__dict__') else {"type": "unknown"}
+
+            issue_type = issue.get("type", "unknown")
             desc_zh = issue.get("description_zh", issue.get("description", ""))
             desc_en = issue.get("description", desc_zh)
             severity = issue.get("severity", "medium").upper()
 
-            issues_list += f"{i}. [{severity}] {desc_en}\n"
+            # Include issue type prominently so LLM can match it to strategies
+            # 突出显示问题类型，以便LLM可以将其与策略匹配
+            issues_list += f"{i}. Issue Type: {issue_type}\n"
+            issues_list += f"   Severity: [{severity}]\n"
+            issues_list += f"   Description: {desc_en}\n"
             if desc_zh != desc_en:
-                issues_list += f"   中文: {desc_zh}\n"
+                issues_list += f"   中文描述: {desc_zh}\n"
 
             affected = issue.get("affected_positions", [])
             if affected:
@@ -431,7 +569,7 @@ For each section, determine:
                 "Authorization": f"Bearer {self.settings.volcengine_api_key}",
                 "Content-Type": "application/json"
             },
-            timeout=120.0,
+            timeout=300.0,  # 5 minutes for large documents
             trust_env=False
         ) as client:
             response = await client.post("/chat/completions", json={
@@ -452,7 +590,7 @@ For each section, determine:
                 "Authorization": f"Bearer {self.settings.dashscope_api_key}",
                 "Content-Type": "application/json"
             },
-            timeout=120.0,
+            timeout=300.0,  # 5 minutes for large documents
             trust_env=False
         ) as client:
             response = await client.post("/chat/completions", json={
@@ -473,7 +611,7 @@ For each section, determine:
                 "Authorization": f"Bearer {self.settings.deepseek_api_key}",
                 "Content-Type": "application/json"
             },
-            timeout=120.0,
+            timeout=300.0,  # 5 minutes for large documents
             trust_env=False
         ) as client:
             response = await client.post("/chat/completions", json={
@@ -509,24 +647,56 @@ For each section, determine:
         Handles cases where LLM wraps JSON in markdown code blocks.
         Also attempts to fix common JSON formatting issues from LLM output.
         """
-        # Try to extract JSON from markdown code blocks
-        json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', response_text, re.DOTALL)
+        # Log raw response for debugging (truncated)
+        # 记录原始响应用于调试（截断）
+        logger.debug(f"Raw LLM response (first 500 chars): {response_text[:500]}")
+
+        # Try to extract JSON from markdown code blocks (use greedy matching for nested braces)
+        # 从markdown代码块中提取JSON（使用贪婪匹配处理嵌套大括号）
+        json_match = re.search(r'```(?:json)?\s*(\{[\s\S]*\})\s*```', response_text)
         if json_match:
             json_str = json_match.group(1)
+            logger.debug("Found JSON in markdown code block")
         else:
-            # Try to find JSON object directly
-            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(0)
-            else:
-                logger.error(f"Could not find JSON in response: {response_text[:200]}")
-                raise ValueError("LLM response does not contain valid JSON")
+            # Try to find JSON object directly using brace matching
+            # 使用大括号匹配直接查找JSON对象
+            json_str = self._extract_json_by_braces(response_text)
+            if not json_str:
+                logger.error(f"Could not find JSON in response: {response_text[:500]}")
+                # Return fallback response instead of raising exception
+                # 返回备用响应而不是抛出异常
+                return {
+                    "risk_score": 50,
+                    "risk_level": "medium",
+                    "issues": [{
+                        "type": "json_extraction_error",
+                        "description": "LLM did not return valid JSON - please retry",
+                        "description_zh": "LLM未返回有效JSON - 请重试",
+                        "severity": "medium",
+                        "affected_positions": [],
+                        "fix_suggestions": ["Retry the analysis"],
+                        "fix_suggestions_zh": ["重试分析"]
+                    }],
+                    "recommendations": ["Analysis could not be completed - please retry"],
+                    "recommendations_zh": ["分析无法完成 - 请重试"],
+                    "diversified_text": response_text[:5000] if response_text else "",  # For step4-5
+                    "optimized_text": response_text[:5000] if response_text else "",  # For step4-4
+                }
+            logger.debug("Found JSON via brace matching")
 
         # First attempt: direct parse
         try:
-            return json.loads(json_str)
+            result = json.loads(json_str)
+            logger.debug("JSON parsed successfully on first attempt")
+            return result
         except json.JSONDecodeError as e:
-            logger.warning(f"First JSON parse attempt failed: {e}")
+            logger.warning(f"First JSON parse attempt failed: {e}. Position: {e.pos}, Line: {e.lineno}, Col: {e.colno}")
+            # Log the problematic part
+            # 记录有问题的部分
+            if e.pos:
+                start = max(0, e.pos - 50)
+                end = min(len(json_str), e.pos + 50)
+                logger.warning(f"JSON context around error: ...{json_str[start:end]}...")
 
         # Second attempt: fix common issues
         # 第二次尝试：修复常见问题
@@ -539,40 +709,39 @@ For each section, determine:
         # Fix missing commas between array elements (common LLM error)
         # 修复数组元素之间缺少逗号的问题
         fixed_json = re.sub(r'}\s*\n\s*{', r'},\n{', fixed_json)
+        fixed_json = re.sub(r'"\s*\n\s*"', '",\n"', fixed_json)
+        fixed_json = re.sub(r']\s*\n\s*"', '],\n"', fixed_json)
 
-        # Fix unescaped newlines in strings
-        # 修复字符串中未转义的换行符
-        # This is tricky - be careful not to break valid JSON
+        # Fix unescaped newlines within strings (replace \n inside strings)
+        # 修复字符串内的未转义换行符
+        fixed_json = self._fix_unescaped_newlines(fixed_json)
+
+        # Fix common LLM hallucinations in JSON
+        # 修复LLM在JSON中的常见错误
+        fixed_json = fixed_json.replace('True', 'true').replace('False', 'false')
+        fixed_json = fixed_json.replace('None', 'null')
 
         try:
-            return json.loads(fixed_json)
+            result = json.loads(fixed_json)
+            logger.debug("JSON parsed successfully on second attempt (after fixes)")
+            return result
         except json.JSONDecodeError as e:
             logger.warning(f"Second JSON parse attempt failed: {e}")
 
         # Third attempt: try to truncate at last valid point
         # 第三次尝试：截断到最后一个有效点
-        # Find matching braces
-        brace_count = 0
-        last_valid_pos = 0
-        for i, char in enumerate(fixed_json):
-            if char == '{':
-                brace_count += 1
-            elif char == '}':
-                brace_count -= 1
-                if brace_count == 0:
-                    last_valid_pos = i + 1
-                    break
-
-        if last_valid_pos > 0:
-            truncated_json = fixed_json[:last_valid_pos]
+        truncated_json = self._extract_json_by_braces(fixed_json)
+        if truncated_json:
             try:
-                return json.loads(truncated_json)
+                result = json.loads(truncated_json)
+                logger.debug("JSON parsed successfully on third attempt (truncated)")
+                return result
             except json.JSONDecodeError as e:
                 logger.warning(f"Third JSON parse attempt (truncated) failed: {e}")
 
         # Final fallback: return minimal valid response
         # 最终后备：返回最小有效响应
-        logger.error(f"All JSON parse attempts failed. Response preview: {json_str[:500]}...")
+        logger.error(f"All JSON parse attempts failed. Full response:\n{json_str[:1000]}...")
         return {
             "risk_score": 50,
             "risk_level": "medium",
@@ -588,6 +757,89 @@ For each section, determine:
             "recommendations": ["Analysis may be incomplete due to parsing error"],
             "recommendations_zh": ["由于解析错误，分析可能不完整"]
         }
+
+    def _extract_json_by_braces(self, text: str) -> Optional[str]:
+        """
+        Extract JSON object by matching braces
+        通过匹配大括号提取JSON对象
+        """
+        # Find the first opening brace
+        # 找到第一个开括号
+        start_pos = text.find('{')
+        if start_pos == -1:
+            return None
+
+        brace_count = 0
+        in_string = False
+        escape_next = False
+
+        for i, char in enumerate(text[start_pos:], start_pos):
+            if escape_next:
+                escape_next = False
+                continue
+
+            if char == '\\' and in_string:
+                escape_next = True
+                continue
+
+            if char == '"' and not escape_next:
+                in_string = not in_string
+                continue
+
+            if in_string:
+                continue
+
+            if char == '{':
+                brace_count += 1
+            elif char == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    return text[start_pos:i+1]
+
+        return None
+
+    def _fix_unescaped_newlines(self, json_str: str) -> str:
+        """
+        Fix unescaped newlines within JSON strings
+        修复JSON字符串中未转义的换行符
+        """
+        result = []
+        in_string = False
+        escape_next = False
+        i = 0
+
+        while i < len(json_str):
+            char = json_str[i]
+
+            if escape_next:
+                result.append(char)
+                escape_next = False
+                i += 1
+                continue
+
+            if char == '\\':
+                escape_next = True
+                result.append(char)
+                i += 1
+                continue
+
+            if char == '"':
+                in_string = not in_string
+                result.append(char)
+                i += 1
+                continue
+
+            if in_string and char == '\n':
+                # Replace unescaped newline with escaped version
+                # 将未转义的换行符替换为转义版本
+                result.append('\\n')
+                i += 1
+                continue
+
+            result.append(char)
+            i += 1
+
+        return ''.join(result)
 
     async def _load_from_cache(self, session_id: str, step_name: str) -> Optional[Dict[str, Any]]:
         """

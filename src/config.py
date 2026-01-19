@@ -268,6 +268,7 @@ class Settings(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
         populate_by_name = True  # Allow both field name and alias
+        extra = "ignore"
 
 
 class RiskWeights(BaseSettings):

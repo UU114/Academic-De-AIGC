@@ -27,6 +27,7 @@ import Button from '../../components/common/Button';
 import LoadingMessage from '../../components/common/LoadingMessage';
 import LoadingOverlay from '../../components/common/LoadingOverlay';
 import { documentApi, sessionApi } from '../../services/api';
+import { useSubstepStateStore } from '../../stores/substepStateStore';
 import {
   lexicalLayerApi,
   documentLayerApi,
@@ -78,6 +79,10 @@ export default function LayerStep5_5({
   const mode = searchParams.get('mode') || 'intervention';
   const sessionId = searchParams.get('session');
 
+  // Substep state store for caching modified text
+  // 子步骤状态存储，用于缓存修改后的文本
+  const substepStore = useSubstepStateStore();
+
   const isValidDocumentId = (id: string | undefined): boolean => {
     return !!(id && id !== 'undefined' && id !== 'null');
   };
@@ -125,12 +130,19 @@ export default function LayerStep5_5({
   const [isLoading, setIsLoading] = useState(true);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [analysisStarted, setAnalysisStarted] = useState(false);
   const [documentText, setDocumentText] = useState<string>('');
   const [expandedSection, setExpandedSection] = useState<string | null>('summary');
 
   const [validationIssues, setValidationIssues] = useState<DetectionIssue[]>([]);
   const [selectedIssueIndices, setSelectedIssueIndices] = useState<Set<number>>(new Set());
+  // Click-expand state for individual issue analysis
+  // 点击展开状态，用于单个问题分析
+  const [expandedIssueIndex, setExpandedIssueIndex] = useState<number | null>(null);
   const [issueSuggestion, setIssueSuggestion] = useState<IssueSuggestionResponse | null>(null);
+  // Per-issue suggestion cache to avoid redundant API calls
+  // 每个问题的建议缓存，避免重复API调用
+  const suggestionCacheRef = useRef<Map<number, IssueSuggestionResponse>>(new Map());
   const [isLoadingSuggestion, setIsLoadingSuggestion] = useState(false);
   const [suggestionError, setSuggestionError] = useState<string | null>(null);
 
@@ -162,13 +174,37 @@ export default function LayerStep5_5({
     }
   }, [documentId, sessionFetchAttempted]);
 
-  const loadDocumentText = async (docId: string) => {
+  const loadDocumentText = useCallback(async (docId: string) => {
     try {
-      const doc = await documentApi.get(docId);
-      if (doc.originalText) {
-        setDocumentText(doc.originalText);
+      // Initialize substep store for session if needed
+      // 如果需要，为会话初始化子步骤存储
+      if (sessionId && substepStore.currentSessionId !== sessionId) {
+        await substepStore.initForSession(sessionId);
+      }
+
+      // Check previous steps for modified text (step1-4, step1-3, step1-2, step1-1, step1-0)
+      // 检查前序步骤的修改文本
+      const previousSteps = ['step1-4', 'step1-3', 'step1-2', 'step1-1', 'step1-0'];
+      let foundModifiedText: string | null = null;
+
+      for (const stepName of previousSteps) {
+        const stepState = substepStore.getState(stepName);
+        if (stepState?.modifiedText) {
+          console.log(`[LayerStep5_5] Using modified text from ${stepName}`);
+          foundModifiedText = stepState.modifiedText;
+          break;
+        }
+      }
+
+      if (foundModifiedText) {
+        setDocumentText(foundModifiedText);
       } else {
-        setError('Document text not found');
+        const doc = await documentApi.get(docId);
+        if (doc.originalText) {
+          setDocumentText(doc.originalText);
+        } else {
+          setError('Document text not found');
+        }
       }
     } catch (err) {
       console.error('Failed to load document:', err);
@@ -176,13 +212,15 @@ export default function LayerStep5_5({
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [sessionId, substepStore]);
 
+  // Run analysis when document is loaded and user starts analysis
+  // 文档加载后且用户开始分析时运行分析
   useEffect(() => {
-    if (documentText && !isAnalyzingRef.current) {
+    if (documentText && analysisStarted && !isAnalyzingRef.current) {
       runAnalysis();
     }
-  }, [documentText]);
+  }, [documentText, analysisStarted]);
 
   const runAnalysis = async () => {
     if (isAnalyzingRef.current || !documentText) return;
@@ -260,31 +298,62 @@ export default function LayerStep5_5({
     }
   };
 
-  const loadIssueSuggestion = useCallback(async () => {
-    if (selectedIssueIndices.size === 0 || !documentText) return;
+  // Load suggestion for a single issue with caching
+  // 加载单个问题的建议，带缓存功能
+  const loadIssueSuggestion = useCallback(async (index: number) => {
+    const issue = validationIssues[index];
+    if (!issue || !documentId) return;
+    const cached = suggestionCacheRef.current.get(index);
+    if (cached) { setIssueSuggestion(cached); return; }
     setIsLoadingSuggestion(true);
     setSuggestionError(null);
-
     try {
-      const selectedIssues = Array.from(selectedIssueIndices).map(i => validationIssues[i]);
-      const response = await documentLayerApi.getIssueSuggestion(documentText, selectedIssues, 'step5_5', sessionId || undefined);
-      setIssueSuggestion(response as IssueSuggestionResponse);
+      const response = await documentLayerApi.getIssueSuggestion(documentText, [issue], 'step5_5', sessionId || undefined);
+      const suggestion = response as IssueSuggestionResponse;
+      suggestionCacheRef.current.set(index, suggestion);
+      setIssueSuggestion(suggestion);
     } catch (err) {
-      setSuggestionError('Failed to load suggestion');
+      console.error('Failed to load suggestion:', err);
+      setSuggestionError('Failed to load detailed suggestion / 加载详细建议失败');
     } finally {
       setIsLoadingSuggestion(false);
     }
-  }, [selectedIssueIndices, documentText, validationIssues, sessionId]);
+  }, [validationIssues, documentId, documentText, sessionId]);
 
-  const handleIssueClick = useCallback((index: number) => {
+  // Handle clicking on issue content to expand/collapse
+  // 处理点击问题内容以展开/折叠
+  const handleIssueClick = useCallback(async (index: number) => {
+    if (expandedIssueIndex === index) {
+      setExpandedIssueIndex(null);
+      setIssueSuggestion(null);
+      return;
+    }
+    setExpandedIssueIndex(index);
+    await loadIssueSuggestion(index);
+  }, [expandedIssueIndex, loadIssueSuggestion]);
+
+  // Toggle issue selection via checkbox only
+  // 仅通过复选框切换问题选择
+  const toggleIssueSelection = useCallback((index: number) => {
     setSelectedIssueIndices(prev => {
       const newSet = new Set(prev);
       if (newSet.has(index)) newSet.delete(index);
       else newSet.add(index);
       return newSet;
     });
-    setIssueSuggestion(null);
     setMergeResult(null);
+  }, []);
+
+  // Select all issues
+  // 全选所有问题
+  const selectAllIssues = useCallback(() => {
+    setSelectedIssueIndices(new Set(validationIssues.map((_, idx) => idx)));
+  }, [validationIssues]);
+
+  // Deselect all issues
+  // 取消全选所有问题
+  const deselectAllIssues = useCallback(() => {
+    setSelectedIssueIndices(new Set());
   }, []);
 
   const executeMergeModify = useCallback(async () => {
@@ -332,17 +401,24 @@ export default function LayerStep5_5({
     setError(null);
 
     try {
-      let newDocId: string;
+      let modifiedText: string = '';
+
       if (modifyMode === 'file' && newFile) {
-        const result = await documentApi.upload(newFile);
-        newDocId = result.documentId;
+        modifiedText = await newFile.text();
       } else if (modifyMode === 'text' && newText.trim()) {
-        const result = await documentApi.uploadText(newText, `step5_5_final_${Date.now()}.txt`);
-        newDocId = result.documentId;
+        modifiedText = newText.trim();
       } else {
         setError('Please select a file or enter text');
         setIsUploading(false);
         return;
+      }
+
+      // Save modified text to substep store
+      // 将修改后的文本保存到子步骤存储
+      if (sessionId && modifiedText) {
+        await substepStore.saveModifiedText('step1-5', modifiedText);
+        await substepStore.markCompleted('step1-5');
+        console.log('[LayerStep5_5] Saved modified text to substep store');
       }
 
       // Navigate to completion or export page
@@ -350,13 +426,13 @@ export default function LayerStep5_5({
       const params = new URLSearchParams();
       if (mode) params.set('mode', mode);
       if (sessionId) params.set('session', sessionId);
-      navigate(`/flow/complete/${newDocId}?${params.toString()}`);
+      navigate(`/flow/complete/${documentId}?${params.toString()}`);
     } catch (err) {
       setError('Failed to upload');
     } finally {
       setIsUploading(false);
     }
-  }, [modifyMode, newFile, newText, mode, sessionId, navigate]);
+  }, [modifyMode, newFile, newText, mode, sessionId, navigate, documentId, substepStore]);
 
   const goToNextStep = () => {
     const params = new URLSearchParams(searchParams);
@@ -472,6 +548,40 @@ export default function LayerStep5_5({
         )}
       </div>
 
+      {/* Start Analysis / Skip Step */}
+      {/* 开始分析 / 跳过此步 */}
+      {documentText && !analysisStarted && !isAnalyzing && !result && (
+        <div className="mb-6 p-6 bg-gray-50 border border-gray-200 rounded-lg">
+          <div className="text-center">
+            <ShieldCheck className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+            <h3 className="text-lg font-medium text-gray-900 mb-2">Ready to Validate / 准备验证</h3>
+            <p className="text-gray-600 mb-6">
+              Click "Start Analysis" to validate rewriting results for quality, locked term preservation, and risk improvement.
+              <br />
+              <span className="text-gray-500">点击"开始分析"以验证改写结果的质量、锁定词汇保留和风险改进。</span>
+            </p>
+            <div className="flex items-center justify-center gap-4">
+              <Button
+                variant="primary"
+                size="lg"
+                onClick={() => setAnalysisStarted(true)}
+              >
+                <Sparkles className="w-5 h-5 mr-2" />
+                Start Analysis / 开始分析
+              </Button>
+              <Button
+                variant="secondary"
+                size="lg"
+                onClick={() => setShowSkipConfirm(true)}
+              >
+                <ArrowRight className="w-5 h-5 mr-2" />
+                Skip Step / 跳过此步
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Validation Summary */}
       {result && (
         <div className="bg-white rounded-lg shadow-sm border p-6">
@@ -548,25 +658,85 @@ export default function LayerStep5_5({
       {/* Issues */}
       {validationIssues.length > 0 && (
         <div className="bg-white rounded-lg shadow-sm border p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-3 flex items-center gap-2">
-            <AlertTriangle className="w-5 h-5 text-yellow-600" />Issues ({validationIssues.length})
-          </h3>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+              <AlertTriangle className="w-5 h-5 text-yellow-600" />
+              Issues ({validationIssues.length})
+              <span className="text-sm font-normal text-gray-500">
+                ({selectedIssueIndices.size}/{validationIssues.length} selected / 已选择)
+              </span>
+            </h3>
+            <div className="flex items-center gap-2">
+              {/* Select All / Deselect All buttons */}
+              {/* 全选/取消全选按钮 */}
+              <Button variant="secondary" size="sm" onClick={selectAllIssues}>
+                Select All / 全选
+              </Button>
+              <Button variant="secondary" size="sm" onClick={deselectAllIssues}>
+                Deselect All / 取消全选
+              </Button>
+            </div>
+          </div>
           <div className="space-y-2">
             {validationIssues.map((issue, idx) => (
-              <button key={idx} onClick={() => handleIssueClick(idx)} className={clsx(
-                'w-full text-left p-3 rounded-lg border transition-all',
-                selectedIssueIndices.has(idx) ? 'bg-emerald-50 border-emerald-300 ring-2 ring-emerald-200' : 'bg-white border-gray-200 hover:border-gray-300'
+              <div key={idx} className={clsx(
+                'rounded-lg border transition-all',
+                selectedIssueIndices.has(idx) ? 'bg-emerald-50 border-emerald-300 ring-2 ring-emerald-200' : 'bg-white border-gray-200'
               )}>
-                <div className="flex items-start gap-3">
-                  <div className={clsx('w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 mt-0.5', selectedIssueIndices.has(idx) ? 'bg-emerald-600 border-emerald-600' : 'border-gray-300')}>
+                <div className="flex items-start gap-3 p-3">
+                  {/* Checkbox button - separate click handler */}
+                  {/* 复选框按钮 - 单独的点击处理 */}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); toggleIssueSelection(idx); }}
+                    className={clsx('w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 mt-0.5 transition-colors', selectedIssueIndices.has(idx) ? 'bg-emerald-600 border-emerald-600' : 'border-gray-300 hover:border-emerald-400')}
+                  >
                     {selectedIssueIndices.has(idx) && <Check className="w-3 h-3 text-white" />}
-                  </div>
-                  <div className="flex-1">
-                    <p className="text-gray-900">{issue.description}</p>
-                    <p className="text-gray-600 text-sm">{issue.descriptionZh}</p>
-                  </div>
+                  </button>
+                  {/* Content button - click to expand */}
+                  {/* 内容按钮 - 点击展开 */}
+                  <button
+                    onClick={() => handleIssueClick(idx)}
+                    className="flex-1 text-left"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex-1">
+                        <p className="text-gray-900">{issue.description}</p>
+                        <p className="text-gray-600 text-sm">{issue.descriptionZh}</p>
+                      </div>
+                      {expandedIssueIndex === idx ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
+                    </div>
+                  </button>
                 </div>
-              </button>
+                {/* Expanded content section */}
+                {/* 展开内容区域 */}
+                {expandedIssueIndex === idx && (
+                  <div className="px-3 pb-3 pt-0 ml-8 border-t border-gray-100">
+                    {isLoadingSuggestion ? (
+                      <div className="flex items-center gap-2 text-emerald-600 py-3">
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span className="text-sm">Loading suggestions... / 加载建议中...</span>
+                      </div>
+                    ) : suggestionError ? (
+                      <div className="text-red-600 text-sm py-3">{suggestionError}</div>
+                    ) : issueSuggestion ? (
+                      <div className="py-3 space-y-2">
+                        <p className="text-sm text-gray-700"><span className="font-medium">Analysis:</span> {issueSuggestion.analysis}</p>
+                        {issueSuggestion.suggestions && issueSuggestion.suggestions.length > 0 && (
+                          <div>
+                            <p className="text-sm font-medium text-gray-700">Suggestions:</p>
+                            <ul className="list-disc list-inside text-sm text-gray-600 ml-2">
+                              {issueSuggestion.suggestions.map((s, i) => <li key={i}>{s}</li>)}
+                            </ul>
+                          </div>
+                        )}
+                        {issueSuggestion.exampleFix && (
+                          <p className="text-sm text-gray-700"><span className="font-medium">Example:</span> {issueSuggestion.exampleFix}</p>
+                        )}
+                      </div>
+                    ) : null}
+                  </div>
+                )}
+              </div>
             ))}
           </div>
         </div>
@@ -578,9 +748,6 @@ export default function LayerStep5_5({
           <div className="flex items-center justify-between">
             <div className="text-sm text-gray-600">{selectedIssueIndices.size} selected / 已选择 {selectedIssueIndices.size} 个问题</div>
             <div className="flex gap-2">
-              <Button variant="secondary" size="sm" onClick={loadIssueSuggestion} disabled={isLoadingSuggestion || selectedIssueIndices.size === 0}>
-                {isLoadingSuggestion ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Sparkles className="w-4 h-4 mr-2" />}Suggestions
-              </Button>
               <Button variant="secondary" size="sm" disabled={selectedIssueIndices.size === 0} onClick={() => { setMergeMode('prompt'); setShowMergeConfirm(true); }}>
                 <Edit3 className="w-4 h-4 mr-2" />Prompt
               </Button>
@@ -589,14 +756,6 @@ export default function LayerStep5_5({
               </Button>
             </div>
           </div>
-        </div>
-      )}
-
-      {/* Suggestion */}
-      {issueSuggestion && (
-        <div className="p-4 bg-indigo-50 border border-indigo-200 rounded-lg">
-          <h4 className="font-semibold text-indigo-900 mb-3">AI Suggestions</h4>
-          <p className="text-indigo-700">{issueSuggestion.analysis}</p>
         </div>
       )}
 

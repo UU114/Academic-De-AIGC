@@ -28,6 +28,7 @@ import Button from '../../components/common/Button';
 import LoadingMessage from '../../components/common/LoadingMessage';
 import LoadingOverlay from '../../components/common/LoadingOverlay';
 import { documentApi, sessionApi } from '../../services/api';
+import { useSubstepStateStore } from '../../stores/substepStateStore';
 import {
   sectionLayerApi,
   documentLayerApi,
@@ -53,12 +54,16 @@ import {
 // Section role configuration
 // 章节角色配置
 const SECTION_ROLE_CONFIG: Record<string, { label: string; labelZh: string; icon: typeof BookOpen; color: string }> = {
+  abstract: { label: 'Abstract', labelZh: '摘要', icon: FileText, color: 'cyan' },
   introduction: { label: 'Introduction', labelZh: '引言', icon: BookOpen, color: 'blue' },
+  background: { label: 'Background', labelZh: '背景', icon: BookOpen, color: 'indigo' },
   literature_review: { label: 'Literature Review', labelZh: '文献综述', icon: FileText, color: 'purple' },
   methodology: { label: 'Methodology', labelZh: '方法论', icon: Beaker, color: 'green' },
   results: { label: 'Results', labelZh: '结果', icon: BarChart3, color: 'orange' },
   discussion: { label: 'Discussion', labelZh: '讨论', icon: MessageSquare, color: 'yellow' },
   conclusion: { label: 'Conclusion', labelZh: '结论', icon: CheckSquare, color: 'red' },
+  references: { label: 'References', labelZh: '参考文献', icon: FileText, color: 'slate' },
+  appendix: { label: 'Appendix', labelZh: '附录', icon: FileText, color: 'stone' },
   body: { label: 'Body', labelZh: '正文', icon: FileText, color: 'gray' },
   unknown: { label: 'Unknown', labelZh: '未知', icon: FileText, color: 'gray' },
 };
@@ -152,6 +157,7 @@ export default function LayerStep2_0({
   const [isLoading, setIsLoading] = useState(true);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [analysisStarted, setAnalysisStarted] = useState(false);
   const [documentText, setDocumentText] = useState<string>('');
   const [expandedSectionIndex, setExpandedSectionIndex] = useState<number | null>(null);
   const [editingRole, setEditingRole] = useState<number | null>(null);
@@ -211,6 +217,10 @@ export default function LayerStep2_0({
     }
   }, [documentId, sessionFetchAttempted]);
 
+  // Get substep state store for checking previous step's modified text
+  // 获取子步骤状态存储，用于检查前一个步骤的修改文本
+  const substepStore = useSubstepStateStore();
+
   const loadDocumentText = async (docId: string) => {
     // Guard against invalid document IDs (including string "undefined")
     // 防止无效的文档ID（包括字符串"undefined"）
@@ -222,11 +232,40 @@ export default function LayerStep2_0({
     }
 
     try {
-      const doc = await documentApi.get(docId);
-      if (doc.originalText) {
-        setDocumentText(doc.originalText);
+      // Initialize substep store for session if not already done
+      // 如果尚未初始化，为会话初始化子步骤存储
+      if (sessionId && substepStore.currentSessionId !== sessionId) {
+        await substepStore.initForSession(sessionId);
+      }
+
+      // Check for modified text from Layer 5 steps (most recent first)
+      // 检查来自第5层步骤的修改文本（最近的优先）
+      // Priority: step1-5 > step1-4 > step1-3 > step1-2 > step1-1 > originalText
+      const layer5Steps = ['step1-5', 'step1-4', 'step1-3', 'step1-2', 'step1-1'];
+      let foundModifiedText: string | null = null;
+
+      for (const stepName of layer5Steps) {
+        const stepState = substepStore.getState(stepName);
+        if (stepState?.modifiedText) {
+          console.log(`[LayerStep2_0] Using modified text from ${stepName}`);
+          foundModifiedText = stepState.modifiedText;
+          break;
+        }
+      }
+
+      if (foundModifiedText) {
+        // Use modified text from previous layer
+        // 使用前一层的修改文本
+        setDocumentText(foundModifiedText);
       } else {
-        setError('Document text not found / 未找到文档文本');
+        // Fallback to original document text
+        // 回退到原始文档文本
+        const doc = await documentApi.get(docId);
+        if (doc.originalText) {
+          setDocumentText(doc.originalText);
+        } else {
+          setError('Document text not found / 未找到文档文本');
+        }
       }
     } catch (err) {
       console.error('Failed to load document:', err);
@@ -239,10 +278,10 @@ export default function LayerStep2_0({
   // Run analysis when document is loaded
   // 文档加载后运行分析
   useEffect(() => {
-    if (documentText && !isAnalyzingRef.current) {
+    if (documentText && analysisStarted && !isAnalyzingRef.current) {
       runAnalysis();
     }
-  }, [documentText]);
+  }, [documentText, analysisStarted]);
 
   const runAnalysis = async () => {
     if (isAnalyzingRef.current || !documentText) return;
@@ -371,6 +410,18 @@ export default function LayerStep2_0({
     setMergeResult(null);
   }, []);
 
+  // Select all issues
+  // 全选所有问题
+  const selectAllIssues = useCallback(() => {
+    setSelectedIssueIndices(new Set(sectionIssues.map((_, idx) => idx)));
+  }, [sectionIssues]);
+
+  // Deselect all issues
+  // 取消全选所有问题
+  const deselectAllIssues = useCallback(() => {
+    setSelectedIssueIndices(new Set());
+  }, []);
+
   // Execute merge modify (generate prompt or apply modification)
   // 执行合并修改（生成提示或应用修改）
   const executeMergeModify = useCallback(async () => {
@@ -445,33 +496,41 @@ export default function LayerStep2_0({
     setError(null);
 
     try {
-      let newDocId: string;
+      let modifiedText: string = '';
 
       if (modifyMode === 'file' && newFile) {
-        const result = await documentApi.upload(newFile);
-        newDocId = result.documentId;
+        // Read file content to save to substep store
+        // 读取文件内容以保存到子步骤存储
+        modifiedText = await newFile.text();
       } else if (modifyMode === 'text' && newText.trim()) {
-        const result = await documentApi.uploadText(newText, `step2_0_modified_${Date.now()}.txt`);
-        newDocId = result.documentId;
+        modifiedText = newText.trim();
       } else {
         setError('Please select a file or enter text / 请选择文件或输入文本');
         setIsUploading(false);
         return;
       }
 
-      // Navigate to next step with new document
-      // 使用新文档导航到下一步
+      // Save modified text to substep store for next steps to use
+      // 保存修改后的文本到子步骤存储，供后续步骤使用
+      if (sessionId && modifiedText) {
+        await substepStore.saveModifiedText('step2-0', modifiedText);
+        await substepStore.markCompleted('step2-0');
+        console.log('[LayerStep2_0] Saved modified text to substep store');
+      }
+
+      // Navigate to next step with same document ID
+      // 使用相同的文档ID导航到下一步（下一步会从substep store获取修改后的文本）
       const params = new URLSearchParams();
       if (mode) params.set('mode', mode);
       if (sessionId) params.set('session', sessionId);
-      navigate(`/flow/layer4-step2-1/${newDocId}?${params.toString()}`);
+      navigate(`/flow/layer4-step2-1/${documentId}?${params.toString()}`);
     } catch (err) {
       console.error('Upload failed:', err);
-      setError('Failed to upload modified document / 上传修改后的文档失败');
+      setError('Failed to save modified document / 保存修改后的文档失败');
     } finally {
       setIsUploading(false);
     }
-  }, [modifyMode, newFile, newText, mode, sessionId, navigate]);
+  }, [modifyMode, newFile, newText, mode, sessionId, navigate, documentId, substepStore]);
 
   // Navigation handlers
   // 导航处理
@@ -571,6 +630,32 @@ export default function LayerStep2_0({
         </p>
       </div>
 
+      {/* Start Analysis / Skip Step */}
+      {/* 开始分析 / 跳过此步 */}
+      {documentText && !analysisStarted && !isAnalyzing && !result && (
+        <div className="mb-6 p-6 bg-gray-50 border border-gray-200 rounded-lg">
+          <div className="text-center">
+            <Layers className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+            <h3 className="text-lg font-medium text-gray-900 mb-2">Ready to Analyze / 准备分析</h3>
+            <p className="text-gray-600 mb-6">
+              Click to identify sections and assign roles (introduction, methodology, results, etc.)
+              <br />
+              <span className="text-gray-500">点击开始识别章节并分配角色（引言、方法论、结果等）</span>
+            </p>
+            <div className="flex items-center justify-center gap-4">
+              <Button variant="primary" size="lg" onClick={() => setAnalysisStarted(true)}>
+                <Sparkles className="w-5 h-5 mr-2" />
+                Start Analysis / 开始分析
+              </Button>
+              <Button variant="secondary" size="lg" onClick={() => setShowSkipConfirm(true)}>
+                <ArrowRight className="w-5 h-5 mr-2" />
+                Skip Step / 跳过此步
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Analysis Progress */}
       {/* 分析进度 */}
       {isAnalyzing && (
@@ -642,14 +727,19 @@ export default function LayerStep2_0({
                   <AlertTriangle className="w-5 h-5 text-yellow-600" />
                   Detected Issues / 检测到的问题
                   <span className="text-sm font-normal text-gray-500">
-                    (Click to select / 点击选择)
+                    ({selectedIssueIndices.size}/{sectionIssues.length} selected / 已选择)
                   </span>
                 </h3>
-                {hasSelectedIssues && (
-                  <span className="text-sm text-blue-600">
-                    {selectedIssueIndices.size} selected / 已选择
-                  </span>
-                )}
+                <div className="flex items-center gap-2">
+                  {/* Select All / Deselect All buttons */}
+                  {/* 全选/取消全选按钮 */}
+                  <Button variant="secondary" size="sm" onClick={selectAllIssues}>
+                    Select All / 全选
+                  </Button>
+                  <Button variant="secondary" size="sm" onClick={deselectAllIssues}>
+                    Deselect All / 取消全选
+                  </Button>
+                </div>
               </div>
               <div className="space-y-2">
                 {sectionIssues.map((issue, idx) => (
@@ -953,7 +1043,16 @@ export default function LayerStep2_0({
                             <span className="font-medium text-gray-900">
                               Section {section.index + 1}
                             </span>
-                            {!isEditing ? (
+                            {/* Display original title instead of role label */}
+                            {/* 显示原始标题而非角色标签 */}
+                            {!isEditing && section.title ? (
+                              <span className={clsx(
+                                'px-2 py-0.5 text-xs rounded-full',
+                                `bg-${roleConfig.color}-100 text-${roleConfig.color}-700`
+                              )}>
+                                {section.title}
+                              </span>
+                            ) : !isEditing ? (
                               <span className={clsx(
                                 'px-2 py-0.5 text-xs rounded-full',
                                 `bg-${roleConfig.color}-100 text-${roleConfig.color}-700`

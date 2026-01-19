@@ -17,11 +17,13 @@ import {
   Zap,
   Target,
   Layers,
+  Eye,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import Button from '../../components/common/Button';
 import LoadingMessage from '../../components/common/LoadingMessage';
 import { documentApi, sessionApi } from '../../services/api';
+import { useSubstepStateStore } from '../../stores/substepStateStore';
 import {
   sentenceLayerApi,
   PatternAnalysisResponse,
@@ -49,6 +51,7 @@ import {
 
 interface ParagraphQueueItem {
   index: number;
+  originalBlockIndex?: number;  // Original position in allBlocks (for reconstruction)
   text: string;
   preview: string;
   sentenceCount: number;
@@ -132,9 +135,16 @@ export default function LayerStep4Console({
     }
   }, [sessionId]);
 
+  // Substep state store for caching and persistence
+  // 用于缓存和持久化的子步骤状态存储
+  const substepStore = useSubstepStateStore();
+
   const [paragraphQueue, setParagraphQueue] = useState<ParagraphQueueItem[]>([]);
+  const [allBlocks, setAllBlocks] = useState<string[]>([]);  // All blocks including titles
+  const [blockToQueueMap, setBlockToQueueMap] = useState<Map<number, number>>(new Map());  // Maps block index to queue index
   const [isLoading, setIsLoading] = useState(true);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [patternResult, setPatternResult] = useState<PatternAnalysisResponse | null>(initialPatternResult || null);
@@ -142,6 +152,7 @@ export default function LayerStep4Console({
   const [selectedParagraphs, setSelectedParagraphs] = useState<Set<number>>(new Set());
   const [currentProcessingIndex, setCurrentProcessingIndex] = useState<number | null>(null);
   const [processingLogs, setProcessingLogs] = useState<string[]>([]);
+  const [showPreview, setShowPreview] = useState(true);  // Default to show preview details
 
   // Load document and run pattern analysis - wait for session fetch to complete first
   // 加载文档并运行模式分析 - 首先等待 session 获取完成
@@ -155,46 +166,149 @@ export default function LayerStep4Console({
     }
   }, [documentId, sessionFetchAttempted]);
 
-  const loadDocumentAndAnalyze = async (docId: string) => {
+  const loadDocumentAndAnalyze = useCallback(async (docId: string) => {
     try {
       setIsLoading(true);
-      const doc = await documentApi.get(docId);
-      if (!doc.originalText) {
-        setError('Document text not found / 未找到文档文本');
-        return;
+
+      // Initialize substep store for session if needed
+      // 如果需要，为会话初始化子步骤存储
+      if (sessionId && substepStore.currentSessionId !== sessionId) {
+        await substepStore.initForSession(sessionId);
+      }
+
+      // Check previous steps for modified text (step4-1, step4-0 first, then Layer 3 -> Layer 4)
+      // 检查先前步骤的修改文本（先检查step4-1, step4-0，然后是层3 -> 层4）
+      const previousSteps = [
+        'step4-1', 'step4-0',
+        'step3-5', 'step3-4', 'step3-3', 'step3-2', 'step3-1', 'step3-0',
+        'step2-5', 'step2-4', 'step2-3', 'step2-2', 'step2-1', 'step2-0',
+        'step1-5', 'step1-4', 'step1-3', 'step1-2', 'step1-1'
+      ];
+      let documentText: string | null = null;
+
+      for (const stepName of previousSteps) {
+        const stepState = substepStore.getState(stepName);
+        if (stepState?.modifiedText) {
+          console.log(`[LayerStep4Console] Using modified text from ${stepName}`);
+          documentText = stepState.modifiedText;
+          break;
+        }
+      }
+
+      // Fall back to original document text if no modified text found
+      // 如果没有找到修改文本，回退到原始文档文本
+      if (!documentText) {
+        const doc = await documentApi.get(docId);
+        if (!doc.originalText) {
+          setError('Document text not found / 未找到文档文本');
+          return;
+        }
+        documentText = doc.originalText;
       }
 
       // Always fetch fresh pattern analysis results
       // 始终获取最新的模式分析结果
       console.log('Fetching pattern analysis for document:', docId);
-      const result = await sentenceLayerApi.analyzePatterns(doc.originalText, undefined, sessionId || undefined);
+      const result = await sentenceLayerApi.analyzePatterns(documentText, undefined, sessionId || undefined);
       console.log('Pattern analysis result:', result.highRiskParagraphs?.length, 'paragraphs');
       setPatternResult(result);
-      buildParagraphQueue(doc.originalText, result);
+      buildParagraphQueue(documentText, result);
     } catch (err) {
       console.error('Failed to load document:', err);
       setError('Failed to load document / 加载文档失败');
     } finally {
       setIsLoading(false);
     }
+  }, [sessionId, substepStore]);
+
+  // Check if a text block is likely a title/heading (not a content paragraph)
+  // 检查文本块是否可能是标题/章节头（而非内容段落）
+  const isLikelyTitle = (text: string): boolean => {
+    const trimmed = text.trim();
+    const wordCount = trimmed.split(/\s+/).length;
+    const sentenceCount = trimmed.split(/[.!?]+/).filter(s => s.trim()).length;
+
+    // Title patterns: numbered sections, known headings, short text without sentences
+    // 标题模式：编号章节、已知标题词、无完整句子的短文本
+    const titlePatterns = [
+      /^(Abstract|Introduction|Conclusion|References|Acknowledgments?|Bibliography|Appendix)$/i,
+      /^\d+\.?\s+[A-Z]/,  // "1. Introduction", "2 Methods"
+      /^\d+\.\d+\.?\s+/,  // "1.1 Background", "2.3.1 Results"
+      /^(Chapter|Section|Part)\s+\d/i,
+      /^[A-Z][A-Za-z\s:-]{0,50}$/,  // Short capitalized title without punctuation
+    ];
+
+    // Check if matches title pattern
+    // 检查是否匹配标题模式
+    for (const pattern of titlePatterns) {
+      if (pattern.test(trimmed)) {
+        return true;
+      }
+    }
+
+    // Very short text (< 10 words) with no complete sentences is likely a title
+    // 非常短的文本（<10词）且没有完整句子可能是标题
+    if (wordCount < 10 && sentenceCount <= 1 && !trimmed.includes('.')) {
+      return true;
+    }
+
+    // Single line with no period at end is likely a title
+    // 单行且末尾没有句号的可能是标题
+    if (!trimmed.includes('\n') && wordCount < 15 && !trimmed.endsWith('.')) {
+      return true;
+    }
+
+    return false;
   };
 
   // Build paragraph queue from pattern analysis
   // 从模式分析结果构建段落队列
   const buildParagraphQueue = (text: string, result: PatternAnalysisResponse) => {
-    const paragraphs = text.split(/\n\n+/).filter(p => p.trim().length > 0);
+    // First try to split by double newlines
+    // 首先尝试按双换行分割
+    let blocks = text.split(/\n\n+/).filter(p => p.trim().length > 0);
+
+    // If only 1 block, fall back to single newline splitting (for documents without double newlines)
+    // 如果只有1个块，回退到单换行分割（用于没有双换行的文档）
+    if (blocks.length <= 1 && text.includes('\n')) {
+      blocks = text.split(/\n/).filter(p => p.trim().length > 0);
+      console.log(`[buildParagraphQueue] Fallback to single newline: ${blocks.length} blocks`);
+    }
+
+    // Store all blocks for later reconstruction
+    // 保存所有块以便后续重建
+    setAllBlocks(blocks);
+
+    // Build mapping from block index to queue index (for content paragraphs only)
+    // 构建从块索引到队列索引的映射（仅针对内容段落）
+    const blockToQueue = new Map<number, number>();
+    let queueIdx = 0;
+
     const highRiskMap = new Map(
       result.highRiskParagraphs.map(p => [p.paragraphIndex, p])
     );
 
-    const queue: ParagraphQueueItem[] = paragraphs.map((para, idx) => {
-      const highRiskInfo = highRiskMap.get(idx);
-      const preview = para.length > 100 ? para.substring(0, 100) + '...' : para;
-      const sentenceCount = para.split(/[.!?]+/).filter(s => s.trim()).length;
+    const queue: ParagraphQueueItem[] = [];
 
-      return {
-        index: idx,
-        text: para,
+    blocks.forEach((block, blockIdx) => {
+      // Skip titles/headings
+      // 跳过标题/章节头
+      if (isLikelyTitle(block)) {
+        return;
+      }
+
+      // Map this block to its queue position
+      // 将此块映射到其队列位置
+      blockToQueue.set(blockIdx, queueIdx);
+
+      const highRiskInfo = highRiskMap.get(blockIdx);
+      const preview = block.length > 100 ? block.substring(0, 100) + '...' : block;
+      const sentenceCount = block.split(/[.!?]+/).filter(s => s.trim()).length;
+
+      queue.push({
+        index: queueIdx,
+        originalBlockIndex: blockIdx,  // Store original block index for reconstruction
+        text: block,
         preview,
         sentenceCount,
         simpleRatio: highRiskInfo?.simpleRatio || 0,
@@ -204,8 +318,12 @@ export default function LayerStep4Console({
         riskLevel: (highRiskInfo?.riskLevel as 'low' | 'medium' | 'high') || 'low',
         status: 'pending',
         mode: 'auto',
-      };
+      });
+
+      queueIdx++;
     });
+
+    setBlockToQueueMap(blockToQueue);
 
     // Auto-select high-risk paragraphs
     // 自动选择高风险段落
@@ -287,9 +405,9 @@ export default function LayerStep4Console({
         setParagraphQueue(prev => prev.map(p =>
           p.index === para.index ? { ...p, currentStep: 'Step 4.2: Length Analysis' } : p
         ));
-        // Note: paragraph_index=0 because currentText is a single paragraph
-        // 注意：paragraph_index=0 因为 currentText 是单个段落
-        await sentenceLayerApi.analyzeLength(currentText, undefined, 0, sessionId || undefined);
+        // Use para.index for unique cache key per paragraph
+        // 使用 para.index 作为每个段落的唯一缓存键
+        await sentenceLayerApi.analyzeLength(currentText, undefined, para.index, sessionId || undefined);
       }
 
       // Step 4.3: Merge Suggestions
@@ -299,9 +417,9 @@ export default function LayerStep4Console({
         setParagraphQueue(prev => prev.map(p =>
           p.index === para.index ? { ...p, currentStep: 'Step 4.3: Merge Suggestions' } : p
         ));
-        // Note: paragraph_index=0 because currentText is a single paragraph
-        // 注意：paragraph_index=0 因为 currentText 是单个段落
-        const mergeResult = await sentenceLayerApi.suggestMerges(currentText, 0, 2, sessionId || undefined);
+        // Use para.index for unique cache key per paragraph
+        // 使用 para.index 作为每个段落的唯一缓存键
+        const mergeResult = await sentenceLayerApi.suggestMerges(currentText, para.index, 2, sessionId || undefined);
         // Apply first merge if available
         // 如果可用，应用第一个合并
         if (mergeResult.candidates && mergeResult.candidates.length > 0) {
@@ -311,15 +429,18 @@ export default function LayerStep4Console({
       }
 
       // Step 4.4: Connector Optimization
-      // 步骤 4.4：连接词优化
       if (mode === 'auto' || mode === 'connector_only') {
         addLog(`Paragraph ${para.index + 1}: Optimizing connectors...`);
         setParagraphQueue(prev => prev.map(p =>
           p.index === para.index ? { ...p, currentStep: 'Step 4.4: Connector Optimization' } : p
         ));
-        // Note: paragraph_index=0 because currentText is a single paragraph
-        // 注意：paragraph_index=0 因为 currentText 是单个段落
-        await sentenceLayerApi.optimizeConnectors(currentText, 0, [], sessionId || undefined);
+        // Use para.index for unique cache key per paragraph
+        // 使用 para.index 作为每个段落的唯一缓存键
+        const connectorResult = await sentenceLayerApi.optimizeConnectors(currentText, para.index, [], sessionId || undefined);
+        if (connectorResult.optimizedText) {
+          currentText = connectorResult.optimizedText;
+          addLog(`Paragraph ${para.index + 1}: Applied connector optimization`);
+        }
       }
 
       // Step 4.5: Diversification
@@ -329,11 +450,11 @@ export default function LayerStep4Console({
         setParagraphQueue(prev => prev.map(p =>
           p.index === para.index ? { ...p, currentStep: 'Step 4.5: Diversification' } : p
         ));
-        // Note: paragraph_index=0 because currentText is a single paragraph
-        // 注意：paragraph_index=0 因为 currentText 是单个段落
+        // Use para.index for unique cache key per paragraph
+        // 使用 para.index 作为每个段落的唯一缓存键
         const diversifyResult = await sentenceLayerApi.diversifyPatterns(
           currentText,
-          0,
+          para.index,
           'moderate',
           undefined,
           sessionId || undefined
@@ -395,17 +516,20 @@ export default function LayerStep4Console({
       .filter(p => selectedParagraphs.has(p.index) && p.status !== 'locked')
       .sort((a, b) => b.riskScore - a.riskScore); // Process highest risk first
 
-    for (const para of paragraphsToProcess) {
-      if (isPaused) {
-        addLog('Processing paused');
-        break;
+    try {
+      for (const para of paragraphsToProcess) {
+        await processParagraph(para);
       }
-      await processParagraph(para);
+      addLog('Processing completed');
+    } catch (err) {
+      console.error('Processing error:', err);
+      addLog(`Processing error: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    } finally {
+      // Always reset processing state when done
+      // 处理完成后始终重置处理状态
+      setIsProcessing(false);
+      setCurrentProcessingIndex(null);
     }
-
-    setIsProcessing(false);
-    setCurrentProcessingIndex(null);
-    addLog('Processing completed');
 
     // Check if all selected are completed
     // 检查是否所有选中的都已完成
@@ -425,18 +549,71 @@ export default function LayerStep4Console({
     setIsPaused(!isPaused);
   };
 
+
   // Navigation
   // 导航
-  const goToNextStep = () => {
-    const params = new URLSearchParams(searchParams);
-    // Navigate to Layer 1 Lexical V2 analysis
-    // 导航到Layer 1 词汇分析V2
-    navigate(`/flow/layer1-lexical-v2/${documentId}?${params.toString()}`);
-  };
+  const handleSaveAndContinue = useCallback(async () => {
+    // If no paragraphs were processed, just go to next step
+    // 如果没有处理任何段落，直接进入下一步
+    const anyProcessed = paragraphQueue.some(p => p.status === 'completed' && p.processedText);
+
+    if (!anyProcessed) {
+      const params = new URLSearchParams(searchParams);
+      navigate(`/flow/layer1-lexical-v2/${documentId}?${params.toString()}`);
+      return;
+    }
+
+    try {
+      setIsSaving(true);
+      addLog('Saving modified document...');
+
+      // Reconstruct full document with titles preserved
+      // 重建完整文档，保留标题
+      const reconstructedBlocks = [...allBlocks];
+
+      // Replace processed paragraphs in their original positions
+      // 在原始位置替换已处理的段落
+      for (const para of paragraphQueue) {
+        if (para.originalBlockIndex !== undefined && para.status === 'completed' && para.processedText) {
+          reconstructedBlocks[para.originalBlockIndex] = para.processedText;
+        }
+      }
+
+      const fullText = reconstructedBlocks.join('\n\n');
+      console.log('[LayerStep4Console] Reconstructed document with', reconstructedBlocks.length, 'blocks');
+
+      // Save modified text to substep store for next step to use
+      // 将修改后的文本保存到子步骤存储，供下一步使用
+      if (sessionId && fullText) {
+        await substepStore.saveModifiedText('step4-console', fullText);
+        await substepStore.markCompleted('step4-console');
+        console.log('[LayerStep4Console] Saved modified text to substep store');
+      }
+
+      const params = new URLSearchParams(searchParams);
+      addLog('Document saved. Moving to Layer 1...');
+
+      // Navigate to Layer 1 Lexical V2 analysis with current documentId
+      // 使用当前的 documentId 导航到 Layer 1 词汇分析V2
+      navigate(`/flow/layer1-lexical-v2/${documentId}?${params.toString()}`);
+    } catch (err) {
+      console.error('Failed to save document:', err);
+      setError('Failed to save modified document / 保存修改后的文档失败');
+    } finally {
+      setIsSaving(false);
+    }
+  }, [paragraphQueue, allBlocks, searchParams, documentId, sessionId, substepStore, navigate, addLog]);
 
   const goToPreviousStep = () => {
     const params = new URLSearchParams(searchParams);
     navigate(`/flow/layer2-step4-1/${documentId}?${params.toString()}`);
+  };
+
+  // Skip without saving and go to next step
+  // 跳过不保存，直接进入下一步
+  const skipAndContinue = () => {
+    const params = new URLSearchParams(searchParams);
+    navigate(`/flow/layer1-lexical-v2/${documentId}?${params.toString()}`);
   };
 
   // Risk color helper
@@ -823,20 +1000,104 @@ export default function LayerStep4Console({
         </div>
       </div>
 
+      {/* Preview Changes Section - shows after processing */}
+      {/* 预览修改部分 - 处理完成后显示 */}
+      {paragraphQueue.some(p => p.status === 'completed' && p.processedText) && (
+        <div className="bg-white rounded-lg shadow-sm border p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+              <Eye className="w-5 h-5 text-blue-600" />
+              Preview Changes / 预览修改
+            </h3>
+            <div className="flex items-center gap-3">
+              <Button
+                variant="outline"
+                onClick={() => setShowPreview(!showPreview)}
+                className="text-sm"
+              >
+                {showPreview ? 'Hide Preview / 隐藏预览' : 'Show Preview / 显示预览'}
+              </Button>
+              <Button
+                onClick={handleSaveAndContinue}
+                disabled={isSaving || isProcessing}
+                className="flex items-center gap-2 bg-green-600 hover:bg-green-700"
+              >
+                {isSaving ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <ArrowRight className="w-4 h-4" />
+                )}
+                {isSaving ? 'Saving...' : 'Save & Next / 保存并进行下一步'}
+              </Button>
+            </div>
+          </div>
+
+          {/* Summary of changes */}
+          <div className="mb-4 p-3 bg-blue-50 rounded-lg">
+            <p className="text-sm text-blue-700">
+              <span className="font-semibold">
+                {paragraphQueue.filter(p => p.status === 'completed' && p.processedText).length}
+              </span> paragraphs processed / 已处理段落
+            </p>
+          </div>
+
+          {/* Detailed Preview */}
+          {showPreview && (
+            <div className="space-y-4 max-h-[600px] overflow-y-auto">
+              {paragraphQueue
+                .filter(p => p.status === 'completed' && p.processedText)
+                .map((para) => (
+                  <div key={para.index} className="border rounded-lg overflow-hidden">
+                    <div className="bg-gray-100 px-4 py-2 border-b">
+                      <span className="font-medium text-gray-700">
+                        Paragraph {para.index + 1} / 第 {para.index + 1} 段
+                      </span>
+                      <span className="ml-2 text-sm text-gray-500">
+                        ({para.changes?.reduce((sum, c) => sum + c.count, 0) || 0} changes)
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 divide-x">
+                      {/* Original */}
+                      <div className="p-4">
+                        <h5 className="text-xs font-medium text-red-600 mb-2 uppercase">
+                          Original / 原文
+                        </h5>
+                        <p className="text-sm text-gray-600 whitespace-pre-wrap leading-relaxed">
+                          {para.text}
+                        </p>
+                      </div>
+                      {/* Modified */}
+                      <div className="p-4 bg-green-50">
+                        <h5 className="text-xs font-medium text-green-600 mb-2 uppercase">
+                          Modified / 修改后
+                        </h5>
+                        <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">
+                          {para.processedText}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Navigation */}
       {showNavigation && (
         <div className="flex justify-between items-center pt-4 border-t">
-          <Button variant="outline" onClick={goToPreviousStep} className="flex items-center gap-2">
+          <Button variant="outline" onClick={goToPreviousStep} className="flex items-center gap-2" disabled={isSaving || isProcessing}>
             <ArrowLeft className="w-4 h-4" />
             Previous: Pattern Analysis
           </Button>
           <Button
-            onClick={goToNextStep}
-            disabled={paragraphQueue.every(p => p.status === 'pending')}
+            variant="outline"
+            onClick={skipAndContinue}
+            disabled={isProcessing}
             className="flex items-center gap-2"
           >
-            Next: Layer 1 (Lexical)
             <ArrowRight className="w-4 h-4" />
+            Skip & Next / 跳过并进行下一步
           </Button>
         </div>
       )}

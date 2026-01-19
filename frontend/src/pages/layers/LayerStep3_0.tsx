@@ -15,11 +15,13 @@ import {
   Hash,
   AlertTriangle,
   Info,
+  Sparkles,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import Button from '../../components/common/Button';
 import LoadingMessage from '../../components/common/LoadingMessage';
 import { documentApi, sessionApi } from '../../services/api';
+import { useSubstepStateStore } from '../../stores/substepStateStore';
 import {
   paragraphLayerApi,
   ParagraphIdentificationResponse,
@@ -113,6 +115,7 @@ export default function LayerStep3_0({
   const [isLoading, setIsLoading] = useState(true);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [analysisStarted, setAnalysisStarted] = useState(false);
   const [documentText, setDocumentText] = useState<string>('');
   const [expandedParagraphIndex, setExpandedParagraphIndex] = useState<number | null>(null);
 
@@ -121,6 +124,10 @@ export default function LayerStep3_0({
   const [paragraphIssues, setParagraphIssues] = useState<DetectionIssue[]>([]);
 
   const isAnalyzingRef = useRef(false);
+
+  // Substep state store for document text handling
+  // 子步骤状态存储用于文档文本处理
+  const substepStore = useSubstepStateStore();
 
   // Load document
   // 加载文档
@@ -136,11 +143,36 @@ export default function LayerStep3_0({
 
   const loadDocumentText = async (docId: string) => {
     try {
-      const doc = await documentApi.get(docId);
-      if (doc.originalText) {
-        setDocumentText(doc.originalText);
+      // Initialize substep store for session if needed
+      // 如果需要，为会话初始化子步骤存储
+      if (sessionId && substepStore.currentSessionId !== sessionId) {
+        await substepStore.initForSession(sessionId);
+      }
+
+      // Check previous steps for modified text (Layer 4 steps, then Layer 5 steps)
+      // 检查前面步骤的修改文本（先检查第4层，再检查第5层）
+      const previousSteps = ['step2-5', 'step2-4', 'step2-3', 'step2-2', 'step2-1', 'step2-0',
+                            'step1-5', 'step1-4', 'step1-3', 'step1-2', 'step1-1'];
+      let foundModifiedText: string | null = null;
+
+      for (const stepName of previousSteps) {
+        const stepState = substepStore.getState(stepName);
+        if (stepState?.modifiedText) {
+          console.log(`[LayerStep3_0] Using modified text from ${stepName}`);
+          foundModifiedText = stepState.modifiedText;
+          break;
+        }
+      }
+
+      if (foundModifiedText) {
+        setDocumentText(foundModifiedText);
       } else {
-        setError('Document text not found / 未找到文档文本');
+        const doc = await documentApi.get(docId);
+        if (doc.originalText) {
+          setDocumentText(doc.originalText);
+        } else {
+          setError('Document text not found / 未找到文档文本');
+        }
       }
     } catch (err) {
       console.error('Failed to load document:', err);
@@ -153,10 +185,10 @@ export default function LayerStep3_0({
   // Run analysis when document is loaded
   // 文档加载后运行分析
   useEffect(() => {
-    if (documentText && !isAnalyzingRef.current) {
+    if (documentText && analysisStarted && !isAnalyzingRef.current) {
       runAnalysis();
     }
-  }, [documentText]);
+  }, [documentText, analysisStarted]);
 
   const runAnalysis = async () => {
     if (isAnalyzingRef.current || !documentText) return;
@@ -323,6 +355,32 @@ export default function LayerStep3_0({
             </p>
           </div>
         </div>
+
+        {/* Start Analysis / Skip Step */}
+        {/* 开始分析 / 跳过此步 */}
+        {documentText && !analysisStarted && !isAnalyzing && !result && (
+          <div className="mt-4 p-6 bg-gray-50 border border-gray-200 rounded-lg">
+            <div className="text-center">
+              <Layers className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+              <h3 className="text-lg font-medium text-gray-900 mb-2">Ready to Analyze / 准备分析</h3>
+              <p className="text-gray-600 mb-6">
+                Click to identify paragraphs and filter non-body content for analysis
+                <br />
+                <span className="text-gray-500">点击开始识别段落并过滤非正文内容以进行分析</span>
+              </p>
+              <div className="flex items-center justify-center gap-4">
+                <Button variant="primary" size="lg" onClick={() => setAnalysisStarted(true)}>
+                  <Sparkles className="w-5 h-5 mr-2" />
+                  Start Analysis / 开始分析
+                </Button>
+                <Button variant="secondary" size="lg" onClick={goToNextStep}>
+                  <ArrowRight className="w-5 h-5 mr-2" />
+                  Skip Step / 跳过此步
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Summary Stats */}
         {result && (

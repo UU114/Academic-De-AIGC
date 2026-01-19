@@ -1,9 +1,11 @@
 """
-Step 1.4: Anchor Density (锚点密度)
+Step 1.4: Connector & Transition Analysis (连接词与衔接分析)
 Layer 5 Document Level
 
-Uses LLM to detect and fix low anchor density issues
-使用LLM检测和修复低锚点密度问题
+Uses LLM to detect and fix AI-typical transition patterns:
+- H: Explicit Connector Overuse (显性连接词过度使用)
+- I: Missing Semantic Echo (缺乏语义回声)
+- J: Logic Break Points (逻辑断裂点)
 """
 
 from fastapi import APIRouter, HTTPException, Depends
@@ -15,7 +17,7 @@ import time
 
 from src.api.routes.substeps.schemas import (
     SubstepBaseRequest,
-    AnchorDensityResponse,
+    ConnectorTransitionResponse,
     RiskLevel,
     MergeModifyRequest,
     MergeModifyPromptResponse,
@@ -24,6 +26,7 @@ from src.api.routes.substeps.schemas import (
 from src.api.routes.substeps.layer5.step1_4_handler import Step1_4Handler
 from src.db.database import get_db
 from src.db.models import Document, Session as SessionModel
+from src.services.document_service import get_working_text, save_modified_text
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -32,15 +35,17 @@ router = APIRouter()
 handler = Step1_4Handler()
 
 
-@router.post("/analyze", response_model=AnchorDensityResponse)
-async def analyze_anchor_density(request: SubstepBaseRequest):
+@router.post("/analyze", response_model=ConnectorTransitionResponse)
+async def analyze_connector_transition(request: SubstepBaseRequest):
     """
-    Step 1.4: Analyze anchor density using LLM
-    步骤 1.4：使用LLM分析锚点密度
+    Step 1.4: Analyze connector & transition patterns using LLM
+    步骤 1.4：使用LLM分析连接词与衔接模式
 
     Detects:
-    - Low anchor density (< 5.0 per 100 words)
-    - Missing anchor types (statistics, citations, measurements)
+    - Explicit connector overuse (> 30% of paragraph openings)
+    - Missing semantic echo between paragraphs
+    - Logic break points / abrupt transitions
+    - Formulaic transition patterns
     """
     start_time = time.time()
 
@@ -54,14 +59,11 @@ async def analyze_anchor_density(request: SubstepBaseRequest):
         # Extract issues
         issues = result.get("issues", [])
 
-        # Extract overall density from result
-        overall_density = result.get("overall_density", 0)
-
         # Calculate processing time
         processing_time_ms = int((time.time() - start_time) * 1000)
 
         # Build response
-        return AnchorDensityResponse(
+        return ConnectorTransitionResponse(
             risk_score=result.get("risk_score", 0),
             risk_level=RiskLevel(result.get("risk_level", "low")),
             issues=issues,
@@ -69,39 +71,53 @@ async def analyze_anchor_density(request: SubstepBaseRequest):
             recommendations_zh=result.get("recommendations_zh", []),
             processing_time_ms=processing_time_ms,
             # Step 1.4 specific fields
-            overall_density=overall_density,
-            target_density=5.0,
-            low_density_paragraphs=[],
-            anchor_types_count={}
+            explicit_connector_count=result.get("explicit_connector_count", 0),
+            explicit_connector_rate=result.get("explicit_connector_rate", 0.0),
+            connectors_found=result.get("connectors_found", []),
+            semantic_echo_score=result.get("semantic_echo_score", 0)
         )
 
     except Exception as e:
-        logger.error(f"Anchor density analysis failed: {e}")
+        logger.error(f"Connector & transition analysis failed: {e}")
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 
 @router.post("/merge-modify/prompt", response_model=MergeModifyPromptResponse)
 async def generate_rewrite_prompt(request: MergeModifyRequest, db: AsyncSession = Depends(get_db)):
     """
-    Generate a modification prompt for selected anchor density issues
-    为选定的锚点密度问题生成修改提示词
+    Generate a modification prompt for selected connector/transition issues
+    为选定的连接词/衔接问题生成修改提示词
     """
     try:
-        # Get document from database
-        result = await db.execute(select(Document).where(Document.id == request.document_id))
-        doc = result.scalar_one_or_none()
-        if not doc:
-            raise HTTPException(status_code=404, detail="Document not found")
+        # Convert SelectedIssue to dict format
+        # 转换 SelectedIssue 为字典格式
+        selected_issues_dict = [
+            {
+                "type": issue.type,
+                "description": issue.description,
+                "description_zh": issue.description_zh,
+                "severity": issue.severity,
+                "affected_positions": issue.affected_positions
+            }
+            for issue in request.selected_issues
+        ]
 
-        # Get session for locked terms
-        session_result = await db.execute(select(SessionModel).where(SessionModel.id == request.session_id))
-        session = session_result.scalar_one_or_none() if request.session_id else None
-        locked_terms = session.locked_terms if session and session.locked_terms else []
+        # Get working text (uses previous step's modified text if available)
+        # 获取工作文本（如果有前一步骤的修改结果则使用）
+        document_text, locked_terms = await get_working_text(
+            db=db,
+            session_id=request.session_id,
+            current_step="step1-4",
+            document_id=request.document_id
+        )
+
+        if not document_text:
+            raise HTTPException(status_code=400, detail="Document text not found in session or database")
 
         # Generate prompt via handler
         result = await handler.generate_rewrite_prompt(
-            document_text=doc.processed_text or doc.original_text,
-            selected_issues=request.selected_issues,
+            document_text=document_text,
+            selected_issues=selected_issues_dict,
             user_notes=request.user_notes,
             locked_terms=locked_terms
         )
@@ -113,52 +129,84 @@ async def generate_rewrite_prompt(request: MergeModifyRequest, db: AsyncSession 
             estimated_changes=result.get("estimated_changes", len(request.selected_issues))
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Generate prompt failed: {e}")
+        logger.error(f"Generate prompt failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to generate prompt: {str(e)}")
 
 
 @router.post("/merge-modify/apply", response_model=MergeModifyApplyResponse)
 async def apply_rewrite(request: MergeModifyRequest, db: AsyncSession = Depends(get_db)):
     """
-    Apply AI modification directly for selected anchor density issues
-    为选定的锚点密度问题直接应用AI修改
+    Apply AI modification directly for selected connector/transition issues
+    为选定的连接词/衔接问题直接应用AI修改
     """
     try:
-        # Get document from database
-        result = await db.execute(select(Document).where(Document.id == request.document_id))
-        doc = result.scalar_one_or_none()
-        if not doc:
-            raise HTTPException(status_code=404, detail="Document not found")
+        # Convert SelectedIssue to dict format
+        # 转换 SelectedIssue 为字典格式
+        selected_issues_dict = [
+            {
+                "type": issue.type,
+                "description": issue.description,
+                "description_zh": issue.description_zh,
+                "severity": issue.severity,
+                "affected_positions": issue.affected_positions
+            }
+            for issue in request.selected_issues
+        ]
 
-        # Get session for locked terms
-        session_result = await db.execute(select(SessionModel).where(SessionModel.id == request.session_id))
-        session = session_result.scalar_one_or_none() if request.session_id else None
-        locked_terms = session.locked_terms if session and session.locked_terms else []
+        # Get working text (uses previous step's modified text if available)
+        # 获取工作文本（如果有前一步骤的修改结果则使用）
+        document_text, locked_terms = await get_working_text(
+            db=db,
+            session_id=request.session_id,
+            current_step="step1-4",
+            document_id=request.document_id
+        )
+
+        if not document_text:
+            raise HTTPException(status_code=400, detail="Document text not found in session or database")
 
         # Apply rewrite via handler
         result = await handler.apply_rewrite(
-            document_text=doc.processed_text or doc.original_text,
-            selected_issues=request.selected_issues,
+            document_text=document_text,
+            selected_issues=selected_issues_dict,
             user_notes=request.user_notes,
             locked_terms=locked_terms
         )
+
+        # Save modified text for next step to use
+        # 保存修改后的文本供下一步骤使用
+        if request.session_id and result.get("modified_text"):
+            await save_modified_text(
+                db=db,
+                session_id=request.session_id,
+                step_name="step1-4",
+                modified_text=result["modified_text"]
+            )
+
+        # Extract issues addressed
+        # 提取已处理的问题
+        issues_addressed = [issue.type for issue in request.selected_issues]
 
         return MergeModifyApplyResponse(
             modified_text=result["modified_text"],
             changes_summary_zh=result.get("changes_summary_zh", ""),
             changes_count=result.get("changes_count", 0),
-            issues_addressed=result.get("issues_addressed", [])
+            issues_addressed=issues_addressed
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Apply rewrite failed: {e}")
+        logger.error(f"Apply rewrite failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to apply modification: {str(e)}")
 
 
 @router.post("/process")
-async def process_anchor_density(request: SubstepBaseRequest):
+async def process_connector_transition(request: SubstepBaseRequest):
     """
     Legacy endpoint - redirects to analyze
     """
-    return await analyze_anchor_density(request)
+    return await analyze_connector_transition(request)

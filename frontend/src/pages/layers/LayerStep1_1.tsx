@@ -197,6 +197,10 @@ export default function LayerStep1_1({
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Control whether analysis has been started by user
+  // 控制用户是否已开始分析
+  const [analysisStarted, setAnalysisStarted] = useState(false);
+
   // Document text
   // 文档文本
   const [documentText, setDocumentText] = useState<string>('');
@@ -295,13 +299,13 @@ export default function LayerStep1_1({
     }
   };
 
-  // Run analysis when text is loaded
-  // 文本加载后运行分析
+  // Run analysis when user clicks start (not automatically)
+  // 当用户点击开始时运行分析（不自动运行）
   useEffect(() => {
-    if (documentText && !isAnalyzingRef.current) {
+    if (documentText && analysisStarted && !isAnalyzingRef.current) {
       runAnalysis();
     }
-  }, [documentText]);
+  }, [documentText, analysisStarted]);
 
   const runAnalysis = async () => {
     if (isAnalyzingRef.current || !documentText) return;
@@ -457,6 +461,18 @@ export default function LayerStep1_1({
     // ============================================
   };
 
+  // Select all issues
+  // 全选所有问题
+  const selectAllIssues = useCallback(() => {
+    setSelectedIssueIndices(new Set(orderIssues.map((_, idx) => idx)));
+  }, [orderIssues]);
+
+  // Deselect all issues
+  // 取消全选所有问题
+  const deselectAllIssues = useCallback(() => {
+    setSelectedIssueIndices(new Set());
+  }, []);
+
   // Load suggestion for a specific issue (without toggling expand)
   // 为特定问题加载建议（不切换展开状态）
   const loadIssueSuggestion = useCallback(async (index: number) => {
@@ -592,6 +608,13 @@ export default function LayerStep1_1({
     }
   }, [mergeResult?.modifiedText]);
 
+  // ============================================
+  // NEW CODE - Get substep state store reference for saving modified text
+  // 新代码 - 获取子步骤状态存储引用用于保存修改后的文本
+  // ============================================
+  const substepStore = useSubstepStateStore();
+  // ============================================
+
   // Handle confirm modify
   // 处理确认修改
   const handleConfirmModify = useCallback(async () => {
@@ -609,6 +632,24 @@ export default function LayerStep1_1({
     setUploadError(null);
 
     try {
+      // ============================================
+      // NEW CODE - Save modified text to substep store
+      // 新代码 - 保存修改后的文本到子步骤存储
+      // ============================================
+      let modifiedText: string = '';
+      if (modifyMode === 'file' && newFile) {
+        modifiedText = await newFile.text();
+      } else if (modifyMode === 'text' && newText.trim()) {
+        modifiedText = newText.trim();
+      }
+
+      if (sessionId && modifiedText) {
+        await substepStore.saveModifiedText('step5-1', modifiedText);
+        await substepStore.markCompleted('step5-1');
+        console.log('[LayerStep1_1] Saved modified text to substep store');
+      }
+      // ============================================
+
       let newDocumentId: string;
 
       if (modifyMode === 'file' && newFile) {
@@ -619,14 +660,17 @@ export default function LayerStep1_1({
         newDocumentId = result.id;
       }
 
-      // Navigate to Step 1.2 with new document
-      const sessionParam = sessionId ? `&session=${sessionId}` : '';
-      navigate(`/flow/layer5-step1-2/${newDocumentId}?mode=${mode}${sessionParam}`);
+      // Navigate to Step 1.2 with new document (use documentId from URL/props, not newDocumentId)
+      // 导航到步骤1.2（使用URL/props中的documentId，而非newDocumentId）
+      const params = new URLSearchParams();
+      if (mode) params.set('mode', mode);
+      if (sessionId) params.set('session', sessionId);
+      navigate(`/flow/layer5-step1-2/${documentId}?${params.toString()}`);
     } catch (err) {
       setUploadError((err as Error).message || '上传失败，请重试 / Upload failed, please try again');
       setIsUploading(false);
     }
-  }, [modifyMode, newFile, newText, sessionId, mode, navigate]);
+  }, [modifyMode, newFile, newText, sessionId, mode, navigate, documentId, substepStore]);
 
   // Validate and set file
   // 验证并设置文件
@@ -747,6 +791,42 @@ export default function LayerStep1_1({
           章节结构与顺序识别 - 检测公式化章节顺序（如：引言-方法-结果-讨论）
         </p>
       </div>
+
+      {/* Start Analysis / Skip Step - Show when document loaded but not started */}
+      {/* 开始分析/跳过步骤 - 当文档已加载但未开始时显示 */}
+      {documentText && !analysisStarted && !isAnalyzing && !result && (
+        <div className="mb-6 p-6 bg-gray-50 border border-gray-200 rounded-lg">
+          <div className="text-center">
+            <FileText className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+            <h3 className="text-lg font-medium text-gray-900 mb-2">
+              Ready to Analyze / 准备分析
+            </h3>
+            <p className="text-gray-600 mb-6">
+              Click "Start Analysis" to detect section structure and order patterns, or skip this step.
+              <br />
+              点击"开始分析"检测章节结构和顺序模式，或跳过此步骤。
+            </p>
+            <div className="flex items-center justify-center gap-4">
+              <Button
+                variant="primary"
+                size="lg"
+                onClick={() => setAnalysisStarted(true)}
+              >
+                <Sparkles className="w-5 h-5 mr-2" />
+                Start Analysis / 开始分析
+              </Button>
+              <Button
+                variant="secondary"
+                size="lg"
+                onClick={handleNext}
+              >
+                <ArrowRight className="w-5 h-5 mr-2" />
+                Skip Step / 跳过此步
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Analysis Progress */}
       {isAnalyzing && (
@@ -874,13 +954,25 @@ export default function LayerStep1_1({
           {/* Order Issues */}
           {orderIssues.length > 0 && (
             <div className="mb-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-3 flex items-center gap-2">
-                <AlertTriangle className="w-5 h-5 text-yellow-600" />
-                Structure Issues / 结构问题
-                <span className="text-sm font-normal text-gray-500">
-                  ({orderIssues.length} issues detected)
-                </span>
-              </h3>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                  <AlertTriangle className="w-5 h-5 text-yellow-600" />
+                  Detected Issues / 检测到的问题
+                  <span className="text-sm font-normal text-gray-500">
+                    ({selectedIssueIndices.size}/{orderIssues.length} selected / 已选择)
+                  </span>
+                </h3>
+                <div className="flex items-center gap-2">
+                  {/* Select All / Deselect All buttons */}
+                  {/* 全选/取消全选按钮 */}
+                  <Button variant="secondary" size="sm" onClick={selectAllIssues}>
+                    Select All / 全选
+                  </Button>
+                  <Button variant="secondary" size="sm" onClick={deselectAllIssues}>
+                    Deselect All / 取消全选
+                  </Button>
+                </div>
+              </div>
               <div className="space-y-2">
                 {orderIssues.map((issue, idx) => {
                   const isExpanded = expandedIssueIndex === idx;

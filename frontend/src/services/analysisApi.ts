@@ -59,7 +59,7 @@ export interface DetectionIssue {
   descriptionZh: string;
   severity: IssueSeverity;
   layer: LayerLevel;
-  position?: Record<string, unknown>;
+  position?: string;  // Position reference as string (e.g., "paragraph 1, 2")
   suggestion?: string;
   suggestionZh?: string;
   details?: Record<string, unknown>;
@@ -172,6 +172,8 @@ export interface ParagraphLengthInfo {
 }
 
 export interface ParagraphLengthAnalysisResponse {
+  // Statistics from unified text parsing service
+  // 来自统一文本解析服务的统计数据
   paragraphCount: number;
   totalWordCount: number;
   meanLength: number;
@@ -190,6 +192,34 @@ export interface ParagraphLengthAnalysisResponse {
   recommendations: string[];
   recommendationsZh: string[];
   processingTimeMs?: number;
+  // LLM analysis results / LLM分析结果
+  issues?: Array<{
+    type: string;
+    description: string;
+    descriptionZh?: string;
+    severity: string;
+    evidence?: string[];
+    fixSuggestions?: string[];
+    fixSuggestionsZh?: string[];
+    affectedPositions?: string[];
+    currentCv?: number;
+    targetCv?: number;
+    detailedExplanation?: string;
+    detailedExplanationZh?: string;
+  }>;
+  summary?: string;
+  summaryZh?: string;
+  // Section distribution from unified parsing service
+  // 来自统一解析服务的章节分布
+  sectionDistribution?: Array<{
+    index: number;
+    role: string;
+    title: string;
+    paragraphCount: number;
+    wordCount: number;
+    startParagraph?: number;
+    endParagraph?: number;
+  }>;
 }
 
 // Step 1.3: Progression & Closure Types
@@ -335,6 +365,7 @@ export interface SectionOrderResponse {
 export interface SectionLengthInfo {
   index: number;
   role: string;
+  title?: string;  // Actual section title from document / 文档中的实际章节标题
   wordCount: number;
   paragraphCount: number;
   deviationFromMean: number;
@@ -550,18 +581,19 @@ export interface ParagraphTransitionResponse {
 // 综合段落分析响应
 export interface ParagraphAnalysisResponse extends LayerAnalysisResult {
   paragraphs: string[];  // Filtered paragraphs (headers/keywords removed) 过滤后的段落
-  paragraphCount: number;
+  paragraphCount: number;  // Transformed from paragraph_count by transformKeys
   roleDistribution: Record<string, number>;
   coherenceScore: number;
-  anchorDensity: number;
+  anchorDensity: number;  // Transformed from anchor_density by transformKeys
   sentenceLengthAnalysis: {
     meanCv: number;
     lowBurstinessParagraphs: number[];
     uniformLengthRisk: boolean;
   };
-  paragraphDetails: Array<{
+  paragraphDetails: Array<{  // Transformed from paragraph_details by transformKeys
     index: number;
     role: string;
+    preview?: string;  // First few words of paragraph / 段落前几个单词
     coherenceScore: number;
     anchorCount: number;
     sentenceLengthCv: number;
@@ -780,6 +812,7 @@ export interface ConnectorOptimizationResponse {
   explicitRatio: number;
   connectorTypeDistribution: Record<string, number>;
   replacementSuggestions: ReplacementSuggestion[];
+  optimizedText?: string;
   riskLevel: RiskLevel;
   recommendations: string[];
   recommendationsZh: string[];
@@ -1381,6 +1414,186 @@ export const documentLayerApi = {
       user_notes: options?.userNotes,
     });
     return transformKeys(response.data);
+  },
+
+  /**
+   * Get detailed issue suggestion using step-specific LLM handler
+   * 使用步骤特定的LLM处理器获取详细问题建议
+   *
+   * This function calls the step's merge-modify/prompt endpoint to get
+   * LLM-based detailed suggestions for selected issues.
+   * 此函数调用步骤的merge-modify/prompt端点，获取基于LLM的详细建议
+   */
+  getStepIssueSuggestion: async (
+    documentText: string,
+    selectedIssues: DetectionIssue[],
+    stepName: string,
+    sessionId?: string
+  ): Promise<{
+    diagnosisZh: string;
+    strategies: Array<{
+      nameZh: string;
+      descriptionZh: string;
+      exampleBefore?: string;
+      exampleAfter?: string;
+      difficulty: string;
+      effectiveness: number;
+    }>;
+    modificationPrompt: string;
+    priorityTipsZh: string[];
+    cautionZh: string;
+  }> => {
+    // Map step name to endpoint
+    // 将步骤名称映射到端点
+    const stepEndpointMap: Record<string, string> = {
+      'step1_1': '/document/step1-1/merge-modify/prompt',
+      'step1_2': '/document/step1-2/merge-modify/prompt',
+      'step1_3': '/document/step1-3/merge-modify/prompt',
+      'step1_4': '/document/step1-4/merge-modify/prompt',
+      'step1_5': '/document/step1-5/merge-modify/prompt',
+    };
+
+    const endpoint = stepEndpointMap[stepName];
+    if (!endpoint) {
+      // Fallback to legacy API for unknown steps
+      // 对于未知步骤回退到旧版API
+      const response = await api.post('../structure/issue-suggestion', {
+        documentId: 'temp',
+        issueType: selectedIssues[0]?.type || 'unknown',
+        issueDescription: selectedIssues[0]?.description || '',
+        issueDescriptionZh: selectedIssues[0]?.descriptionZh || '',
+        severity: selectedIssues[0]?.severity || 'medium',
+        affectedPositions: [],
+        quickMode: false,
+      });
+      return transformKeys(response.data);
+    }
+
+    // Call step-specific merge-modify/prompt endpoint
+    // 调用步骤特定的merge-modify/prompt端点
+    // Pass document_text directly instead of document_id for better reliability
+    // 直接传递document_text而不是document_id，更可靠
+    const response = await api.post(endpoint, {
+      session_id: sessionId,
+      document_text: documentText,
+      selected_issues: selectedIssues.map(issue => {
+        const issueAny = issue as Record<string, unknown>;
+        const locationStr = typeof issueAny.location === 'string'
+          ? issueAny.location
+          : (typeof issueAny.position === 'string' ? issueAny.position : '');
+        return {
+          type: issue.type,
+          description: issue.description || '',
+          description_zh: issue.descriptionZh || '',
+          severity: issue.severity || 'medium',
+          affected_positions: locationStr ? [locationStr] : [],
+        };
+      }),
+      user_notes: '',
+    });
+
+    // Transform the merge-modify/prompt response to match expected format
+    // 将merge-modify/prompt响应转换为预期格式
+    const data = transformKeys(response.data);
+
+    // Build strategies from the prompt
+    // 从prompt构建策略
+    const strategies = [];
+    if (data.prompt) {
+      // Extract issue types from selected issues to build strategies
+      // 从选中的问题中提取问题类型以构建策略
+      const issueTypes = new Set(selectedIssues.map(i => i.type));
+
+      if (issueTypes.has('explicit_connector_overuse')) {
+        strategies.push({
+          nameZh: 'Replace explicit connectors / 替换显性连接词',
+          descriptionZh: 'Use semantic echo instead of explicit connectors like "Furthermore", "Moreover"',
+          difficulty: 'medium',
+          effectiveness: 85,
+        });
+      }
+      if (issueTypes.has('missing_semantic_echo')) {
+        strategies.push({
+          nameZh: 'Add semantic echo / 添加语义回声',
+          descriptionZh: 'Reference key concepts from previous paragraph to create natural flow',
+          difficulty: 'medium',
+          effectiveness: 80,
+        });
+      }
+      if (issueTypes.has('logic_break_point')) {
+        strategies.push({
+          nameZh: 'Bridge logic gaps / 弥合逻辑断层',
+          descriptionZh: 'Add bridging phrases to connect ideas naturally',
+          difficulty: 'high',
+          effectiveness: 75,
+        });
+      }
+      if (issueTypes.has('formulaic_transitions')) {
+        strategies.push({
+          nameZh: 'Vary transition patterns / 变化过渡模式',
+          descriptionZh: 'Use different transition techniques: rhetorical questions, contrasts, etc.',
+          difficulty: 'medium',
+          effectiveness: 80,
+        });
+      }
+
+      // Step 1.5 specific issue types (Content Substantiality)
+      // 步骤 1.5 特有的问题类型（内容实质性）
+      if (issueTypes.has('generic_phrases') || issueTypes.has('generic_phrase_detected')) {
+        strategies.push({
+          nameZh: 'Replace generic phrases / 替换泛化短语',
+          descriptionZh: 'Replace vague expressions like "it is important" with specific claims backed by evidence',
+          difficulty: 'medium',
+          effectiveness: 85,
+        });
+      }
+      if (issueTypes.has('filler_words') || issueTypes.has('excessive_filler')) {
+        strategies.push({
+          nameZh: 'Remove filler words / 删除填充词',
+          descriptionZh: 'Remove words like "very", "really", "actually" that add no meaning',
+          difficulty: 'low',
+          effectiveness: 90,
+        });
+      }
+      if (issueTypes.has('low_substantiality') || issueTypes.has('low_specificity')) {
+        strategies.push({
+          nameZh: 'Add specific details / 添加具体细节',
+          descriptionZh: 'Include specific data, names, dates, or examples to support claims',
+          difficulty: 'high',
+          effectiveness: 80,
+        });
+      }
+      if (issueTypes.has('missing_evidence') || issueTypes.has('abstract_claims')) {
+        strategies.push({
+          nameZh: 'Support with evidence / 用证据支持',
+          descriptionZh: 'Add citations, statistics, or concrete examples to back up abstract statements',
+          difficulty: 'high',
+          effectiveness: 75,
+        });
+      }
+
+      // Default strategy if no specific ones matched
+      // 如果没有匹配的特定策略则使用默认策略
+      if (strategies.length === 0) {
+        strategies.push({
+          nameZh: 'Apply LLM suggestions / 应用LLM建议',
+          descriptionZh: data.prompt,
+          difficulty: 'medium',
+          effectiveness: 75,
+        });
+      }
+    }
+
+    return {
+      diagnosisZh: data.issuesSummaryZh || `Detected ${selectedIssues.length} issues / 检测到${selectedIssues.length}个问题`,
+      strategies: strategies,
+      modificationPrompt: data.prompt || '',
+      priorityTipsZh: [
+        'Focus on improving transitions naturally / 专注于自然改进过渡',
+        'Preserve the original meaning / 保持原意',
+      ],
+      cautionZh: 'Review modifications to ensure academic tone is maintained / 审核修改以确保学术语气得以保持',
+    };
   },
 };
 
@@ -2137,7 +2350,7 @@ export const lexicalLayerApi = {
     sessionId?: string,
     lockedTerms?: string[]
   ): Promise<LexicalContextResponse> => {
-    const response = await api.post('/lexical/step5-0/context', {
+    const response = await api.post('../layer1/step5-0/prepare', {
       text,
       session_id: sessionId,
       locked_terms: lockedTerms,
@@ -2154,7 +2367,7 @@ export const lexicalLayerApi = {
     sessionId?: string,
     lockedTerms?: string[]
   ): Promise<FingerprintDetectionResponse> => {
-    const response = await api.post('/lexical/step5-1/fingerprint', {
+    const response = await api.post('../layer1/step5-1/analyze', {
       text,
       session_id: sessionId,
       locked_terms: lockedTerms,
@@ -2171,7 +2384,7 @@ export const lexicalLayerApi = {
     sessionId?: string,
     lockedTerms?: string[]
   ): Promise<HumanFeatureResponse> => {
-    const response = await api.post('/lexical/step5-2/human-features', {
+    const response = await api.post('../layer1/step5-2/analyze', {
       text,
       session_id: sessionId,
       locked_terms: lockedTerms,
@@ -2188,7 +2401,7 @@ export const lexicalLayerApi = {
     sessionId?: string,
     lockedTerms?: string[]
   ): Promise<ReplacementGenerationResponse> => {
-    const response = await api.post('/lexical/step5-3/replacements', {
+    const response = await api.post('../layer1/step5-3/analyze', {
       text,
       session_id: sessionId,
       locked_terms: lockedTerms,

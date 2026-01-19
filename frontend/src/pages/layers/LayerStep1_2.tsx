@@ -31,6 +31,7 @@ import LoadingMessage from '../../components/common/LoadingMessage';
 import LoadingOverlay from '../../components/common/LoadingOverlay';
 import { documentApi, sessionApi } from '../../services/api';
 import { documentLayerApi, DocumentAnalysisResponse, DetectionIssue } from '../../services/analysisApi';
+import { useSubstepStateStore } from '../../stores/substepStateStore';
 
 /**
  * Layer Step 1.2 - Section Uniformity Detection
@@ -142,6 +143,7 @@ export default function LayerStep1_2({
   const [isLoading, setIsLoading] = useState(true);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [analysisStarted, setAnalysisStarted] = useState(false);
   const [documentText, setDocumentText] = useState<string>('');
 
   // Uniformity data
@@ -207,6 +209,13 @@ export default function LayerStep1_2({
 
   const isAnalyzingRef = useRef(false);
 
+  // ============================================
+  // NEW CODE - Get substep state store reference for checking previous steps' modifiedText
+  // 新代码 - 获取子步骤状态存储引用用于检查前序步骤的修改后文本
+  // ============================================
+  const substepStore = useSubstepStateStore();
+  // ============================================
+
   // Load document
   // 加载文档
   useEffect(() => {
@@ -217,16 +226,44 @@ export default function LayerStep1_2({
       setError('Document ID not found. Please start from the document upload page. / 未找到文档ID，请从文档上传页面开始。');
       setIsLoading(false);
     }
-  }, [documentId, sessionFetchAttempted]);
+  }, [documentId, sessionFetchAttempted, sessionId, substepStore]);
 
   const loadDocumentText = async (docId: string) => {
     try {
+      // ============================================
+      // NEW CODE - Check previous step's modifiedText from substep store
+      // 新代码 - 从子步骤存储检查前序步骤的修改后文本
+      // ============================================
+      if (sessionId && substepStore.currentSessionId !== sessionId) {
+        await substepStore.initForSession(sessionId);
+      }
+
+      // Check previous steps for modified text (step5-1 for LayerStep1_2)
+      // 检查前序步骤的修改后文本（LayerStep1_2检查step5-1）
+      const previousSteps = ['step5-1'];
+      let foundModifiedText: string | null = null;
+
+      for (const stepName of previousSteps) {
+        const stepState = substepStore.getState(stepName);
+        if (stepState?.modifiedText) {
+          console.log(`[LayerStep1_2] Using modified text from ${stepName}`);
+          foundModifiedText = stepState.modifiedText;
+          break;
+        }
+      }
+
+      if (foundModifiedText) {
+        setDocumentText(foundModifiedText);
+        setIsLoading(false);
+        return;
+      }
+      // ============================================
+
       const doc = await documentApi.get(docId);
-      // Prioritize processedText (modified by previous step) over originalText
-      // 优先使用 processedText（前一步修改后的文本），否则使用 originalText
-      const textToUse = doc.processedText || doc.originalText;
-      if (textToUse) {
-        setDocumentText(textToUse);
+      // Fallback to originalText if no modified text found in substep store
+      // 如果子步骤存储中没有修改后的文本，则回退到originalText
+      if (doc.originalText) {
+        setDocumentText(doc.originalText);
       } else {
         setError('Document text not found / 未找到文档文本');
       }
@@ -238,13 +275,13 @@ export default function LayerStep1_2({
     }
   };
 
-  // Run analysis
-  // 运行分析
+  // Run analysis when user clicks start
+  // 当用户点击开始时运行分析
   useEffect(() => {
-    if (documentText && !isAnalyzingRef.current) {
+    if (documentText && analysisStarted && !isAnalyzingRef.current) {
       runAnalysis();
     }
-  }, [documentText]);
+  }, [documentText, analysisStarted]);
 
   // Calculate uniformity metrics from sections
   // 从章节数据计算均匀性指标
@@ -315,15 +352,17 @@ export default function LayerStep1_2({
         sessionId || undefined
       );
 
-      // Also get sections for UI display from Step 1.1
-      // 同时从步骤1.1获取章节信息用于UI显示
-      const structureResult = await documentLayerApi.analyzeStructure(documentText, sessionId || undefined);
-
-      if (structureResult.sections) {
-        setSections(structureResult.sections);
+      // Use section distribution from Step 1.2 (calculated independently from current text)
+      // 使用步骤1.2返回的章节分布（从当前文本独立计算）
+      // This ensures accurate data even after Step 1.1 modifications
+      // 这确保即使在步骤1.1修改后数据也是准确的
+      const sectionDistribution = (paragraphAnalysisResult as any).sectionDistribution ||
+                                   (paragraphAnalysisResult as any).section_distribution || [];
+      if (sectionDistribution.length > 0) {
+        setSections(sectionDistribution);
         // Calculate section-level uniformity metrics for UI
         // 计算章节级别的均匀性指标用于UI
-        const calculatedMetrics = calculateMetrics(structureResult.sections);
+        const calculatedMetrics = calculateMetrics(sectionDistribution);
         setMetrics(calculatedMetrics);
       }
 
@@ -430,6 +469,18 @@ export default function LayerStep1_2({
     }
     setSelectedIssueIndices(newSelected);
   };
+
+  // Select all issues
+  // 全选所有问题
+  const selectAllIssues = useCallback(() => {
+    setSelectedIssueIndices(new Set(uniformityIssues.map((_, idx) => idx)));
+  }, [uniformityIssues]);
+
+  // Deselect all issues
+  // 取消全选所有问题
+  const deselectAllIssues = useCallback(() => {
+    setSelectedIssueIndices(new Set());
+  }, []);
 
   // Load suggestion for a specific issue
   // 为特定问题加载建议
@@ -582,6 +633,24 @@ export default function LayerStep1_2({
     setUploadError(null);
 
     try {
+      // ============================================
+      // NEW CODE - Save modified text to substep store
+      // 新代码 - 保存修改后的文本到子步骤存储
+      // ============================================
+      let modifiedText: string = '';
+      if (modifyMode === 'file' && newFile) {
+        modifiedText = await newFile.text();
+      } else if (modifyMode === 'text' && newText.trim()) {
+        modifiedText = newText.trim();
+      }
+
+      if (sessionId && modifiedText) {
+        await substepStore.saveModifiedText('step5-2', modifiedText);
+        await substepStore.markCompleted('step5-2');
+        console.log('[LayerStep1_2] Saved modified text to substep store');
+      }
+      // ============================================
+
       let newDocumentId: string;
 
       if (modifyMode === 'file' && newFile) {
@@ -592,14 +661,17 @@ export default function LayerStep1_2({
         newDocumentId = result.id;
       }
 
-      // Navigate to Step 1.3 with new document
-      const sessionParam = sessionId ? `&session=${sessionId}` : '';
-      navigate(`/flow/layer5-step1-3/${newDocumentId}?mode=${mode}${sessionParam}`);
+      // Navigate to Step 1.3 with new document (use documentId from URL/props)
+      // 导航到步骤1.3（使用URL/props中的documentId）
+      const params = new URLSearchParams();
+      if (mode) params.set('mode', mode);
+      if (sessionId) params.set('session', sessionId);
+      navigate(`/flow/layer5-step1-3/${documentId}?${params.toString()}`);
     } catch (err) {
       setUploadError((err as Error).message || '上传失败，请重试 / Upload failed, please try again');
       setIsUploading(false);
     }
-  }, [modifyMode, newFile, newText, sessionId, mode, navigate]);
+  }, [modifyMode, newFile, newText, sessionId, mode, navigate, documentId, substepStore]);
 
   // Validate and set file
   // 验证并设置文件
@@ -716,6 +788,41 @@ export default function LayerStep1_2({
           章节均匀性检测 - 检测章节对称结构、均匀段落数、均匀长度
         </p>
       </div>
+
+      {/* Start Analysis / Skip Step */}
+      {documentText && !analysisStarted && !isAnalyzing && !result && (
+        <div className="mb-6 p-6 bg-gray-50 border border-gray-200 rounded-lg">
+          <div className="text-center">
+            <FileText className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+            <h3 className="text-lg font-medium text-gray-900 mb-2">
+              Ready to Analyze / 准备分析
+            </h3>
+            <p className="text-gray-600 mb-6">
+              Click "Start Analysis" to detect section uniformity and symmetry, or skip this step.
+              <br />
+              点击"开始分析"检测章节均匀性和对称性，或跳过此步骤。
+            </p>
+            <div className="flex items-center justify-center gap-4">
+              <Button
+                variant="primary"
+                size="lg"
+                onClick={() => setAnalysisStarted(true)}
+              >
+                <Sparkles className="w-5 h-5 mr-2" />
+                Start Analysis / 开始分析
+              </Button>
+              <Button
+                variant="secondary"
+                size="lg"
+                onClick={handleNext}
+              >
+                <ArrowRight className="w-5 h-5 mr-2" />
+                Skip Step / 跳过此步
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Analysis Progress */}
       {isAnalyzing && (
@@ -867,8 +974,8 @@ export default function LayerStep1_2({
                 </table>
               </div>
               <div className="px-4 py-2 bg-gray-50 border-t text-sm text-gray-500">
-                Mean paragraphs: {metrics.paragraphCountMean.toFixed(1)} |
-                Mean words: {metrics.wordCountMean.toFixed(0)}
+                Mean paragraphs: {metrics?.paragraphCountMean?.toFixed(1) || '0.0'} |
+                Mean words: {metrics?.wordCountMean?.toFixed(0) || '0'}
               </div>
             </div>
           </div>
@@ -876,18 +983,25 @@ export default function LayerStep1_2({
           {/* Analysis Result / Issues */}
           {uniformityIssues.length > 0 && (
             <div className="mb-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-3 flex items-center gap-2">
-                {uniformityIssues.some(i => i.type === 'length_variation_ok' || i.severity === 'low') &&
-                 !uniformityIssues.some(i => i.severity === 'high' || i.severity === 'medium') ? (
-                  <CheckCircle className="w-5 h-5 text-green-600" />
-                ) : (
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
                   <AlertTriangle className="w-5 h-5 text-yellow-600" />
-                )}
-                Analysis Result / 分析结果
-                <span className="text-sm font-normal text-gray-500">
-                  ({uniformityIssues.length} {uniformityIssues.length === 1 ? 'item' : 'items'})
-                </span>
-              </h3>
+                  Detected Issues / 检测到的问题
+                  <span className="text-sm font-normal text-gray-500">
+                    ({selectedIssueIndices.size}/{uniformityIssues.length} selected / 已选择)
+                  </span>
+                </h3>
+                <div className="flex items-center gap-2">
+                  {/* Select All / Deselect All buttons */}
+                  {/* 全选/取消全选按钮 */}
+                  <Button variant="secondary" size="sm" onClick={selectAllIssues}>
+                    Select All / 全选
+                  </Button>
+                  <Button variant="secondary" size="sm" onClick={deselectAllIssues}>
+                    Deselect All / 取消全选
+                  </Button>
+                </div>
+              </div>
               <div className="space-y-2">
                 {uniformityIssues.map((issue, idx) => {
                   const isExpanded = expandedIssueIndex === idx;
@@ -1207,7 +1321,7 @@ export default function LayerStep1_2({
           )}
 
           {/* No issues */}
-          {!metrics.isSymmetric && uniformityIssues.length === 0 && (
+          {!metrics?.isSymmetric && uniformityIssues.length === 0 && (
             <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-lg flex items-start gap-3">
               <CheckCircle className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
               <div>

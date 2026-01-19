@@ -110,7 +110,7 @@ class SelectedIssue(BaseModel):
     """
     type: str = Field(..., description="Issue type identifier")
     description: str = Field("", description="English description")
-    description_zh: str = Field(..., description="Chinese description")
+    description_zh: str = Field("", description="Chinese description")
     severity: str = Field("medium", description="Severity: high/medium/low")
     affected_positions: List[str] = Field(default_factory=list, description="Affected positions")
 
@@ -122,8 +122,13 @@ class MergeModifyRequest(BaseModel):
 
     User selects multiple issues and can optionally provide notes.
     用户选择多个问题，可选择性地提供注意事项。
+
+    Priority for document text:
+    1. document_text (directly provided)
+    2. document_id (fetch from database)
     """
-    document_id: str = Field(..., description="Document ID")
+    document_id: Optional[str] = Field(None, description="Document ID (optional, used to fetch text from DB)")
+    document_text: Optional[str] = Field(None, description="Document text (optional, preferred over document_id)")
     session_id: Optional[str] = Field(None, description="Session ID for context")
     selected_issues: List[SelectedIssue] = Field(..., description="List of selected issues")
     user_notes: Optional[str] = Field(None, description="User's optional notes/requirements")
@@ -163,6 +168,9 @@ class SectionUniformityResponse(SubstepBaseResponse):
     cv: float = Field(0, description="Coefficient of variation")
     target_cv: float = Field(0.4, description="Target CV for human-like writing")
     paragraphs: List[Dict[str, Any]] = Field(default_factory=list, description="Paragraph info")
+    # Section distribution for frontend visualization
+    # 章节分布数据供前端可视化使用
+    section_distribution: List[Dict[str, Any]] = Field(default_factory=list, description="Section distribution data")
 
 
 class LogicPatternResponse(SubstepBaseResponse):
@@ -184,17 +192,24 @@ class AnchorDensityResponse(SubstepBaseResponse):
 
 
 class ConnectorTransitionResponse(SubstepBaseResponse):
-    """Response for connector/transition analysis (Step 1.5)"""
+    """Response for connector/transition analysis (Step 1.4)
+    连接词与衔接分析响应"""
+    # Basic stats / 基本统计
+    explicit_connector_count: int = Field(0, description="Total explicit connectors found / 显性连接词总数")
+    explicit_connector_rate: float = Field(0, description="Rate of paragraphs with explicit connectors / 显性连接词使用率")
+    connectors_found: List[str] = Field(default_factory=list, description="List of explicit connectors found / 发现的显性连接词列表")
+    semantic_echo_score: int = Field(0, description="Semantic echo score 0-100 / 语义回声分数")
+    # Legacy fields for backward compatibility / 向后兼容字段
     total_transitions: int = Field(0, description="Total transition points")
     problematic_transitions: int = Field(0, description="Problematic transitions count")
     connector_density: float = Field(0, description="Connector density percentage")
-    explicit_connectors: List[str] = Field(default_factory=list, description="Detected connectors")
+    explicit_connectors: List[str] = Field(default_factory=list, description="Detected connectors (alias)")
     transitions: List[Dict[str, Any]] = Field(default_factory=list, description="Transition details")
 
 
 class ContentSubstantialityResponse(SubstepBaseResponse):
     """Response for content substantiality analysis (Step 1.5)"""
-    overall_specificity_score: int = Field(0, description="Overall specificity score")
+    overall_specificity_score: float = Field(0.0, description="Overall specificity score")
     total_generic_phrases: int = Field(0, description="Total generic phrases found")
     total_specific_details: int = Field(0, description="Total specific details found")
     average_filler_ratio: float = Field(0, description="Average filler word ratio")
@@ -359,6 +374,7 @@ class ParagraphSentenceLengthInfo(BaseModel):
     has_short_sentence: bool
     has_long_sentence: bool
     rhythm_score: float
+    preview: str = Field("", description="First few words of paragraph for identification")
 
 
 class SentenceLengthDistributionResponse(SubstepBaseResponse):

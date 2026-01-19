@@ -24,6 +24,7 @@ import Button from '../../components/common/Button';
 import LoadingMessage from '../../components/common/LoadingMessage';
 import LoadingOverlay from '../../components/common/LoadingOverlay';
 import { documentApi, sessionApi } from '../../services/api';
+import { useSubstepStateStore } from '../../stores/substepStateStore';
 import {
   paragraphLayerApi,
   documentLayerApi,
@@ -145,6 +146,7 @@ export default function LayerStep3_3({
   const [isLoading, setIsLoading] = useState(true);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [analysisStarted, setAnalysisStarted] = useState(false);
   const [documentText, setDocumentText] = useState<string>('');
 
   // Issues derived from analysis result
@@ -155,11 +157,19 @@ export default function LayerStep3_3({
   // 用于合并修改的问题选择
   const [selectedIssueIndices, setSelectedIssueIndices] = useState<Set<number>>(new Set());
 
+  // Click-expand state for individual issue analysis
+  // 点击展开状态，用于单个问题分析
+  const [expandedIssueIndex, setExpandedIssueIndex] = useState<number | null>(null);
+
   // Issue suggestion state (LLM-based detailed suggestions)
   // 问题建议状态（基于LLM的详细建议）
   const [issueSuggestion, setIssueSuggestion] = useState<IssueSuggestionResponse | null>(null);
   const [isLoadingSuggestion, setIsLoadingSuggestion] = useState(false);
   const [suggestionError, setSuggestionError] = useState<string | null>(null);
+
+  // Per-issue suggestion cache to avoid redundant API calls
+  // 每个问题的建议缓存，避免重复API调用
+  const suggestionCacheRef = useRef<Map<number, IssueSuggestionResponse>>(new Map());
 
   // Merge modify state
   // 合并修改状态
@@ -184,9 +194,13 @@ export default function LayerStep3_3({
   // Data/Citation warning state
   // 数据/引用警告状态
   const [showDataWarning, setShowDataWarning] = useState(false);
-  const [dataWarningAction, setDataWarningAction] = useState<'prompt' | 'apply' | 'accept' | null>(null);
+  const [dataWarningAction, setDataWarningAction] = useState<'prompt' | 'apply' | 'accept' | 'continue' | null>(null);
 
   const isAnalyzingRef = useRef(false);
+
+  // Substep state store for document text handling
+  // 子步骤状态存储用于文档文本处理
+  const substepStore = useSubstepStateStore();
 
   // Check if selected issues involve adding data/citations/references
   // 检查选中的问题是否涉及添加数据/引用/参考文献
@@ -218,11 +232,37 @@ export default function LayerStep3_3({
 
   const loadDocumentText = async (docId: string) => {
     try {
-      const doc = await documentApi.get(docId);
-      if (doc.originalText) {
-        setDocumentText(doc.originalText);
+      // Initialize substep store for session if needed
+      // 如果需要，为会话初始化子步骤存储
+      if (sessionId && substepStore.currentSessionId !== sessionId) {
+        await substepStore.initForSession(sessionId);
+      }
+
+      // Check previous steps for modified text (step3-2, step3-1, step3-0, then Layer 4 steps, then Layer 5 steps)
+      // 检查前面步骤的修改文本（先检查step3-2, step3-1, step3-0，再检查第4层，再检查第5层）
+      const previousSteps = ['step3-2', 'step3-1', 'step3-0',
+                            'step2-5', 'step2-4', 'step2-3', 'step2-2', 'step2-1', 'step2-0',
+                            'step1-5', 'step1-4', 'step1-3', 'step1-2', 'step1-1'];
+      let foundModifiedText: string | null = null;
+
+      for (const stepName of previousSteps) {
+        const stepState = substepStore.getState(stepName);
+        if (stepState?.modifiedText) {
+          console.log(`[LayerStep3_3] Using modified text from ${stepName}`);
+          foundModifiedText = stepState.modifiedText;
+          break;
+        }
+      }
+
+      if (foundModifiedText) {
+        setDocumentText(foundModifiedText);
       } else {
-        setError('Document text not found / 未找到文档文本');
+        const doc = await documentApi.get(docId);
+        if (doc.originalText) {
+          setDocumentText(doc.originalText);
+        } else {
+          setError('Document text not found / 未找到文档文本');
+        }
       }
     } catch (err) {
       console.error('Failed to load document:', err);
@@ -235,10 +275,10 @@ export default function LayerStep3_3({
   // Run analysis when document is loaded
   // 文档加载后运行分析
   useEffect(() => {
-    if (documentText && !isAnalyzingRef.current) {
+    if (documentText && analysisStarted && !isAnalyzingRef.current) {
       runAnalysis();
     }
-  }, [documentText]);
+  }, [documentText, analysisStarted]);
 
   const runAnalysis = async () => {
     if (isAnalyzingRef.current || !documentText) return;
@@ -260,24 +300,28 @@ export default function LayerStep3_3({
       if (analysisResult.paragraphDetails) {
         analysisResult.paragraphDetails.forEach((para, index) => {
           const anchorCount = para.anchorCount || 0;
+          // Get paragraph preview (first 5 words or from backend)
+          // 获取段落预览（前5个单词或从后端获取）
+          const preview = para.preview || `Para ${index + 1}`;
+          const locationText = `[${index + 1}] "${preview}"`;
 
           if (anchorCount < 3) {
             issues.push({
               type: 'very_low_anchor_density',
-              description: `Paragraph ${index + 1} has very low anchor density (${anchorCount} anchors) - high hallucination risk`,
-              descriptionZh: `段落${index + 1}锚点密度极低 (${anchorCount}个锚点) - 高幻觉风险`,
+              description: `Paragraph ${index + 1} "${preview}" has very low anchor density (${anchorCount} anchors) - high hallucination risk`,
+              descriptionZh: `段落${index + 1} "${preview}" 锚点密度极低 (${anchorCount}个锚点) - 高幻觉风险`,
               severity: 'high' as IssueSeverity,
               layer: 'paragraph',
-              location: `Paragraph ${index + 1}`,
+              location: locationText,
             });
           } else if (anchorCount < 5) {
             issues.push({
               type: 'low_anchor_density',
-              description: `Paragraph ${index + 1} has low anchor density (${anchorCount} anchors) - moderate hallucination risk`,
-              descriptionZh: `段落${index + 1}锚点密度较低 (${anchorCount}个锚点) - 中等幻觉风险`,
+              description: `Paragraph ${index + 1} "${preview}" has low anchor density (${anchorCount} anchors) - moderate hallucination risk`,
+              descriptionZh: `段落${index + 1} "${preview}" 锚点密度较低 (${anchorCount}个锚点) - 中等幻觉风险`,
               severity: 'medium' as IssueSeverity,
               layer: 'paragraph',
-              location: `Paragraph ${index + 1}`,
+              location: locationText,
             });
           }
         });
@@ -310,40 +354,66 @@ export default function LayerStep3_3({
     }
   };
 
-  // Load detailed suggestion for selected issues (LLM-based)
-  // 为选中的问题加载详细建议（基于LLM）
-  const loadIssueSuggestion = useCallback(async () => {
-    if (selectedIssueIndices.size === 0 || !documentId) return;
+  // Load detailed suggestion for a specific issue (LLM-based) with caching
+  // 为特定问题加载详细建议（基于LLM），带缓存
+  const loadIssueSuggestion = useCallback(async (index: number) => {
+    const issue = anchorIssues[index];
+    if (!issue || !documentId) return;
+
+    // Check cache first
+    // 首先检查缓存
+    const cached = suggestionCacheRef.current.get(index);
+    if (cached) {
+      setIssueSuggestion(cached);
+      return;
+    }
 
     setIsLoadingSuggestion(true);
     setSuggestionError(null);
 
     try {
-      const selectedIssues = Array.from(selectedIssueIndices).map(i => anchorIssues[i]);
-      // Use the first issue for suggestion (API expects single issue)
-      const firstIssue = selectedIssues[0];
       const response = await documentLayerApi.getIssueSuggestion(
         documentId,
-        firstIssue,
+        issue,
         false
       );
       // Transform response to match our interface
-      setIssueSuggestion({
+      const suggestion = {
         analysis: response.diagnosisZh || '',
-        suggestions: response.priorityTipsZh || [],
+        suggestions: response.strategies?.map((s) => `${s.nameZh}: ${s.descriptionZh}`) || [],
         exampleFix: response.strategies?.[0]?.exampleAfter || '',
-      });
+      };
+      // Store in cache
+      // 存入缓存
+      suggestionCacheRef.current.set(index, suggestion);
+      setIssueSuggestion(suggestion);
     } catch (err) {
       console.error('Failed to load suggestion:', err);
       setSuggestionError('Failed to load detailed suggestion / 加载详细建议失败');
     } finally {
       setIsLoadingSuggestion(false);
     }
-  }, [selectedIssueIndices, documentId, anchorIssues]);
+  }, [anchorIssues, documentId]);
 
-  // Handle issue selection toggle
-  // 处理问题选择切换
-  const handleIssueClick = useCallback((index: number) => {
+  // Handle issue click - toggle expand and auto-load suggestions
+  // 处理问题点击 - 切换展开并自动加载建议
+  const handleIssueClick = useCallback(async (index: number) => {
+    if (expandedIssueIndex === index) {
+      // Collapse if already expanded
+      // 如果已展开则折叠
+      setExpandedIssueIndex(null);
+      setIssueSuggestion(null);
+      return;
+    }
+    // Expand and load suggestion
+    // 展开并加载建议
+    setExpandedIssueIndex(index);
+    await loadIssueSuggestion(index);
+  }, [expandedIssueIndex, loadIssueSuggestion]);
+
+  // Toggle issue selection (checkbox only)
+  // 切换问题选择（仅复选框）
+  const toggleIssueSelection = useCallback((index: number) => {
     setSelectedIssueIndices(prev => {
       const newSet = new Set(prev);
       if (newSet.has(index)) {
@@ -353,7 +423,6 @@ export default function LayerStep3_3({
       }
       return newSet;
     });
-    setIssueSuggestion(null);
     setMergeResult(null);
   }, []);
 
@@ -416,6 +485,79 @@ export default function LayerStep3_3({
     }
   }, [selectedIssueIndices, documentId, anchorIssues, mergeMode, mergeUserNotes, sessionId]);
 
+  // Actual accept modification execution
+  // 实际接受修改执行
+  const executeActualAcceptModification = useCallback(() => {
+    if (mergeResult && 'modifiedText' in mergeResult && mergeResult.modifiedText) {
+      setNewText(mergeResult.modifiedText);
+      setModifyMode('text');
+      setMergeResult(null);
+      setShowDataWarning(false);
+      setDataWarningAction(null);
+    }
+  }, [mergeResult]);
+
+  // Check if modified text contains placeholder markers that need verification
+  // 检查修改后的文本是否包含需要验证的占位符标记
+  const hasPlaceholderMarkers = useCallback((text: string) => {
+    const placeholderPatterns = [
+      /\[AUTHOR_X+\]/i,
+      /\[AUTHOR_YEAR_X+\]/i,
+      /\[DATA_X+%?\]/i,
+      /\[N=X+\]/i,
+      /\[DATE_X+\]/i,
+      /\[YEAR_X+\]/i,
+      /\[INSTITUTION_X+\]/i,
+      /\[DATASET_X+\]/i,
+      /\[citation needed\]/i,
+    ];
+    return placeholderPatterns.some(pattern => pattern.test(text));
+  }, []);
+
+  // Actual execution of confirm modify (after warning)
+  // 确认修改的实际执行（警告后）
+  const executeActualConfirmModify = useCallback(async () => {
+    setIsUploading(true);
+    setError(null);
+    setShowDataWarning(false);
+    setDataWarningAction(null);
+
+    try {
+      // Extract modified text from file or text input
+      // 从文件或文本输入中提取修改后的文本
+      let modifiedText: string = '';
+      if (modifyMode === 'file' && newFile) {
+        modifiedText = await newFile.text();
+      } else if (modifyMode === 'text' && newText.trim()) {
+        modifiedText = newText.trim();
+      } else {
+        setError('Please select a file or enter text / 请选择文件或输入文本');
+        setIsUploading(false);
+        return;
+      }
+
+      // Save modified text to substep store
+      // 将修改后的文本保存到子步骤存储
+      if (sessionId && modifiedText) {
+        await substepStore.saveModifiedText('step3-3', modifiedText);
+        await substepStore.markCompleted('step3-3');
+        console.log('[LayerStep3_3] Saved modified text to substep store');
+      }
+
+      // Navigate to next step
+      // 导航到下一步
+      const params = new URLSearchParams();
+      if (mode) params.set('mode', mode);
+      if (sessionId) params.set('session', sessionId);
+      navigate(`/flow/layer3-step3-4/${documentId}?${params.toString()}`);
+    } catch (err) {
+      console.error('Upload failed:', err);
+      setError('Failed to upload modified document / 上传修改后的文档失败');
+    } finally {
+      setIsUploading(false);
+    }
+  }, [modifyMode, newFile, newText, mode, sessionId, navigate, documentId, substepStore]);
+
   // Handle data warning confirmation
   // 处理数据警告确认
   const handleDataWarningConfirm = useCallback(() => {
@@ -428,9 +570,11 @@ export default function LayerStep3_3({
       executeActualMergeModify();
     } else if (dataWarningAction === 'accept') {
       executeActualAcceptModification();
+    } else if (dataWarningAction === 'continue') {
+      executeActualConfirmModify();
     }
     setDataWarningAction(null);
-  }, [dataWarningAction, executeActualMergeModify]);
+  }, [dataWarningAction, executeActualMergeModify, executeActualAcceptModification, executeActualConfirmModify]);
 
   // Execute merge modify (wrapper that checks for data warning)
   // 执行合并修改（检查数据警告的包装函数）
@@ -453,18 +597,6 @@ export default function LayerStep3_3({
     setMergeMode('apply');
   }, []);
 
-  // Actual accept modification execution
-  // 实际接受修改执行
-  const executeActualAcceptModification = useCallback(() => {
-    if (mergeResult && 'modifiedText' in mergeResult && mergeResult.modifiedText) {
-      setNewText(mergeResult.modifiedText);
-      setModifyMode('text');
-      setMergeResult(null);
-      setShowDataWarning(false);
-      setDataWarningAction(null);
-    }
-  }, [mergeResult]);
-
   // Handle accept modification (with data warning check)
   // 处理接受修改（带数据警告检查）
   const handleAcceptModification = useCallback(() => {
@@ -485,40 +617,27 @@ export default function LayerStep3_3({
     }
   }, []);
 
-  // Handle confirm modification and navigate to next step
-  // 处理确认修改并导航到下一步
+  // Handle confirm modification and navigate to next step (with warning check)
+  // 处理确认修改并导航到下一步（带警告检查）
   const handleConfirmModify = useCallback(async () => {
-    setIsUploading(true);
-    setError(null);
-
-    try {
-      let newDocId: string;
-
-      if (modifyMode === 'file' && newFile) {
-        const result = await documentApi.upload(newFile);
-        newDocId = result.documentId;
-      } else if (modifyMode === 'text' && newText.trim()) {
-        const result = await documentApi.uploadText(newText, `step3_3_modified_${Date.now()}.txt`);
-        newDocId = result.documentId;
-      } else {
-        setError('Please select a file or enter text / 请选择文件或输入文本');
-        setIsUploading(false);
-        return;
-      }
-
-      // Navigate to next step with new document
-      // 使用新文档导航到下一步
-      const params = new URLSearchParams();
-      if (mode) params.set('mode', mode);
-      if (sessionId) params.set('session', sessionId);
-      navigate(`/flow/layer3-step3-4/${newDocId}?${params.toString()}`);
-    } catch (err) {
-      console.error('Upload failed:', err);
-      setError('Failed to upload modified document / 上传修改后的文档失败');
-    } finally {
-      setIsUploading(false);
+    // Get the text that will be applied
+    // 获取将要应用的文本
+    let textToCheck = '';
+    if (modifyMode === 'file' && newFile) {
+      textToCheck = await newFile.text();
+    } else if (modifyMode === 'text' && newText.trim()) {
+      textToCheck = newText.trim();
     }
-  }, [modifyMode, newFile, newText, mode, sessionId, navigate]);
+
+    // Check for placeholder markers or data-related issues
+    // 检查占位符标记或数据相关问题
+    if (hasPlaceholderMarkers(textToCheck) || hasDataRelatedIssues()) {
+      setDataWarningAction('continue');
+      setShowDataWarning(true);
+    } else {
+      executeActualConfirmModify();
+    }
+  }, [modifyMode, newFile, newText, hasPlaceholderMarkers, hasDataRelatedIssues, executeActualConfirmModify]);
 
   // Navigation handlers
   // 导航处理
@@ -666,10 +785,36 @@ export default function LayerStep3_3({
             </div>
           </div>
         </div>
+
+        {/* Start Analysis / Skip Step */}
+        {/* 开始分析 / 跳过此步 */}
+        {documentText && !analysisStarted && !isAnalyzing && !result && (
+          <div className="mt-4 p-6 bg-gray-50 border border-gray-200 rounded-lg">
+            <div className="text-center">
+              <Anchor className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+              <h3 className="text-lg font-medium text-gray-900 mb-2">Ready to Analyze / 准备分析</h3>
+              <p className="text-gray-600 mb-6">
+                Click to analyze anchor density and detect hallucination risk
+                <br />
+                <span className="text-gray-500">点击分析锚点密度并检测幻觉风险</span>
+              </p>
+              <div className="flex items-center justify-center gap-4">
+                <Button variant="primary" size="lg" onClick={() => setAnalysisStarted(true)}>
+                  <Sparkles className="w-5 h-5 mr-2" />
+                  Start Analysis / 开始分析
+                </Button>
+                <Button variant="secondary" size="lg" onClick={() => setShowSkipConfirm(true)}>
+                  <ArrowRight className="w-5 h-5 mr-2" />
+                  Skip Step / 跳过此步
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* Issues Section with Selection */}
-      {/* 问题部分（带选择功能） */}
+      {/* Issues Section with Selection and Click-Expand */}
+      {/* 问题部分（带选择和点击展开功能） */}
       {anchorIssues.length > 0 && (
         <div className="bg-white rounded-lg shadow-sm border p-6">
           <div className="flex items-center justify-between mb-3">
@@ -677,39 +822,73 @@ export default function LayerStep3_3({
               <AlertTriangle className="w-5 h-5 text-yellow-600" />
               Detected Issues / 检测到的问题
               <span className="text-sm font-normal text-gray-500">
-                (Click to select / 点击选择)
+                ({anchorIssues.length} issues / 问题)
               </span>
             </h3>
-            {hasSelectedIssues && (
-              <span className="text-sm text-blue-600">
-                {selectedIssueIndices.size} selected / 已选择
-              </span>
-            )}
+            <div className="flex items-center gap-3">
+              {/* Select All / Deselect All buttons */}
+              {/* 全选/取消全选按钮 */}
+              <button
+                onClick={() => {
+                  const allIndices = new Set(anchorIssues.map((_, i) => i));
+                  setSelectedIssueIndices(allIndices);
+                }}
+                className="text-sm text-blue-600 hover:text-blue-800 hover:underline"
+              >
+                Select All / 全选
+              </button>
+              <span className="text-gray-300">|</span>
+              <button
+                onClick={() => setSelectedIssueIndices(new Set())}
+                className="text-sm text-gray-600 hover:text-gray-800 hover:underline"
+              >
+                Deselect All / 取消全选
+              </button>
+              {hasSelectedIssues && (
+                <span className="text-sm text-blue-600 bg-blue-50 px-2 py-0.5 rounded">
+                  {selectedIssueIndices.size} selected / 已选
+                </span>
+              )}
+            </div>
           </div>
           <div className="space-y-2">
             {anchorIssues.map((issue, idx) => (
-              <button
+              <div
                 key={idx}
-                onClick={() => handleIssueClick(idx)}
                 className={clsx(
-                  'w-full text-left p-3 rounded-lg border transition-all',
-                  selectedIssueIndices.has(idx)
-                    ? 'bg-blue-50 border-blue-300 ring-2 ring-blue-200'
-                    : 'bg-white border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+                  'rounded-lg border transition-all',
+                  expandedIssueIndex === idx
+                    ? 'bg-purple-50 border-purple-300 ring-2 ring-purple-200'
+                    : selectedIssueIndices.has(idx)
+                    ? 'bg-blue-50 border-blue-300'
+                    : 'bg-white border-gray-200'
                 )}
               >
-                <div className="flex items-start gap-3">
-                  <div className={clsx(
-                    'w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 mt-0.5',
-                    selectedIssueIndices.has(idx)
-                      ? 'bg-blue-600 border-blue-600'
-                      : 'border-gray-300'
-                  )}>
+                <div className="flex items-start gap-3 p-3">
+                  {/* Checkbox button - separate click handler */}
+                  {/* 复选框按钮 - 单独的点击处理器 */}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleIssueSelection(idx);
+                    }}
+                    className={clsx(
+                      'w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 mt-0.5 transition-colors',
+                      selectedIssueIndices.has(idx)
+                        ? 'bg-blue-600 border-blue-600'
+                        : 'border-gray-300 hover:border-blue-400'
+                    )}
+                  >
                     {selectedIssueIndices.has(idx) && (
                       <Check className="w-3 h-3 text-white" />
                     )}
-                  </div>
-                  <div className="flex-1">
+                  </button>
+                  {/* Content area - click to expand */}
+                  {/* 内容区域 - 点击展开 */}
+                  <button
+                    onClick={() => handleIssueClick(idx)}
+                    className="flex-1 text-left"
+                  >
                     <div className="flex items-center gap-2">
                       <span className={clsx(
                         'px-2 py-0.5 rounded text-xs font-medium',
@@ -721,15 +900,59 @@ export default function LayerStep3_3({
                          issue.severity === 'medium' ? 'Medium / 中' : 'Low / 低'}
                       </span>
                       <span className="text-xs text-gray-500">{issue.layer}</span>
+                      {expandedIssueIndex === idx && (
+                        <span className="text-xs text-purple-600 ml-auto">Expanded / 已展开</span>
+                      )}
                     </div>
                     <p className="text-gray-900 mt-1">{issue.description}</p>
                     <p className="text-gray-600 text-sm">{issue.descriptionZh}</p>
                     {issue.location && (
                       <p className="text-gray-500 text-xs mt-1 font-mono">{issue.location}</p>
                     )}
-                  </div>
+                  </button>
                 </div>
-              </button>
+                {/* Expanded content section - inline suggestion display */}
+                {/* 展开内容部分 - 内联建议显示 */}
+                {expandedIssueIndex === idx && (
+                  <div className="border-t border-purple-200 p-3 bg-purple-50">
+                    {isLoadingSuggestion ? (
+                      <div className="flex items-center gap-2 text-purple-600">
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Loading suggestions... / 加载建议中...</span>
+                      </div>
+                    ) : suggestionError ? (
+                      <div className="text-red-600 text-sm">{suggestionError}</div>
+                    ) : issueSuggestion ? (
+                      <div className="space-y-3">
+                        <div>
+                          <h5 className="text-sm font-medium text-purple-800">Analysis / 分析:</h5>
+                          <p className="text-purple-700 mt-1 text-sm">{issueSuggestion.analysis}</p>
+                        </div>
+                        {issueSuggestion.suggestions && issueSuggestion.suggestions.length > 0 && (
+                          <div>
+                            <h5 className="text-sm font-medium text-purple-800">Suggestions / 建议:</h5>
+                            <ul className="list-disc list-inside mt-1 space-y-1">
+                              {issueSuggestion.suggestions.map((s, i) => (
+                                <li key={i} className="text-purple-700 text-sm">{s}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {issueSuggestion.exampleFix && (
+                          <div>
+                            <h5 className="text-sm font-medium text-purple-800">Example Fix / 示例修复:</h5>
+                            <pre className="mt-1 p-2 bg-white rounded text-xs text-gray-800 overflow-x-auto">
+                              {issueSuggestion.exampleFix}
+                            </pre>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="text-gray-500 text-sm">No suggestion available / 暂无建议</div>
+                    )}
+                  </div>
+                )}
+              </div>
             ))}
           </div>
         </div>
@@ -742,19 +965,6 @@ export default function LayerStep3_3({
           <div className="flex items-center justify-between">
             <div className="text-sm text-gray-600">{selectedIssueIndices.size} selected / 已选择 {selectedIssueIndices.size} 个问题</div>
             <div className="flex gap-2">
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={loadIssueSuggestion}
-                disabled={isLoadingSuggestion || selectedIssueIndices.size === 0}
-              >
-                {isLoadingSuggestion ? (
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                ) : (
-                  <Sparkles className="w-4 h-4 mr-2" />
-                )}
-                Load Suggestions / 加载建议
-              </Button>
               <Button
                 variant="secondary"
                 size="sm"
@@ -780,59 +990,6 @@ export default function LayerStep3_3({
                 AI Modify / AI修改
               </Button>
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* Suggestion Error */}
-      {suggestionError && (
-        <div className="p-4 bg-red-50 border border-red-200 rounded-lg flex items-start gap-3">
-          <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
-          <div>
-            <p className="text-red-600">{suggestionError}</p>
-            <Button
-              variant="secondary"
-              size="sm"
-              className="mt-2"
-              onClick={() => setSuggestionError(null)}
-            >
-              Dismiss / 关闭
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {/* Issue Suggestion Display (LLM-based) */}
-      {/* 问题建议展示（基于LLM） */}
-      {issueSuggestion && (
-        <div className="p-4 bg-purple-50 border border-purple-200 rounded-lg">
-          <h4 className="font-semibold text-purple-900 mb-3 flex items-center gap-2">
-            <Sparkles className="w-5 h-5" />
-            AI Suggestions / AI建议
-          </h4>
-          <div className="space-y-3">
-            <div>
-              <h5 className="text-sm font-medium text-purple-800">Analysis / 分析:</h5>
-              <p className="text-purple-700 mt-1">{issueSuggestion.analysis}</p>
-            </div>
-            {issueSuggestion.suggestions && issueSuggestion.suggestions.length > 0 && (
-              <div>
-                <h5 className="text-sm font-medium text-purple-800">Suggestions / 建议:</h5>
-                <ul className="list-disc list-inside mt-1 space-y-1">
-                  {issueSuggestion.suggestions.map((s, i) => (
-                    <li key={i} className="text-purple-700">{s}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {issueSuggestion.exampleFix && (
-              <div>
-                <h5 className="text-sm font-medium text-purple-800">Example Fix / 示例修复:</h5>
-                <pre className="mt-1 p-2 bg-white rounded text-sm text-gray-800 overflow-x-auto">
-                  {issueSuggestion.exampleFix}
-                </pre>
-              </div>
-            )}
           </div>
         </div>
       )}
@@ -956,31 +1113,38 @@ export default function LayerStep3_3({
             {result.paragraphDetails.map((para, index) => {
               // Calculate approximate density (anchors per 100 words equivalent)
               const density = para.anchorCount || 0;
-              const riskLevel = getDensityRiskLevel(density);
+              const risk_level = getDensityRiskLevel(density);
 
               return (
                 <div
                   key={index}
                   className={clsx(
                     'border rounded-lg p-4',
-                    riskLevel === 'high' ? 'border-red-300 bg-red-50' :
-                    riskLevel === 'medium' ? 'border-yellow-300 bg-yellow-50' :
+                    risk_level === 'high' ? 'border-red-300 bg-red-50' :
+                    risk_level === 'medium' ? 'border-yellow-300 bg-yellow-50' :
                     'border-green-300 bg-green-50'
                   )}
                 >
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-3">
                       <span className={clsx(
-                        'w-8 h-8 flex items-center justify-center rounded-full font-medium',
-                        riskLevel === 'high' ? 'bg-red-200 text-red-700' :
-                        riskLevel === 'medium' ? 'bg-yellow-200 text-yellow-700' :
+                        'w-8 h-8 flex items-center justify-center rounded-full font-medium flex-shrink-0',
+                        risk_level === 'high' ? 'bg-red-200 text-red-700' :
+                        risk_level === 'medium' ? 'bg-yellow-200 text-yellow-700' :
                         'bg-green-200 text-green-700'
                       )}>
                         {index + 1}
                       </span>
-                      <div>
-                        <span className="font-medium text-gray-700">Paragraph {index + 1}</span>
-                        <span className="text-sm text-gray-500 ml-2">({para.role || 'body'})</span>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-gray-700">Paragraph {index + 1}</span>
+                          <span className="text-sm text-gray-500">({para.role || 'body'})</span>
+                        </div>
+                        {/* Show paragraph preview - first few words */}
+                        {/* 显示段落预览 - 前几个单词 */}
+                        {para.preview && (
+                          <p className="text-xs text-gray-500 truncate mt-0.5 italic">"{para.preview}"</p>
+                        )}
                       </div>
                     </div>
                     <div className="flex items-center gap-4">
@@ -991,7 +1155,7 @@ export default function LayerStep3_3({
                         <Anchor className="w-3 h-3 inline mr-1" />
                         {density} anchors
                       </div>
-                      {riskLevel === 'high' && (
+                      {risk_level === 'high' && (
                         <div className="flex items-center gap-1 text-red-600">
                           <AlertTriangle className="w-4 h-4" />
                           <span className="text-sm font-medium">Hallucination Risk</span>
@@ -1000,7 +1164,7 @@ export default function LayerStep3_3({
                     </div>
                   </div>
 
-                  {riskLevel === 'high' && (
+                  {risk_level === 'high' && (
                     <div className="mt-2 p-2 bg-white rounded border border-red-200 text-sm text-red-700">
                       <strong>Warning:</strong> This paragraph may contain AI-generated filler content. Consider adding specific data, citations, or concrete examples.
                       <br />
@@ -1014,58 +1178,63 @@ export default function LayerStep3_3({
         </div>
       )}
 
-      {/* Anchor Types Distribution - from actual analysis results */}
-      {/* 锚点类型分布 - 来自实际分析结果 */}
-      <div className="bg-white rounded-lg shadow-sm border p-6">
-        <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
-          <Hash className="w-5 h-5 text-blue-600" />
-          Detected Anchor Types / 检测到的锚点类型
-        </h3>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          {[
-            {
-              icon: Hash,
-              label: 'Numbers',
-              labelZh: '数字',
-              count: (result?.details as Record<string, unknown>)?.anchor_type_distribution?.numbers ?? 0,
-              example: 'e.g., 85%, 3.5'
-            },
-            {
-              icon: FileText,
-              label: 'Dates',
-              labelZh: '日期',
-              count: (result?.details as Record<string, unknown>)?.anchor_type_distribution?.dates ?? 0,
-              example: 'e.g., 2023, March'
-            },
-            {
-              icon: Quote,
-              label: 'Names',
-              labelZh: '名称',
-              count: (result?.details as Record<string, unknown>)?.anchor_type_distribution?.names ?? 0,
-              example: 'e.g., Dr. Smith'
-            },
-            {
-              icon: Percent,
-              label: 'Citations',
-              labelZh: '引用',
-              count: (result?.details as Record<string, unknown>)?.anchor_type_distribution?.citations ?? 0,
-              example: 'e.g., [1], (2020)'
-            },
-          ].map((type, index) => (
-            <div key={index} className={`p-4 rounded-lg border ${(type.count as number) > 0 ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
-              <div className="flex items-center gap-2 mb-2">
-                <type.icon className={`w-5 h-5 ${(type.count as number) > 0 ? 'text-green-600' : 'text-red-500'}`} />
-                <span className="font-medium text-gray-800">{type.label}</span>
+      {/* Anchor Types Distribution - only show when we have actual data */}
+      {/* 锚点类型分布 - 仅在有实际数据时显示 */}
+      {result && (result?.details as Record<string, unknown>)?.anchor_type_distribution && (
+        ((result?.details as Record<string, unknown>)?.anchor_type_distribution?.numbers ?? 0) +
+        ((result?.details as Record<string, unknown>)?.anchor_type_distribution?.dates ?? 0) +
+        ((result?.details as Record<string, unknown>)?.anchor_type_distribution?.names ?? 0) +
+        ((result?.details as Record<string, unknown>)?.anchor_type_distribution?.citations ?? 0)
+      ) > 0 && (
+        <div className="bg-white rounded-lg shadow-sm border p-6">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
+            <Hash className="w-5 h-5 text-blue-600" />
+            Detected Anchor Types / 检测到的锚点类型
+          </h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            {[
+              {
+                icon: Hash,
+                label: 'Numbers',
+                labelZh: '数字',
+                count: (result?.details as Record<string, unknown>)?.anchor_type_distribution?.numbers ?? 0,
+                example: 'e.g., 85%, 3.5'
+              },
+              {
+                icon: FileText,
+                label: 'Dates',
+                labelZh: '日期',
+                count: (result?.details as Record<string, unknown>)?.anchor_type_distribution?.dates ?? 0,
+                example: 'e.g., 2023, March'
+              },
+              {
+                icon: Quote,
+                label: 'Names',
+                labelZh: '名称',
+                count: (result?.details as Record<string, unknown>)?.anchor_type_distribution?.names ?? 0,
+                example: 'e.g., Dr. Smith'
+              },
+              {
+                icon: Percent,
+                label: 'Citations',
+                labelZh: '引用',
+                count: (result?.details as Record<string, unknown>)?.anchor_type_distribution?.citations ?? 0,
+                example: 'e.g., [1], (2020)'
+              },
+            ].map((type, index) => (
+              <div key={index} className={`p-4 rounded-lg border ${(type.count as number) > 0 ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
+                <div className="flex items-center gap-2 mb-2">
+                  <type.icon className={`w-5 h-5 ${(type.count as number) > 0 ? 'text-green-600' : 'text-red-500'}`} />
+                  <span className="font-medium text-gray-800">{type.label}</span>
+                </div>
+                <div className="text-xs text-gray-500 mb-2">{type.labelZh}</div>
+                <div className={`text-2xl font-bold ${(type.count as number) > 0 ? 'text-green-600' : 'text-red-500'}`}>
+                  {type.count as number}
+                </div>
+                <div className="text-xs text-gray-400 mt-1">{type.example}</div>
               </div>
-              <div className="text-xs text-gray-500 mb-2">{type.labelZh}</div>
-              <div className={`text-2xl font-bold ${(type.count as number) > 0 ? 'text-green-600' : 'text-red-500'}`}>
-                {type.count as number}
-              </div>
-              <div className="text-xs text-gray-400 mt-1">{type.example}</div>
-            </div>
-          ))}
-        </div>
-        {result && (
+            ))}
+          </div>
           <div className="mt-4 p-3 bg-gray-50 rounded-lg text-sm text-gray-600">
             <strong>Total Anchors:</strong> {
               ((result?.details as Record<string, unknown>)?.anchor_type_distribution?.numbers ?? 0) +
@@ -1075,8 +1244,8 @@ export default function LayerStep3_3({
             } |
             <strong> Target:</strong> ≥5 per 100 words for low AI risk
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* No issues message - only show when risk is actually low */}
       {/* 无问题消息 - 仅当风险实际较低时显示 */}
@@ -1291,46 +1460,59 @@ export default function LayerStep3_3({
       {/* Data/Citation Warning Dialog */}
       {/* 数据/引用警告对话框 */}
       {showDataWarning && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 max-w-lg mx-4 shadow-xl">
-            <div className="flex items-start gap-3 mb-4">
-              <AlertTriangle className="w-8 h-8 text-red-600 flex-shrink-0" />
-              <div>
-                <h3 className="text-lg font-bold text-red-700">
-                  Data & Citation Risk Warning / 数据及引用风险警告
-                </h3>
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-lg w-full flex flex-col max-h-[90vh]">
+            {/* Fixed Header */}
+            <div className="flex items-center gap-3 p-4 border-b bg-red-50 rounded-t-lg">
+              <AlertTriangle className="w-6 h-6 text-red-600 flex-shrink-0" />
+              <h3 className="text-lg font-bold text-red-700">
+                Warning / 警告
+              </h3>
+            </div>
+
+            {/* Scrollable Content */}
+            <div className="overflow-y-auto flex-1 p-4 space-y-3">
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+                <p className="text-sm text-red-700">
+                  <strong>Hallucination Risk / 幻觉风险:</strong> AI may generate fabricated citations and data. / AI可能生成虚假引用和数据。
+                </p>
+              </div>
+
+              <div className="bg-purple-50 border border-purple-300 rounded-lg p-3">
+                <p className="text-sm text-purple-800 font-medium">
+                  <strong>Use tools like NotebookLM, Elicit, Consensus</strong> for accurate citations.
+                </p>
+                <p className="text-sm text-purple-700 mt-1">
+                  建议使用 NotebookLM、Elicit、Consensus 等工具获取准确引用。
+                </p>
+                <p className="text-sm text-purple-900 font-bold mt-2 border-t border-purple-200 pt-2">
+                  Rewrites are EXAMPLES only. Do NOT adopt directly! / 改写仅供参考，不建议直接采纳！
+                </p>
+              </div>
+
+              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
+                <p className="text-sm font-semibold text-yellow-800 mb-1">You Must / 您必须:</p>
+                <ul className="text-xs text-yellow-700 space-y-0.5 list-disc list-inside">
+                  <li>Verify ALL data & citations / 核实所有数据和引用</li>
+                  <li>Replace placeholders with real data / 用真实数据替换占位符</li>
+                  <li>Never submit unverified content / 不要提交未核实内容</li>
+                </ul>
+              </div>
+
+              <div className="bg-orange-50 border border-orange-200 rounded-lg p-3">
+                <p className="text-sm font-semibold text-orange-800 mb-1">Placeholders / 占位符:</p>
+                <div className="text-xs text-orange-700 font-mono grid grid-cols-2 gap-1">
+                  <span><code className="bg-orange-100 px-1 rounded">[AUTHOR_XXXXX]</code></span>
+                  <span><code className="bg-orange-100 px-1 rounded">[DATA_XX%]</code></span>
+                  <span><code className="bg-orange-100 px-1 rounded">[YEAR_XXXX]</code></span>
+                  <span><code className="bg-orange-100 px-1 rounded">[N=XXXX]</code></span>
+                </div>
+                <p className="text-xs text-orange-600 font-semibold mt-1">Search "XXXXX" to find all! / 搜索"XXXXX"找到所有占位符！</p>
               </div>
             </div>
 
-            <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
-              <h4 className="font-semibold text-red-800 mb-2">Important Risks / 重要风险:</h4>
-              <ul className="text-sm text-red-700 space-y-2 list-disc list-inside">
-                <li>
-                  <strong>Hallucination Risk:</strong> AI may generate fabricated data, statistics, citations, or references that do not exist.
-                </li>
-                <li>
-                  <strong>幻觉风险：</strong>AI可能生成虚假的数据、统计数字、引用或参考文献，这些内容可能并不存在。
-                </li>
-                <li>
-                  <strong>Academic Integrity:</strong> Using unverified AI-generated data in academic work may constitute academic misconduct.
-                </li>
-                <li>
-                  <strong>学术诚信：</strong>在学术工作中使用未经核实的AI生成数据可能构成学术不端行为。
-                </li>
-              </ul>
-            </div>
-
-            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-4">
-              <h4 className="font-semibold text-yellow-800 mb-2">You Must / 您必须:</h4>
-              <ul className="text-sm text-yellow-700 space-y-1 list-disc list-inside">
-                <li>Manually verify ALL data, statistics, and numbers / 手动核实所有数据、统计数字</li>
-                <li>Check ALL citations against original sources / 对照原始来源检查所有引用</li>
-                <li>Replace placeholder citations with real ones / 用真实引用替换占位引用</li>
-                <li>Never submit unverified AI-generated content / 永远不要提交未经核实的AI生成内容</li>
-              </ul>
-            </div>
-
-            <div className="flex justify-end gap-3 pt-2">
+            {/* Fixed Footer */}
+            <div className="flex justify-end gap-3 p-4 border-t bg-gray-50 rounded-b-lg">
               <Button
                 variant="secondary"
                 onClick={() => {
@@ -1345,7 +1527,7 @@ export default function LayerStep3_3({
                 className="bg-red-600 hover:bg-red-700"
                 onClick={handleDataWarningConfirm}
               >
-                I Understand, Proceed / 我理解，继续
+                I Understand / 我理解
               </Button>
             </div>
           </div>

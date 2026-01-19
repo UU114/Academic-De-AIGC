@@ -9,12 +9,17 @@ Detects document structure for AI-like patterns:
 检测文档结构中的AI模式特征
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 import logging
 import time
 
+from src.db.database import get_db
+from src.db.models import Session, Document
+from src.services.document_service import get_working_text, save_modified_text
 from src.api.routes.substeps.schemas import (
     SubstepBaseRequest,
     StructureAnalysisResponse,
@@ -83,7 +88,10 @@ async def analyze_structure(request: SubstepBaseRequest):
 
 
 @router.post("/merge-modify/prompt", response_model=MergeModifyPromptResponse)
-async def generate_rewrite_prompt(request: MergeModifyRequest):
+async def generate_rewrite_prompt(
+    request: MergeModifyRequest,
+    db: AsyncSession = Depends(get_db)
+):
     """
     Generate a modification prompt for selected structure issues
     为选定的结构问题生成修改提示词
@@ -110,17 +118,24 @@ async def generate_rewrite_prompt(request: MergeModifyRequest):
             for issue in request.selected_issues
         ]
 
-        # Get document text (should be passed in request or retrieved from DB)
-        # For now, assume it's in request context or we need to load it
-        # TODO: Load document text from database using request.document_id
-        document_text = "Document text would be loaded from database here"
+        # Get working text (uses previous step's modified text if available)
+        # 获取工作文本（如果有前一步骤的修改结果则使用）
+        document_text, locked_terms = await get_working_text(
+            db=db,
+            session_id=request.session_id,
+            current_step="step1-1",
+            document_id=request.document_id
+        )
+
+        if not document_text:
+            raise HTTPException(status_code=400, detail="Document text not found in session or database")
 
         # Generate prompt via handler
         result = await handler.generate_rewrite_prompt(
             document_text=document_text,
             selected_issues=selected_issues_dict,
             user_notes=request.user_notes,
-            locked_terms=[]  # TODO: Load from session
+            locked_terms=locked_terms
         )
 
         return MergeModifyPromptResponse(
@@ -131,13 +146,18 @@ async def generate_rewrite_prompt(request: MergeModifyRequest):
             estimated_changes=result["estimated_changes"]
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Generate prompt failed: {e}")
+        logger.error(f"Generate prompt failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Generate prompt failed: {str(e)}")
 
 
 @router.post("/merge-modify/apply", response_model=MergeModifyApplyResponse)
-async def apply_rewrite(request: MergeModifyRequest):
+async def apply_rewrite(
+    request: MergeModifyRequest,
+    db: AsyncSession = Depends(get_db)
+):
     """
     Apply AI modification to document structure directly
     直接应用AI修改到文档结构
@@ -161,17 +181,35 @@ async def apply_rewrite(request: MergeModifyRequest):
             for issue in request.selected_issues
         ]
 
-        # Get document text (should be loaded from DB)
-        # TODO: Load document text from database using request.document_id
-        document_text = "Document text would be loaded from database here"
+        # Get working text (uses previous step's modified text if available)
+        # 获取工作文本（如果有前一步骤的修改结果则使用）
+        document_text, locked_terms = await get_working_text(
+            db=db,
+            session_id=request.session_id,
+            current_step="step1-1",
+            document_id=request.document_id
+        )
+
+        if not document_text:
+            raise HTTPException(status_code=400, detail="Document text not found in session or database")
 
         # Apply rewrite via handler
         result = await handler.apply_rewrite(
             document_text=document_text,
             selected_issues=selected_issues_dict,
             user_notes=request.user_notes,
-            locked_terms=[]  # TODO: Load from session
+            locked_terms=locked_terms
         )
+
+        # Save modified text for next step to use
+        # 保存修改后的文本供下一步骤使用
+        if request.session_id and result.get("modified_text"):
+            await save_modified_text(
+                db=db,
+                session_id=request.session_id,
+                step_name="step1-1",
+                modified_text=result["modified_text"]
+            )
 
         # Extract issues addressed
         issues_addressed = [issue.type for issue in request.selected_issues]
@@ -185,8 +223,10 @@ async def apply_rewrite(request: MergeModifyRequest):
             colloquialism_level=None  # Not applicable for structure
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Apply rewrite failed: {e}")
+        logger.error(f"Apply rewrite failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Apply rewrite failed: {str(e)}")
 
 

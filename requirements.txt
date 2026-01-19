@@ -49,4 +49,4 @@ black>=23.11.0
 ruff>=0.1.0
 
 # ONNX Runtime for true PPL calculation (optional but recommended)
-onnxruntime>=1.16.0,<1.17.0
+onnxruntime>=1.17.0

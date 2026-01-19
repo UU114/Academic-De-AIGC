@@ -11,12 +11,15 @@ Endpoints:
 - POST /partial - Partial pipeline (selected layers)
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from typing import List, Dict, Any, Optional
 import logging
 import time
 from datetime import datetime
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.db.database import get_db
+from src.services.task_service import TaskService
 from src.api.routes.analysis.schemas import (
     PipelineAnalysisRequest,
     PipelineAnalysisResponse,
@@ -34,6 +37,7 @@ from src.core.analyzer.layers import (
     SentenceOrchestrator,
     LexicalOrchestrator,
 )
+from src.services.word_counter import get_word_counter
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -69,7 +73,10 @@ def _convert_layer_result(result, layer: LayerLevel) -> LayerAnalysisResult:
 
 
 @router.post("/full", response_model=PipelineAnalysisResponse)
-async def analyze_full_pipeline(request: PipelineAnalysisRequest):
+async def analyze_full_pipeline(
+    request: PipelineAnalysisRequest,
+    db: AsyncSession = Depends(get_db)
+):
     """
     Full Pipeline Analysis
     全流水线分析
@@ -91,8 +98,41 @@ async def analyze_full_pipeline(request: PipelineAnalysisRequest):
         all_issues: List[DetectionIssue] = []
         layers_analyzed: List[LayerLevel] = []
 
-        # Initialize context with full text
-        context = LayerContext(full_text=request.text)
+        # Automatic Reference Stripping (Consistent with billing logic)
+        # 自动剥离参考文献（与计费逻辑一致）
+        word_counter = get_word_counter()
+        clean_text, has_refs = word_counter._strip_references(request.text)
+        
+        if has_refs:
+            logger.info("References stripped from analysis input")
+
+        # Billing Verification (Capacity Check)
+        # 计费校验（容量检查）
+        if request.task_id:
+            task_service = TaskService(db)
+            task = await task_service.get_task(request.task_id)
+            
+            if task and task.word_count_billable:
+                # Calculate current word count on CLEANED text (consistent with billing)
+                current_count = word_counter._count_words(clean_text)
+                paid_count = task.word_count_billable
+                threshold = int(paid_count * 1.3)  # 130% threshold
+
+                if current_count > threshold:
+                    logger.warning(f"Word count limit exceeded: {current_count} > {threshold} (Paid: {paid_count})")
+                    raise HTTPException(
+                        status_code=402,  # Payment Required
+                        detail={
+                            "error": "word_count_exceeded",
+                            "message": f"Text length ({current_count} words) exceeds the paid limit by more than 30%. Allowed: {threshold} words. Please add payment.",
+                            "message_zh": f"文本长度 ({current_count} 词) 超过已支付额度 30% 以上。允许上限：{threshold} 词。请补充支付费用。"
+                        }
+                    )
+                else:
+                    logger.info(f"Billing check passed: {current_count}/{paid_count} words")
+
+        # Initialize context with CLEANED text
+        context = LayerContext(full_text=clean_text)
 
         # Layer 5: Document
         if LayerLevel.DOCUMENT in request.layers:

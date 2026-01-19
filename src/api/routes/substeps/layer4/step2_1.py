@@ -6,12 +6,15 @@ Analyze section order and template matching using LLM.
 使用LLM分析章节顺序和模板匹配。
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List
 import logging
 import time
 import re
 
+from src.db.database import get_db
+from src.services.document_service import get_working_text, save_modified_text
 from src.api.routes.substeps.schemas import (
     SubstepBaseRequest,
     SectionOrderResponse,
@@ -89,25 +92,39 @@ async def generate_prompt(request: MergeModifyRequest):
 
 
 @router.post("/merge-modify/apply", response_model=MergeModifyApplyResponse)
-async def apply_modification(request: MergeModifyRequest):
+async def apply_modification(
+    request: MergeModifyRequest,
+    db: AsyncSession = Depends(get_db)
+):
     """Apply AI modification for section order issues"""
     try:
-        from src.services.session_service import SessionService
-        session_service = SessionService()
-        session_data = await session_service.get_session(request.session_id) if request.session_id else None
-        document_text = session_data.get("document_text", "") if session_data else ""
+        # Get working text using document_service
+        document_text, locked_terms = await get_working_text(
+            db, request.session_id, "step2-1", request.document_id
+        )
 
         if not document_text:
-            raise HTTPException(status_code=400, detail="Document text not found in session")
+            raise HTTPException(status_code=400, detail="Document text not found in session or database")
+
+        # Convert Pydantic models to dicts
+        issues_list = [issue.model_dump() for issue in request.selected_issues]
 
         result = await handler.apply_rewrite(
             document_text=document_text,
-            issues=request.selected_issues,
+            selected_issues=issues_list,
             user_notes=request.user_notes,
-            locked_terms=session_data.get("locked_terms", []) if session_data else []
+            locked_terms=locked_terms
         )
+
+        # Save modified text to database
+        modified_text = result.get("modified_text", "")
+        if modified_text and request.session_id:
+            await save_modified_text(
+                db, request.session_id, "step2-1", modified_text
+            )
+
         return MergeModifyApplyResponse(
-            modified_text=result.get("modified_text", ""),
+            modified_text=modified_text,
             changes_summary_zh=result.get("changes_summary_zh", ""),
             changes_count=result.get("changes_count", 0),
             issues_addressed=[i.type for i in request.selected_issues],

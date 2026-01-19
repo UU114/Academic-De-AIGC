@@ -37,6 +37,7 @@ import {
   ProgressionMarker,
   DetectionIssue,
 } from '../../services/analysisApi';
+import { useSubstepStateStore } from '../../stores/substepStateStore';
 
 /**
  * Layer Step 1.3 - Section Logic Pattern Detection
@@ -160,6 +161,7 @@ export default function LayerStep1_3({
   const [isLoading, setIsLoading] = useState(true);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [analysisStarted, setAnalysisStarted] = useState(false);
   const [documentText, setDocumentText] = useState<string>('');
   const [expandedMarkerType, setExpandedMarkerType] = useState<string | null>(null);
 
@@ -221,6 +223,13 @@ export default function LayerStep1_3({
 
   const isAnalyzingRef = useRef(false);
 
+  // ============================================
+  // NEW CODE - Get substep state store reference for checking previous steps' modifiedText
+  // 新代码 - 获取子步骤状态存储引用用于检查前序步骤的修改后文本
+  // ============================================
+  const substepStore = useSubstepStateStore();
+  // ============================================
+
   // Load document
   // 加载文档
   useEffect(() => {
@@ -231,11 +240,42 @@ export default function LayerStep1_3({
       setError('Document ID not found. Please start from the document upload page. / 未找到文档ID，请从文档上传页面开始。');
       setIsLoading(false);
     }
-  }, [documentId, sessionFetchAttempted]);
+  }, [documentId, sessionFetchAttempted, sessionId, substepStore]);
 
   const loadDocumentText = async (docId: string) => {
     try {
+      // ============================================
+      // NEW CODE - Check previous steps' modifiedText from substep store
+      // 新代码 - 从子步骤存储检查前序步骤的修改后文本
+      // ============================================
+      if (sessionId && substepStore.currentSessionId !== sessionId) {
+        await substepStore.initForSession(sessionId);
+      }
+
+      // Check previous steps for modified text (step5-2, step5-1 for LayerStep1_3)
+      // 检查前序步骤的修改后文本（LayerStep1_3检查step5-2, step5-1）
+      const previousSteps = ['step5-2', 'step5-1'];
+      let foundModifiedText: string | null = null;
+
+      for (const stepName of previousSteps) {
+        const stepState = substepStore.getState(stepName);
+        if (stepState?.modifiedText) {
+          console.log(`[LayerStep1_3] Using modified text from ${stepName}`);
+          foundModifiedText = stepState.modifiedText;
+          break;
+        }
+      }
+
+      if (foundModifiedText) {
+        setDocumentText(foundModifiedText);
+        setIsLoading(false);
+        return;
+      }
+      // ============================================
+
       const doc = await documentApi.get(docId);
+      // Fallback to originalText if no modified text found in substep store
+      // 如果子步骤存储中没有修改后的文本，则回退到originalText
       if (doc.originalText) {
         setDocumentText(doc.originalText);
       } else {
@@ -249,12 +289,12 @@ export default function LayerStep1_3({
     }
   };
 
-  // Run analysis
+  // Run analysis when user clicks start
   useEffect(() => {
-    if (documentText && !isAnalyzingRef.current) {
+    if (documentText && analysisStarted && !isAnalyzingRef.current) {
       runAnalysis();
     }
-  }, [documentText]);
+  }, [documentText, analysisStarted]);
 
   const runAnalysis = async () => {
     if (isAnalyzingRef.current || !documentText) return;
@@ -353,6 +393,18 @@ export default function LayerStep1_3({
     }
     setSelectedIssueIndices(newSelected);
   };
+
+  // Select all issues
+  // 全选所有问题
+  const selectAllIssues = useCallback(() => {
+    setSelectedIssueIndices(new Set(logicIssues.map((_, idx) => idx)));
+  }, [logicIssues]);
+
+  // Deselect all issues
+  // 取消全选所有问题
+  const deselectAllIssues = useCallback(() => {
+    setSelectedIssueIndices(new Set());
+  }, []);
 
   // Load suggestion for a specific issue
   // 为特定问题加载建议
@@ -498,6 +550,24 @@ export default function LayerStep1_3({
     setUploadError(null);
 
     try {
+      // ============================================
+      // NEW CODE - Save modified text to substep store
+      // 新代码 - 保存修改后的文本到子步骤存储
+      // ============================================
+      let modifiedText: string = '';
+      if (modifyMode === 'file' && newFile) {
+        modifiedText = await newFile.text();
+      } else if (modifyMode === 'text' && newText.trim()) {
+        modifiedText = newText.trim();
+      }
+
+      if (sessionId && modifiedText) {
+        await substepStore.saveModifiedText('step5-3', modifiedText);
+        await substepStore.markCompleted('step5-3');
+        console.log('[LayerStep1_3] Saved modified text to substep store');
+      }
+      // ============================================
+
       let newDocumentId: string;
 
       if (modifyMode === 'file' && newFile) {
@@ -508,13 +578,17 @@ export default function LayerStep1_3({
         newDocumentId = result.id;
       }
 
-      const sessionParam = sessionId ? `&session=${sessionId}` : '';
-      navigate(`/flow/layer5-step1-4/${newDocumentId}?mode=${mode}${sessionParam}`);
+      // Navigate to Step 1.4 with new document (use documentId from URL/props)
+      // 导航到步骤1.4（使用URL/props中的documentId）
+      const params = new URLSearchParams();
+      if (mode) params.set('mode', mode);
+      if (sessionId) params.set('session', sessionId);
+      navigate(`/flow/layer5-step1-4/${documentId}?${params.toString()}`);
     } catch (err) {
       setUploadError((err as Error).message || '上传失败，请重试 / Upload failed, please try again');
       setIsUploading(false);
     }
-  }, [modifyMode, newFile, newText, sessionId, mode, navigate]);
+  }, [modifyMode, newFile, newText, sessionId, mode, navigate, documentId, substepStore]);
 
   // Validate and set file
   // 验证并设置文件
@@ -644,6 +718,28 @@ export default function LayerStep1_3({
         </p>
       </div>
 
+      {/* Start Analysis / Skip Step */}
+      {documentText && !analysisStarted && !isAnalyzing && !result && (
+        <div className="mb-6 p-6 bg-gray-50 border border-gray-200 rounded-lg">
+          <div className="text-center">
+            <FileText className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+            <h3 className="text-lg font-medium text-gray-900 mb-2">Ready to Analyze / 准备分析</h3>
+            <p className="text-gray-600 mb-6">
+              Click "Start Analysis" to detect progression markers and logic patterns, or skip this step.
+              <br />点击"开始分析"检测逻辑标记和推进模式，或跳过此步骤。
+            </p>
+            <div className="flex items-center justify-center gap-4">
+              <Button variant="primary" size="lg" onClick={() => setAnalysisStarted(true)}>
+                <Sparkles className="w-5 h-5 mr-2" />Start Analysis / 开始分析
+              </Button>
+              <Button variant="secondary" size="lg" onClick={handleNext}>
+                <ArrowRight className="w-5 h-5 mr-2" />Skip Step / 跳过此步
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Analysis Progress */}
       {isAnalyzing && (
         <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
@@ -705,6 +801,16 @@ export default function LayerStep1_3({
               <p className="text-sm text-gray-500 mt-1">
                 Sequential, Additive, Causal patterns
               </p>
+              <div className="mt-3 pt-3 border-t border-gray-200">
+                <p className="text-xs text-gray-600 mb-2">
+                  <span className="font-medium">AI特征：</span>线性递进，从不回溯
+                </p>
+                <div className="text-xs text-gray-500 space-y-1">
+                  <p><span className="font-medium text-gray-600">顺序类:</span> First, Second, Next, Then, Finally</p>
+                  <p><span className="font-medium text-gray-600">累加类:</span> Furthermore, Moreover, Additionally</p>
+                  <p><span className="font-medium text-gray-600">因果类:</span> Therefore, Thus, Consequently</p>
+                </div>
+              </div>
             </div>
 
             {/* Non-monotonic Markers */}
@@ -727,6 +833,16 @@ export default function LayerStep1_3({
               <p className="text-sm text-gray-500 mt-1">
                 Return, Conditional, Contrastive patterns
               </p>
+              <div className="mt-3 pt-3 border-t border-gray-200">
+                <p className="text-xs text-gray-600 mb-2">
+                  <span className="font-medium">人类特征：</span>回溯、转折、条件限定
+                </p>
+                <div className="text-xs text-gray-500 space-y-1">
+                  <p><span className="font-medium text-gray-600">回溯类:</span> As noted earlier, Returning to, As mentioned</p>
+                  <p><span className="font-medium text-gray-600">转折类:</span> However, Nevertheless, On the other hand</p>
+                  <p><span className="font-medium text-gray-600">让步类:</span> Although, Despite, While it is true</p>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -832,13 +948,25 @@ export default function LayerStep1_3({
           {/* Logic Issues with Selection */}
           {logicIssues.length > 0 && (
             <div className="mb-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-3 flex items-center gap-2">
-                <AlertTriangle className="w-5 h-5 text-yellow-600" />
-                Logic Pattern Issues / 逻辑模式问题
-                <span className="text-sm font-normal text-gray-500">
-                  ({logicIssues.length} issues)
-                </span>
-              </h3>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                  <AlertTriangle className="w-5 h-5 text-yellow-600" />
+                  Detected Issues / 检测到的问题
+                  <span className="text-sm font-normal text-gray-500">
+                    ({selectedIssueIndices.size}/{logicIssues.length} selected / 已选择)
+                  </span>
+                </h3>
+                <div className="flex items-center gap-2">
+                  {/* Select All / Deselect All buttons */}
+                  {/* 全选/取消全选按钮 */}
+                  <Button variant="secondary" size="sm" onClick={selectAllIssues}>
+                    Select All / 全选
+                  </Button>
+                  <Button variant="secondary" size="sm" onClick={deselectAllIssues}>
+                    Deselect All / 取消全选
+                  </Button>
+                </div>
+              </div>
               <div className="space-y-2">
                 {logicIssues.map((issue, idx) => {
                   const isExpanded = expandedIssueIndex === idx;

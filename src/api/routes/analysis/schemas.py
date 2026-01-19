@@ -347,6 +347,7 @@ class PipelineAnalysisRequest(BaseModel):
     全流水线分析请求（所有层级）
     """
     text: str = Field(..., min_length=1, description="Full document text")
+    task_id: Optional[str] = Field(None, description="Task ID for billing verification")
     layers: List[LayerLevel] = Field(
         default=[LayerLevel.DOCUMENT, LayerLevel.SECTION, LayerLevel.PARAGRAPH, LayerLevel.SENTENCE, LayerLevel.LEXICAL],
         description="Layers to analyze (in order)"
@@ -734,7 +735,7 @@ class ContentSubstantialityResponse(BaseModel):
     """
     # Overall statistics / 总体统计
     paragraph_count: int = Field(..., description="Total paragraphs analyzed")
-    overall_specificity_score: int = Field(..., ge=0, le=100, description="Overall specificity (higher = more specific = more human-like)")
+    overall_specificity_score: float = Field(..., ge=0, le=100, description="Overall specificity (higher = more specific = more human-like)")
     overall_substantiality: SubstantialityLevel = Field(..., description="Overall substantiality level")
     risk_level: RiskLevel = Field(..., description="Risk level based on substantiality")
 
@@ -833,6 +834,14 @@ class ParagraphLengthAnalysisResponse(BaseModel):
     issues: List[Dict[str, Any]] = Field(default_factory=list, description="LLM detected issues")
     summary: str = Field("", description="One-sentence summary of analysis result")
     summary_zh: str = Field("", description="分析结果的一句话总结")
+
+    # Section Distribution for UI display / 章节分布供UI显示
+    # Step 1.2 calculates this independently from current text
+    # 步骤1.2从当前文本独立计算此数据
+    section_distribution: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Section distribution with paragraph count and word count per section"
+    )
 
     # Recommendations / 建议
     recommendations: List[str] = Field(default_factory=list, description="English recommendations")
@@ -994,7 +1003,8 @@ class SectionLengthInfo(BaseModel):
     单个章节的长度信息
     """
     index: int = Field(..., description="Section index")
-    role: str = Field(..., description="Section role")
+    role: str = Field(..., description="Section role (predefined type)")
+    title: Optional[str] = Field(None, description="Actual section title from document / 文档中的实际章节标题")
     word_count: int = Field(0)
     paragraph_count: int = Field(0)
     deviation_from_mean: float = Field(0.0, description="Deviation from mean in stddev units")

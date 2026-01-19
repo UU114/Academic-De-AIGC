@@ -1,6 +1,6 @@
 [program:academicguard-api]
 directory=/var/www/academicguard/api
-command=/var/www/academicguard/venv/bin/uvicorn src.main:app --host 127.0.0.1 --port 8000 --forwarded-allow-ips='*'
+command=/var/www/academicguard/api/venv/bin/uvicorn src.main:app --host 127.0.0.1 --port 8000 --forwarded-allow-ips='*'
 user=root
 autostart=true
 autorestart=true

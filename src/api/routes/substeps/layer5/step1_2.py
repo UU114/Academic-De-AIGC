@@ -24,6 +24,8 @@ from src.api.routes.substeps.schemas import (
 from src.api.routes.substeps.layer5.step1_2_handler import Step1_2Handler
 from src.db.database import get_db
 from src.db.models import Document, Session as SessionModel
+from src.services.document_service import get_working_text, save_modified_text
+from src.services.text_parsing_service import get_statistics
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -53,7 +55,7 @@ async def analyze_paragraph_length(request: SubstepBaseRequest):
             document_text=request.text,
             locked_terms=request.locked_terms or [],
             session_id=request.session_id,
-            step_name="layer5-step1-2",  # Unique step identifier for caching
+            step_name="step1-2",  # Unique step identifier for caching
             use_cache=True  # Enable caching
         )
 
@@ -68,6 +70,10 @@ async def analyze_paragraph_length(request: SubstepBaseRequest):
         # Calculate processing time
         processing_time_ms = int((time.time() - start_time) * 1000)
 
+        # Get statistics from unified text parsing service
+        # 从统一文本解析服务获取统计数据
+        stats = get_statistics(request.text)
+
         # Build response
         return SectionUniformityResponse(
             risk_score=result.get("risk_score", 0),
@@ -76,13 +82,17 @@ async def analyze_paragraph_length(request: SubstepBaseRequest):
             recommendations=result.get("recommendations", []),
             recommendations_zh=result.get("recommendations_zh", []),
             processing_time_ms=processing_time_ms,
-            # Step 1.2 specific fields
-            paragraph_count=len(request.text.split('\n\n')) if '\n\n' in request.text else len(request.text.split('\n')),
-            mean_length=0,  # LLM will provide this in analysis
-            stdev_length=0,
-            cv=current_cv,
+            # Step 1.2 specific fields - from unified parsing service
+            # 步骤1.2特定字段 - 来自统一解析服务
+            paragraph_count=stats['paragraph_count'],
+            mean_length=stats['mean_length'],
+            stdev_length=stats['stdev_length'],
+            cv=stats['cv'] if stats['cv'] > 0 else current_cv,
             target_cv=0.4,
-            paragraphs=[]  # LLM doesn't return detailed paragraph info in analysis
+            paragraphs=[],  # LLM doesn't return detailed paragraph info in analysis
+            # Section distribution for frontend visualization
+            # 章节分布数据供前端可视化使用
+            section_distribution=stats.get('section_distribution', [])
         )
 
     except Exception as e:
@@ -99,21 +109,35 @@ async def generate_rewrite_prompt(request: MergeModifyRequest, db: AsyncSession 
     User can copy this prompt to use with other AI tools.
     """
     try:
-        # Get document from database
-        result = await db.execute(select(Document).where(Document.id == request.document_id))
-        doc = result.scalar_one_or_none()
-        if not doc:
-            raise HTTPException(status_code=404, detail="Document not found")
+        # Convert SelectedIssue to dict format
+        # 转换 SelectedIssue 为字典格式
+        selected_issues_dict = [
+            {
+                "type": issue.type,
+                "description": issue.description,
+                "description_zh": issue.description_zh,
+                "severity": issue.severity,
+                "affected_positions": issue.affected_positions
+            }
+            for issue in request.selected_issues
+        ]
 
-        # Get session for locked terms
-        session_result = await db.execute(select(SessionModel).where(SessionModel.id == request.session_id))
-        session = session_result.scalar_one_or_none() if request.session_id else None
-        locked_terms = session.locked_terms if session and session.locked_terms else []
+        # Get working text (uses previous step's modified text if available)
+        # 获取工作文本（如果有前一步骤的修改结果则使用）
+        document_text, locked_terms = await get_working_text(
+            db=db,
+            session_id=request.session_id,
+            current_step="step1-2",
+            document_id=request.document_id
+        )
+
+        if not document_text:
+            raise HTTPException(status_code=400, detail="Document text not found in session or database")
 
         # Generate prompt via handler
         result = await handler.generate_rewrite_prompt(
-            document_text=doc.processed_text or doc.original_text,
-            selected_issues=request.selected_issues,
+            document_text=document_text,
+            selected_issues=selected_issues_dict,
             user_notes=request.user_notes,
             locked_terms=locked_terms
         )
@@ -125,8 +149,10 @@ async def generate_rewrite_prompt(request: MergeModifyRequest, db: AsyncSession 
             estimated_changes=result.get("estimated_changes", len(request.selected_issues))
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Generate prompt failed: {e}")
+        logger.error(f"Generate prompt failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to generate prompt: {str(e)}")
 
 
@@ -137,34 +163,64 @@ async def apply_rewrite(request: MergeModifyRequest, db: AsyncSession = Depends(
     为选定的段落长度问题直接应用AI修改
     """
     try:
-        # Get document from database
-        result = await db.execute(select(Document).where(Document.id == request.document_id))
-        doc = result.scalar_one_or_none()
-        if not doc:
-            raise HTTPException(status_code=404, detail="Document not found")
+        # Convert SelectedIssue to dict format
+        # 转换 SelectedIssue 为字典格式
+        selected_issues_dict = [
+            {
+                "type": issue.type,
+                "description": issue.description,
+                "description_zh": issue.description_zh,
+                "severity": issue.severity,
+                "affected_positions": issue.affected_positions
+            }
+            for issue in request.selected_issues
+        ]
 
-        # Get session for locked terms
-        session_result = await db.execute(select(SessionModel).where(SessionModel.id == request.session_id))
-        session = session_result.scalar_one_or_none() if request.session_id else None
-        locked_terms = session.locked_terms if session and session.locked_terms else []
+        # Get working text (uses previous step's modified text if available)
+        # 获取工作文本（如果有前一步骤的修改结果则使用）
+        document_text, locked_terms = await get_working_text(
+            db=db,
+            session_id=request.session_id,
+            current_step="step1-2",
+            document_id=request.document_id
+        )
+
+        if not document_text:
+            raise HTTPException(status_code=400, detail="Document text not found in session or database")
 
         # Apply rewrite via handler
         result = await handler.apply_rewrite(
-            document_text=doc.processed_text or doc.original_text,
-            selected_issues=request.selected_issues,
+            document_text=document_text,
+            selected_issues=selected_issues_dict,
             user_notes=request.user_notes,
             locked_terms=locked_terms
         )
+
+        # Save modified text for next step to use
+        # 保存修改后的文本供下一步骤使用
+        if request.session_id and result.get("modified_text"):
+            await save_modified_text(
+                db=db,
+                session_id=request.session_id,
+                step_name="step1-2",
+                modified_text=result["modified_text"]
+            )
+
+        # Extract issues addressed
+        # 提取已处理的问题
+        issues_addressed = [issue.type for issue in request.selected_issues]
 
         return MergeModifyApplyResponse(
             modified_text=result["modified_text"],
             changes_summary_zh=result.get("changes_summary_zh", ""),
             changes_count=result.get("changes_count", 0),
-            issues_addressed=result.get("issues_addressed", [])
+            issues_addressed=issues_addressed
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Apply rewrite failed: {e}")
+        logger.error(f"Apply rewrite failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to apply modification: {str(e)}")
 
 

@@ -13,7 +13,7 @@ from datetime import datetime
 import re
 
 from src.db.database import get_db
-from src.db.models import Document, Session, Sentence, Modification
+from src.db.models import Document, Session, Sentence, Modification, SubstepState
 from src.api.schemas import ExportResult
 
 # Import python-docx for Word document export
@@ -55,52 +55,94 @@ async def export_document(
     )
     doc = doc_result.scalar_one_or_none()
 
-    # Get all sentences with modifications
-    # 获取所有句子及其修改
-    sentences_result = await db.execute(
-        select(Sentence)
-        .where(Sentence.document_id == session.document_id)
-        .order_by(Sentence.index)
+    # First, try to get modified text from SubstepState (5-layer analysis)
+    # 首先尝试从SubstepState获取修改后的文本（5层分析）
+    final_text = None
+
+    # Steps to check for modified text (from last to first)
+    # 检查修改文本的步骤顺序（从最后到最先）
+    STEP_ORDER = [
+        'step5-5', 'step5-4', 'step5-3', 'step5-2', 'step5-1', 'step5-0',  # Layer 1
+        'step4-console', 'step4-5', 'step4-4', 'step4-3', 'step4-2', 'step4-1', 'step4-0',  # Layer 2
+        'step3-5', 'step3-4', 'step3-3', 'step3-2', 'step3-1', 'step3-0',  # Layer 3
+        'step2-5', 'step2-4', 'step2-3', 'step2-2', 'step2-1', 'step2-0',  # Layer 4
+        'step1-5', 'step1-4', 'step1-3', 'step1-2', 'step1-1',  # Layer 5
+    ]
+
+    # Query all substep states for this session
+    # 查询此会话的所有子步骤状态
+    substep_result = await db.execute(
+        select(SubstepState)
+        .where(SubstepState.session_id == session_id)
+        .where(SubstepState.modified_text.isnot(None))
     )
-    sentences = sentences_result.scalars().all()
+    substep_states = {s.step_name: s for s in substep_result.scalars().all()}
 
-    # Get accepted modifications
-    # 获取已接受的修改
-    mods_result = await db.execute(
-        select(Modification)
-        .where(Modification.session_id == session_id)
-        .where(Modification.accepted == True)
-    )
-    modifications = {m.sentence_id: m for m in mods_result.scalars().all()}
+    # Find the last step with modified text
+    # 找到最后一个有修改文本的步骤
+    for step_name in STEP_ORDER:
+        if step_name in substep_states and substep_states[step_name].modified_text:
+            final_text = substep_states[step_name].modified_text
+            print(f"[Export] Using modified text from {step_name}")
+            break
 
-    # Build final text with paragraph breaks
-    # 构建带段落分隔的最终文本
-    paragraphs_dict = {}  # Group sentences by paragraph
-    for sentence in sentences:
-        # Get paragraph index from analysis_json
-        # 从analysis_json获取段落索引
-        para_idx = 0
-        if sentence.analysis_json:
-            para_idx = sentence.analysis_json.get("paragraph_index", 0) or 0
+    # If no substep state found, fall back to old method (Sentence/Modification)
+    # 如果没有找到子步骤状态，回退到旧方法
+    if not final_text:
+        print("[Export] No substep state found, falling back to Sentence/Modification method")
 
-        if para_idx not in paragraphs_dict:
-            paragraphs_dict[para_idx] = []
+        # Get all sentences with modifications
+        # 获取所有句子及其修改
+        sentences_result = await db.execute(
+            select(Sentence)
+            .where(Sentence.document_id == session.document_id)
+            .order_by(Sentence.index)
+        )
+        sentences = sentences_result.scalars().all()
 
-        # Get sentence text (modified or original)
-        # 获取句子文本（已修改或原始）
-        if sentence.id in modifications:
-            paragraphs_dict[para_idx].append(modifications[sentence.id].modified_text)
-        else:
-            paragraphs_dict[para_idx].append(sentence.original_text)
+        # Get accepted modifications
+        # 获取已接受的修改
+        mods_result = await db.execute(
+            select(Modification)
+            .where(Modification.session_id == session_id)
+            .where(Modification.accepted == True)
+        )
+        modifications = {m.sentence_id: m for m in mods_result.scalars().all()}
 
-    # Join sentences within paragraphs with space, paragraphs with double newline
-    # 段落内句子用空格连接，段落间用双换行
-    final_paragraphs = []
-    for para_idx in sorted(paragraphs_dict.keys()):
-        para_text = " ".join(paragraphs_dict[para_idx])
-        final_paragraphs.append(para_text)
+        # Build final text with paragraph breaks
+        # 构建带段落分隔的最终文本
+        paragraphs_dict = {}  # Group sentences by paragraph
+        for sentence in sentences:
+            # Get paragraph index from analysis_json
+            # 从analysis_json获取段落索引
+            para_idx = 0
+            if sentence.analysis_json:
+                para_idx = sentence.analysis_json.get("paragraph_index", 0) or 0
 
-    final_text = "\n\n".join(final_paragraphs)
+            if para_idx not in paragraphs_dict:
+                paragraphs_dict[para_idx] = []
+
+            # Get sentence text (modified or original)
+            # 获取句子文本（已修改或原始）
+            if sentence.id in modifications:
+                paragraphs_dict[para_idx].append(modifications[sentence.id].modified_text)
+            else:
+                paragraphs_dict[para_idx].append(sentence.original_text)
+
+        # Join sentences within paragraphs with space, paragraphs with double newline
+        # 段落内句子用空格连接，段落间用双换行
+        final_paragraphs = []
+        for para_idx in sorted(paragraphs_dict.keys()):
+            para_text = " ".join(paragraphs_dict[para_idx])
+            final_paragraphs.append(para_text)
+
+        final_text = "\n\n".join(final_paragraphs)
+
+    # If still no text, use original document text
+    # 如果仍然没有文本，使用原始文档文本
+    if not final_text:
+        final_text = doc.original_text or ""
+        print("[Export] Using original document text")
 
     # Create export file
     # 创建导出文件

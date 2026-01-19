@@ -6,10 +6,14 @@ Analyze sentence length variation within paragraphs using LLM.
 使用LLM分析段落内句子长度的变化模式。
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 import time
 
+from src.db.database import get_db
+from src.services.document_service import get_working_text, save_modified_text
+from src.services.text_parsing_service import get_body_paragraphs
 from src.api.routes.substeps.schemas import (
     SubstepBaseRequest,
     SentenceLengthDistributionResponse,
@@ -26,6 +30,17 @@ router = APIRouter()
 
 # Initialize LLM handler
 handler = Step3_4Handler()
+
+
+def _get_paragraph_preview(text: str, max_words: int = 8) -> str:
+    """
+    Get preview of paragraph (first few words)
+    获取段落预览（前几个单词）
+    """
+    words = text.split()
+    if len(words) <= max_words:
+        return text.strip()
+    return " ".join(words[:max_words]) + "..."
 
 
 @router.post("/analyze", response_model=SentenceLengthDistributionResponse)
@@ -45,12 +60,21 @@ async def analyze_sentence_length_distribution(request: SubstepBaseRequest):
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
+        # Parse paragraphs to get preview text for each
+        # 解析段落以获取每个段落的预览文本
+        body_paragraphs = get_body_paragraphs(request.text)
+        paragraph_previews = {p.index: _get_paragraph_preview(p.text) for p in body_paragraphs}
+
         # Build paragraph sentence length info from result
         paragraph_lengths = []
         for len_info in result.get("paragraph_lengths", []):
             if isinstance(len_info, dict):
+                para_idx = len_info.get("paragraph_index", 0)
+                # Get preview from parsed paragraphs, fallback to empty string
+                # 从解析的段落获取预览，如果不存在则使用空字符串
+                preview = paragraph_previews.get(para_idx, "")
                 paragraph_lengths.append(ParagraphSentenceLengthInfo(
-                    paragraph_index=len_info.get("paragraph_index", 0),
+                    paragraph_index=para_idx,
                     sentence_count=len_info.get("sentence_count", 0),
                     sentence_lengths=len_info.get("sentence_lengths", []),
                     mean_length=len_info.get("mean_length", 0),
@@ -59,7 +83,8 @@ async def analyze_sentence_length_distribution(request: SubstepBaseRequest):
                     burstiness=len_info.get("burstiness", 0.5),
                     has_short_sentence=len_info.get("has_short_sentence", False),
                     has_long_sentence=len_info.get("has_long_sentence", False),
-                    rhythm_score=len_info.get("rhythm_score", 0.5)
+                    rhythm_score=len_info.get("rhythm_score", 0.5),
+                    preview=preview
                 ))
 
         return SentenceLengthDistributionResponse(
@@ -105,13 +130,17 @@ async def generate_prompt(request: MergeModifyRequest):
 
 
 @router.post("/merge-modify/apply", response_model=MergeModifyApplyResponse)
-async def apply_modification(request: MergeModifyRequest):
+async def apply_modification(
+    request: MergeModifyRequest,
+    db: AsyncSession = Depends(get_db)
+):
     """Apply AI modification for sentence length issues"""
     try:
-        from src.services.session_service import SessionService
-        session_service = SessionService()
-        session_data = await session_service.get_session(request.session_id) if request.session_id else None
-        document_text = session_data.get("document_text", "") if session_data else ""
+        # Get working text using document_service
+        # 使用 document_service 获取工作文本
+        document_text, locked_terms = await get_working_text(
+            db, request.session_id, "step3-4", request.document_id
+        )
 
         if not document_text:
             raise HTTPException(status_code=400, detail="Document text not found in session")
@@ -120,10 +149,20 @@ async def apply_modification(request: MergeModifyRequest):
             document_text=document_text,
             issues=request.selected_issues,
             user_notes=request.user_notes,
-            locked_terms=session_data.get("locked_terms", []) if session_data else []
+            locked_terms=locked_terms
         )
+
+        modified_text = result.get("modified_text", "")
+
+        # Save modified text to database
+        # 保存修改后的文本到数据库
+        if modified_text and request.session_id:
+            await save_modified_text(
+                db, request.session_id, "step3-4", modified_text
+            )
+
         return MergeModifyApplyResponse(
-            modified_text=result.get("modified_text", ""),
+            modified_text=modified_text,
             changes_summary_zh=result.get("changes_summary_zh", ""),
             changes_count=result.get("changes_count", 0),
             issues_addressed=[i.type for i in request.selected_issues],

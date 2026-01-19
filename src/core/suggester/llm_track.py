@@ -386,6 +386,10 @@ ONLY rewrite the NON-CITATION parts of the sentence.
                 # Volcengine (火山引擎) - faster DeepSeek access
                 # 火山引擎 - 更快的 DeepSeek 访问
                 response = await self._call_volcengine(prompt)
+            elif settings.llm_provider == "dashscope" and settings.dashscope_api_key:
+                # DashScope (阿里云灵积) - Qwen models
+                # 阿里云灵积 - 通义千问模型
+                response = await self._call_dashscope(prompt)
             elif settings.llm_provider == "gemini" and settings.gemini_api_key:
                 response = await self._call_gemini(prompt)
             elif settings.llm_provider == "deepseek" and settings.deepseek_api_key:
@@ -394,6 +398,9 @@ ONLY rewrite the NON-CITATION parts of the sentence.
                 response = await self._call_anthropic(prompt)
             elif settings.llm_provider == "openai" and settings.openai_api_key:
                 response = await self._call_openai(prompt)
+            elif settings.dashscope_api_key:
+                # Fallback to DashScope
+                response = await self._call_dashscope(prompt)
             elif settings.volcengine_api_key:
                 # Fallback to Volcengine if available (preferred)
                 # 如果可用则回退到火山引擎（首选）
@@ -500,6 +507,41 @@ ONLY rewrite the NON-CITATION parts of the sentence.
             raise
         except Exception as e:
             logger.error(f"Volcengine API error: {e}")
+            raise
+
+    async def _call_dashscope(self, prompt: str) -> str:
+        """
+        Call DashScope (阿里云灵积) API - OpenAI compatible format
+        调用阿里云灵积 API - OpenAI 兼容格式
+        """
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(
+                base_url=settings.dashscope_base_url,
+                headers={
+                    "Authorization": f"Bearer {settings.dashscope_api_key}",
+                    "Content-Type": "application/json"
+                },
+                timeout=90.0,
+                trust_env=False
+            ) as client:
+                response = await client.post("/chat/completions", json={
+                    "model": settings.dashscope_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": settings.llm_max_tokens,
+                    "temperature": settings.llm_temperature
+                })
+
+                response.raise_for_status()
+                data = response.json()
+                return data["choices"][0]["message"]["content"]
+
+        except ImportError:
+            logger.error("httpx package not installed (required for DashScope)")
+            raise
+        except Exception as e:
+            logger.error(f"DashScope API error: {e}")
             raise
 
     async def _call_deepseek(self, prompt: str) -> str:

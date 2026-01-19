@@ -325,6 +325,7 @@ class ConnectorOptimizationResponse(BaseModel):
     explicit_ratio: float
     connector_type_distribution: Dict[str, int]
     replacement_suggestions: List[ReplacementSuggestion]
+    optimized_text: Optional[str] = None
     risk_level: str
     recommendations: List[str]
     recommendations_zh: List[str]
@@ -371,6 +372,16 @@ class PatternMetrics(BaseModel):
     overall_score: float
 
 
+class ImprovementSummary(BaseModel):
+    """
+    Summary of improvements made during diversification.
+    多样化过程中改进的摘要。
+    """
+    total_changes: int = 0
+    score_improvement: float = 0.0
+    key_improvements: List[str] = []
+
+
 class DiversificationResponse(BaseModel):
     """
     Response for pattern diversification (Step 4.5).
@@ -383,7 +394,7 @@ class DiversificationResponse(BaseModel):
     applied_strategies: Dict[str, int]
     before_metrics: PatternMetrics
     after_metrics: PatternMetrics
-    improvement_summary: Dict[str, float]
+    improvement_summary: ImprovementSummary
     risk_level: str
     recommendations: List[str]
     recommendations_zh: List[str]
@@ -1215,6 +1226,7 @@ async def identify_sentences(request: SentenceIdentificationRequest):
     This is the foundation step for Layer 2 processing.
     这是Layer 2处理的基础步骤。
     """
+    import json
     start_time = time.time()
 
     try:
@@ -1227,44 +1239,119 @@ async def identify_sentences(request: SentenceIdentificationRequest):
         else:
             raise HTTPException(status_code=400, detail="Either 'text' or 'paragraphs' must be provided")
 
-        # Call Step4_0Handler for LLM-based sentence identification
-        # 调用 Step4_0Handler 进行基于LLM的句子识别
+        # ================================================================
+        # STEP 1: PRE-CALCULATE STATISTICS using rule-based parsing
+        # 步骤1：使用规则解析预计算统计数据
+        # ================================================================
+        paragraphs = _split_text_to_paragraphs(document_text)
+        all_sentences = []
+        paragraph_sentence_map = {}
+        type_distribution = {"simple": 0, "compound": 0, "complex": 0, "compound_complex": 0}
+        voice_distribution = {"active": 0, "passive": 0}
+        opener_counts = {}
+
+        for para_idx, para_text in enumerate(paragraphs):
+            para_sentences = _identify_sentences_in_paragraph(para_text, para_idx)
+            paragraph_sentence_map[para_idx] = []
+            for sent in para_sentences:
+                sent_idx = len(all_sentences)
+                paragraph_sentence_map[para_idx].append(sent_idx)
+                all_sentences.append(sent)
+                # Count sentence types
+                # 统计句子类型
+                stype = sent.sentence_type
+                if stype in type_distribution:
+                    type_distribution[stype] += 1
+                # Count voice
+                # 统计语态
+                voice = sent.voice
+                if voice in voice_distribution:
+                    voice_distribution[voice] += 1
+                # Count opener words
+                # 统计句首词
+                opener = sent.opener_word.lower() if sent.opener_word else ""
+                if opener:
+                    opener_counts[opener] = opener_counts.get(opener, 0) + 1
+
+        sentence_count = len(all_sentences)
+        # Calculate simple ratio
+        # 计算简单句比例
+        simple_ratio = type_distribution["simple"] / sentence_count if sentence_count > 0 else 0.0
+
+        # Build pre-calculated statistics for LLM
+        # 构建预计算的统计数据供LLM使用
+        parsed_statistics = {
+            "sentence_count": sentence_count,
+            "paragraph_count": len(paragraphs),
+            "type_distribution": type_distribution,
+            "simple_ratio": round(simple_ratio, 3),
+            "voice_distribution": voice_distribution,
+            "top_openers": sorted(opener_counts.items(), key=lambda x: -x[1])[:5],
+            "sentences_sample": [{"index": s.index, "text": s.text[:50] + "..." if len(s.text) > 50 else s.text,
+                                   "type": s.sentence_type, "voice": s.voice} for s in all_sentences[:10]]
+        }
+        parsed_statistics_str = json.dumps(parsed_statistics, indent=2, ensure_ascii=False)
+        logger.info(f"Step 4.0 pre-calculated: sentence_count={sentence_count}, simple_ratio={simple_ratio:.3f}")
+
+        # ================================================================
+        # STEP 2: Call LLM handler with pre-calculated statistics
+        # 步骤2：使用预计算统计数据调用LLM处理器
+        # ================================================================
         logger.info("Calling Step4_0Handler for LLM-based sentence identification")
         result = await step4_0_handler.analyze(
             document_text=document_text,
             locked_terms=[],
             session_id=request.session_id,
-            step_name="layer2-step4-0",
-            use_cache=True
+            step_name="step4-0",
+            use_cache=True,
+            parsed_statistics=parsed_statistics_str,
+            simple_ratio=f"{simple_ratio:.3f}"
         )
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
-        # Convert handler result to response model
-        # 将处理器结果转换为响应模型
-        sentences = []
-        for idx, sent_data in enumerate(result.get("sentences", [])):
-            if isinstance(sent_data, dict):
-                sentences.append(SentenceInfo(
-                    index=sent_data.get("index", idx),
-                    text=sent_data.get("text", ""),
-                    paragraph_index=sent_data.get("paragraph_index", 0),
-                    word_count=sent_data.get("word_count", 0),
-                    sentence_type=sent_data.get("sentence_type", "simple"),
-                    function_role=sent_data.get("function_role", "body"),
-                    has_subordinate=sent_data.get("has_subordinate", False),
-                    clause_depth=sent_data.get("clause_depth", 0),
-                    voice=sent_data.get("voice", "active"),
-                    opener_word=sent_data.get("opener_word", "")
-                ))
+        # ================================================================
+        # STEP 3: Return PRE-CALCULATED statistics (not LLM's)
+        # 步骤3：返回预计算的统计数据（不是LLM的）
+        # ================================================================
+        # Use pre-calculated sentences for accurate data
+        # 使用预计算的句子数据以确保准确性
+        sentences_response = []
+        for sent in all_sentences:
+            sentences_response.append(SentenceInfo(
+                index=sent.index,
+                text=sent.text,
+                paragraph_index=sent.paragraph_index,
+                word_count=sent.word_count,
+                sentence_type=sent.sentence_type,
+                function_role=sent.function_role,
+                has_subordinate=sent.has_subordinate,
+                clause_depth=sent.clause_depth,
+                voice=sent.voice,
+                opener_word=sent.opener_word
+            ))
+
+        # Calculate risk score based on pre-calculated metrics
+        # 根据预计算的指标计算风险分数
+        risk_score = 0
+        if simple_ratio > 0.7:
+            risk_score += 40
+        elif simple_ratio > 0.6:
+            risk_score += 25
+        elif simple_ratio > 0.5:
+            risk_score += 10
+        # Use LLM's risk analysis for additional factors
+        risk_score = max(risk_score, result.get("risk_score", 0))
+        risk_score = min(risk_score, 100)
+        risk_level = "high" if risk_score >= 60 else "medium" if risk_score >= 30 else "low"
 
         return SentenceIdentificationResponse(
-            sentences=sentences,
-            sentence_count=result.get("sentence_count", len(sentences)),
-            paragraph_sentence_map=result.get("paragraph_sentence_map", {}),
-            type_distribution=result.get("type_distribution", {}),
-            risk_level=result.get("risk_level", "low"),
-            risk_score=result.get("risk_score", 0),
+            sentences=sentences_response,  # Pre-calculated sentences
+            sentence_count=sentence_count,  # Pre-calculated count
+            paragraph_sentence_map={str(k): v for k, v in paragraph_sentence_map.items()},  # Pre-calculated map
+            type_distribution=type_distribution,  # Pre-calculated distribution
+            risk_level=risk_level,
+            risk_score=risk_score,
             issues=result.get("issues", []),
             recommendations=result.get("recommendations", []),
             recommendations_zh=result.get("recommendations_zh", []),
@@ -1274,7 +1361,10 @@ async def identify_sentences(request: SentenceIdentificationRequest):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Sentence identification failed: {e}")
+        import traceback
+        error_trace = traceback.format_exc()
+        logger.error(f"Sentence identification failed: {e}\n{error_trace}")
+        print(f"[ERROR] Step 4.0 failed: {e}\n{error_trace}")  # Print to console for debugging
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1298,6 +1388,7 @@ async def analyze_patterns(request: PatternAnalysisRequest):
     - 从句深度统计
     - 识别需要处理的高风险段落
     """
+    import json
     start_time = time.time()
 
     try:
@@ -1310,41 +1401,134 @@ async def analyze_patterns(request: PatternAnalysisRequest):
         else:
             raise HTTPException(status_code=400, detail="Either 'text' or 'paragraphs' must be provided")
 
-        # Call Step4_1Handler for LLM-based pattern analysis
-        # 调用 Step4_1Handler 进行基于LLM的句式分析
+        # ================================================================
+        # STEP 1: PRE-CALCULATE STATISTICS using rule-based parsing
+        # 步骤1：使用规则解析预计算统计数据
+        # ================================================================
+        paragraphs = _split_text_to_paragraphs(document_text)
+        all_sentences = []
+        type_distribution_counts = {"simple": 0, "compound": 0, "complex": 0, "compound_complex": 0}
+        voice_distribution = {"active": 0, "passive": 0}
+        opener_counts = {}
+        clause_depths = []
+
+        for para_idx, para_text in enumerate(paragraphs):
+            para_sentences = _identify_sentences_in_paragraph(para_text, para_idx)
+            for sent in para_sentences:
+                all_sentences.append(sent)
+                # Count sentence types
+                stype = sent.sentence_type
+                if stype in type_distribution_counts:
+                    type_distribution_counts[stype] += 1
+                # Count voice
+                voice = sent.voice
+                if voice in voice_distribution:
+                    voice_distribution[voice] += 1
+                # Count opener words
+                opener = sent.opener_word.lower() if sent.opener_word else ""
+                if opener:
+                    opener_counts[opener] = opener_counts.get(opener, 0) + 1
+                # Track clause depth
+                clause_depths.append(sent.clause_depth)
+
+        sentence_count = len(all_sentences)
+        # Calculate type distribution with percentages
+        type_distribution_detailed = {}
+        for stype, count in type_distribution_counts.items():
+            pct = count / sentence_count if sentence_count > 0 else 0.0
+            threshold = {"simple": 0.5, "compound": 0.35, "complex": 0.3, "compound_complex": 0.15}
+            is_risk = (stype == "simple" and pct > 0.6) or (stype in ["complex", "compound_complex"] and pct < 0.1)
+            type_distribution_detailed[stype] = {
+                "count": count,
+                "percentage": round(pct, 3),
+                "is_risk": is_risk,
+                "threshold": threshold.get(stype, 0.3)
+            }
+
+        simple_ratio = type_distribution_counts["simple"] / sentence_count if sentence_count > 0 else 0.0
+
+        # Calculate opener analysis
+        total_openers = sum(opener_counts.values())
+        max_opener_count = max(opener_counts.values()) if opener_counts else 0
+        repetition_rate = max_opener_count / sentence_count if sentence_count > 0 else 0.0
+        # Count subject-first openers
+        subject_first_count = sum(opener_counts.get(op.lower(), 0) for op in SUBJECT_OPENERS)
+        subject_opening_rate = subject_first_count / sentence_count if sentence_count > 0 else 0.0
+        top_repeated = sorted(opener_counts.keys(), key=lambda x: -opener_counts[x])[:3]
+
+        opener_analysis_data = {
+            "opener_counts": opener_counts,
+            "top_repeated": top_repeated,
+            "repetition_rate": round(repetition_rate, 3),
+            "subject_opening_rate": round(subject_opening_rate, 3),
+            "issues": []
+        }
+        if repetition_rate > 0.3:
+            opener_analysis_data["issues"].append(f"High repetition of '{top_repeated[0]}' as sentence opener" if top_repeated else "High opener repetition")
+        if subject_opening_rate > 0.7:
+            opener_analysis_data["issues"].append("Subject-first opening rate is too high / 主语开头率过高")
+
+        # Calculate clause depth statistics
+        clause_depth_stats = {
+            "mean": round(sum(clause_depths) / len(clause_depths), 2) if clause_depths else 0.0,
+            "max": max(clause_depths) if clause_depths else 0
+        }
+
+        # Build pre-calculated statistics for LLM
+        parsed_statistics = {
+            "sentence_count": sentence_count,
+            "type_distribution": type_distribution_detailed,
+            "simple_ratio": round(simple_ratio, 3),
+            "voice_distribution": voice_distribution,
+            "opener_analysis": opener_analysis_data,
+            "clause_depth_stats": clause_depth_stats,
+            "repetition_rate": round(repetition_rate, 3),
+            "subject_opening_rate": round(subject_opening_rate, 3)
+        }
+        parsed_statistics_str = json.dumps(parsed_statistics, indent=2, ensure_ascii=False)
+        logger.info(f"Step 4.1 pre-calculated: simple_ratio={simple_ratio:.3f}, repetition_rate={repetition_rate:.3f}")
+
+        # ================================================================
+        # STEP 2: Call LLM handler with pre-calculated statistics
+        # 步骤2：使用预计算统计数据调用LLM处理器
+        # ================================================================
         logger.info("Calling Step4_1Handler for LLM-based pattern analysis")
         result = await step4_1_handler.analyze(
             document_text=document_text,
             locked_terms=[],
             session_id=request.session_id,
-            step_name="layer2-step4-1",
-            use_cache=True
+            step_name="step4-1",
+            use_cache=True,
+            parsed_statistics=parsed_statistics_str,
+            simple_ratio=f"{simple_ratio:.3f}",
+            opener_repetition_rate=f"{repetition_rate:.3f}"
         )
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
-        # Convert handler result to response model
-        # 将处理器结果转换为响应模型
-        type_dist_raw = result.get("type_distribution", {})
+        # ================================================================
+        # STEP 3: Return PRE-CALCULATED statistics (not LLM's)
+        # 步骤3：返回预计算的统计数据（不是LLM的）
+        # ================================================================
+        # Use pre-calculated type distribution
+        # 使用预计算的类型分布
         type_distribution = {}
-        for stype, data in type_dist_raw.items():
-            if isinstance(data, dict):
-                type_distribution[stype] = TypeStats(
-                    count=data.get("count", 0),
-                    percentage=data.get("percentage", 0.0),
-                    is_risk=data.get("is_risk", False),
-                    threshold=data.get("threshold", 0.0),
-                )
-            else:
-                type_distribution[stype] = TypeStats(count=0, percentage=0.0, is_risk=False, threshold=0.0)
+        for stype, data in type_distribution_detailed.items():
+            type_distribution[stype] = TypeStats(
+                count=data["count"],
+                percentage=data["percentage"],
+                is_risk=data["is_risk"],
+                threshold=data["threshold"],
+            )
 
-        opener_raw = result.get("opener_analysis", {})
+        # Use pre-calculated opener analysis
+        # 使用预计算的句首分析
         opener_analysis = OpenerAnalysis(
-            opener_counts=opener_raw.get("opener_counts", {}),
-            top_repeated=opener_raw.get("top_repeated", []),
-            repetition_rate=opener_raw.get("repetition_rate", 0.0),
-            subject_opening_rate=opener_raw.get("subject_opening_rate", 0.0),
-            issues=opener_raw.get("issues", []),
+            opener_counts=opener_analysis_data["opener_counts"],
+            top_repeated=opener_analysis_data["top_repeated"],
+            repetition_rate=opener_analysis_data["repetition_rate"],
+            subject_opening_rate=opener_analysis_data["subject_opening_rate"],
+            issues=opener_analysis_data["issues"],
         )
 
         # Get high_risk_paragraphs from LLM result, or compute from issues
@@ -1355,6 +1539,12 @@ async def analyze_patterns(request: PatternAnalysisRequest):
         # 始终为所有段落计算段落级指标
         paragraphs = document_text.split('\n\n')
         paragraphs = [p.strip() for p in paragraphs if p.strip()]
+
+        # Fallback to single newline if only 1 paragraph
+        # 如果只有1个段落，回退到单换行分割
+        if len(paragraphs) <= 1 and '\n' in document_text:
+            paragraphs = [p.strip() for p in document_text.split('\n') if p.strip()]
+            logger.info(f"[PatternAnalysis] Fallback to single newline: {len(paragraphs)} paragraphs")
 
         # Build existing high_risk_paragraphs map
         # 构建现有的高风险段落映射
@@ -1398,8 +1588,8 @@ async def analyze_patterns(request: PatternAnalysisRequest):
         # Compute metrics for ALL paragraphs
         # 为所有段落计算指标
         all_paragraph_data = []
-        global_opener_repetition = opener_raw.get("repetition_rate", 0.0)
-        global_subject_rate = opener_raw.get("subject_opening_rate", 0.0)
+        global_opener_repetition = opener_analysis_data.get("repetition_rate", 0.0)
+        global_subject_rate = opener_analysis_data.get("subject_opening_rate", 0.0)
 
         for para_idx, para_text in enumerate(paragraphs):
             # Get sentences in this paragraph
@@ -1513,15 +1703,30 @@ async def analyze_patterns(request: PatternAnalysisRequest):
         high_risk_paragraphs = all_paragraph_data
         logger.info(f"Computed metrics for {len(high_risk_paragraphs)} paragraphs")
 
+        # Calculate overall risk score based on pre-calculated metrics
+        # 根据预计算的指标计算总体风险分数
+        overall_risk_score = 0
+        if simple_ratio > 0.7:
+            overall_risk_score += 30
+        elif simple_ratio > 0.6:
+            overall_risk_score += 20
+        if repetition_rate > 0.4:
+            overall_risk_score += 25
+        elif repetition_rate > 0.3:
+            overall_risk_score += 15
+        overall_risk_score = max(overall_risk_score, result.get("risk_score", 0))
+        overall_risk_score = min(overall_risk_score, 100)
+        overall_risk_level = "high" if overall_risk_score >= 60 else "medium" if overall_risk_score >= 30 else "low"
+
         return PatternAnalysisResponse(
-            type_distribution=type_distribution,
-            opener_analysis=opener_analysis,
-            voice_distribution=result.get("voice_distribution", {}),
-            clause_depth_stats=result.get("clause_depth_stats", {}),
+            type_distribution=type_distribution,  # Pre-calculated
+            opener_analysis=opener_analysis,  # Pre-calculated
+            voice_distribution=voice_distribution,  # Pre-calculated
+            clause_depth_stats=clause_depth_stats,  # Pre-calculated
             parallel_structure_count=result.get("parallel_structure_count", 0),
             issues=result.get("issues", []),
-            risk_level=result.get("risk_level", "low"),
-            risk_score=result.get("risk_score", 0),
+            risk_level=overall_risk_level,  # Based on pre-calculated metrics
+            risk_score=overall_risk_score,  # Based on pre-calculated metrics
             high_risk_paragraphs=high_risk_paragraphs,
             recommendations=result.get("recommendations", []),
             recommendations_zh=result.get("recommendations_zh", []),
@@ -1557,6 +1762,7 @@ async def analyze_length(request: LengthAnalysisRequest):
     - 建议合并候选（相邻短句）
     - 建议拆分候选（过长句子）
     """
+    import json
     start_time = time.time()
 
     try:
@@ -1569,33 +1775,137 @@ async def analyze_length(request: LengthAnalysisRequest):
         else:
             raise HTTPException(status_code=400, detail="Either 'text' or 'paragraphs' must be provided")
 
-        # Call Step4_2Handler for LLM-based length analysis
-        # 调用 Step4_2Handler 进行基于LLM的句长分析
-        # Use paragraph-specific cache key to avoid sharing results between paragraphs
-        # 使用段落特定的缓存键，避免段落间共享结果
+        # ================================================================
+        # STEP 1: PRE-CALCULATE STATISTICS using rule-based parsing
+        # 步骤1：使用规则解析预计算统计数据
+        # ================================================================
+        paragraphs = _split_text_to_paragraphs(document_text)
+        paragraph_length_stats = []
+        all_lengths = []
+        merge_candidates = []
+        split_candidates = []
+        uniformity_issues = []
+
+        for para_idx, para_text in enumerate(paragraphs):
+            para_sentences = _identify_sentences_in_paragraph(para_text, para_idx)
+            lengths = [sent.word_count for sent in para_sentences]
+            all_lengths.extend(lengths)
+
+            # Calculate CV for this paragraph
+            if len(lengths) >= 2:
+                mean_length = statistics.mean(lengths)
+                std_length = statistics.stdev(lengths) if len(lengths) > 1 else 0
+                cv = std_length / mean_length if mean_length > 0 else 0.0
+            else:
+                mean_length = lengths[0] if lengths else 0
+                std_length = 0
+                cv = 0.3  # Default for single sentence
+
+            # Determine uniformity level
+            if cv < 0.25:
+                uniformity = "high"
+                uniformity_issues.append({
+                    "paragraph_index": para_idx,
+                    "cv": round(cv, 3),
+                    "issue": "Sentence lengths too uniform (AI-like)",
+                    "issue_zh": "句子长度过于均匀（AI特征）"
+                })
+            elif cv < 0.35:
+                uniformity = "medium"
+            else:
+                uniformity = "low"
+
+            paragraph_length_stats.append({
+                "index": para_idx,
+                "sentence_count": len(lengths),
+                "lengths": lengths,
+                "mean_length": round(mean_length, 1),
+                "cv": round(cv, 3),
+                "uniformity": uniformity
+            })
+
+            # Find merge candidates (adjacent short sentences)
+            for i in range(len(para_sentences) - 1):
+                if para_sentences[i].word_count < 15 and para_sentences[i + 1].word_count < 15:
+                    merge_candidates.append({
+                        "paragraph_index": para_idx,
+                        "sentence_indices": [para_sentences[i].index, para_sentences[i + 1].index],
+                        "lengths": [para_sentences[i].word_count, para_sentences[i + 1].word_count],
+                        "reason": "Adjacent short sentences on same topic"
+                    })
+
+            # Find split candidates (very long sentences > 45 words)
+            for sent in para_sentences:
+                if sent.word_count > 45:
+                    split_candidates.append({
+                        "paragraph_index": para_idx,
+                        "sentence_index": sent.index,
+                        "length": sent.word_count,
+                        "reason": "Overly long sentence may need splitting"
+                    })
+
+        # Calculate overall CV
+        if len(all_lengths) >= 2:
+            overall_cv = statistics.stdev(all_lengths) / statistics.mean(all_lengths) if statistics.mean(all_lengths) > 0 else 0.0
+        else:
+            overall_cv = 0.3
+
+        # Build pre-calculated statistics for LLM
+        parsed_statistics = {
+            "paragraph_count": len(paragraphs),
+            "total_sentences": len(all_lengths),
+            "overall_cv": round(overall_cv, 3),
+            "paragraph_stats": paragraph_length_stats,
+            "merge_candidate_count": len(merge_candidates),
+            "split_candidate_count": len(split_candidates),
+            "uniformity_issue_count": len(uniformity_issues)
+        }
+        parsed_statistics_str = json.dumps(parsed_statistics, indent=2, ensure_ascii=False)
+        logger.info(f"Step 4.2 pre-calculated: overall_cv={overall_cv:.3f}, merge_candidates={len(merge_candidates)}")
+
+        # ================================================================
+        # STEP 2: Call LLM handler with pre-calculated statistics
+        # 步骤2：使用预计算统计数据调用LLM处理器
+        # ================================================================
         para_idx = request.paragraph_index if request.paragraph_index is not None else 0
-        cache_step_name = f"layer2-step4-2-para{para_idx}"
+        cache_step_name = f"step4-2-para{para_idx}"
         logger.info(f"Calling Step4_2Handler for paragraph {para_idx}")
         result = await step4_2_handler.analyze(
             document_text=document_text,
             locked_terms=[],
             session_id=request.session_id,
             step_name=cache_step_name,
-            use_cache=True
+            use_cache=True,
+            parsed_statistics=parsed_statistics_str,
+            overall_cv=f"{overall_cv:.3f}"
         )
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
-        # Convert handler result to response model
-        # 将处理器结果转换为响应模型
+        # ================================================================
+        # STEP 3: Return PRE-CALCULATED statistics (not LLM's)
+        # 步骤3：返回预计算的统计数据（不是LLM的）
+        # ================================================================
+        # Calculate risk score based on pre-calculated CV
+        risk_score = 0
+        if overall_cv < 0.2:
+            risk_score += 40
+        elif overall_cv < 0.25:
+            risk_score += 25
+        elif overall_cv < 0.3:
+            risk_score += 10
+        risk_score = max(risk_score, result.get("risk_score", 0))
+        risk_score = min(risk_score, 100)
+        risk_level = "high" if risk_score >= 60 else "medium" if risk_score >= 30 else "low"
+
         return LengthAnalysisResponse(
-            paragraph_length_stats=result.get("paragraph_length_stats", []),
-            overall_length_cv=result.get("overall_length_cv", 0.0),
-            uniformity_issues=result.get("uniformity_issues", []),
-            merge_candidates=result.get("merge_candidates", []),
-            split_candidates=result.get("split_candidates", []),
-            risk_level=result.get("risk_level", "low"),
-            risk_score=result.get("risk_score", 0),
+            paragraph_length_stats=paragraph_length_stats,  # Pre-calculated
+            overall_length_cv=overall_cv,  # Pre-calculated
+            uniformity_issues=uniformity_issues,  # Pre-calculated
+            merge_candidates=merge_candidates,  # Pre-calculated
+            split_candidates=split_candidates,  # Pre-calculated
+            risk_level=risk_level,
+            risk_score=risk_score,
             recommendations=result.get("recommendations", []),
             recommendations_zh=result.get("recommendations_zh", []),
             processing_time_ms=processing_time_ms,
@@ -1636,7 +1946,7 @@ async def suggest_merges(request: MergeSuggestionRequest):
         # Use paragraph-specific cache key to avoid sharing results between paragraphs
         # 使用段落特定的缓存键，避免段落间共享结果
         para_idx = request.paragraph_index
-        cache_step_name = f"layer2-step4-3-para{para_idx}"
+        cache_step_name = f"step4-3-para{para_idx}"
         logger.info(f"Calling Step4_3Handler for paragraph {para_idx}")
         result = await step4_3_handler.analyze(
             document_text=document_text,
@@ -1696,44 +2006,108 @@ async def optimize_connectors(request: ConnectorOptimizationRequest):
     - 建议隐性替代方案
     - 保留用户指定的连接词
     """
+    import json
     start_time = time.time()
 
     try:
         # Get document text from request
         # 从请求获取文档文本
         document_text = request.paragraph_text
-
-        # Call Step4_4Handler for LLM-based connector optimization
-        # 调用 Step4_4Handler 进行基于LLM的连接词优化
-        # Use paragraph-specific cache key to avoid sharing results between paragraphs
-        # 使用段落特定的缓存键，避免段落间共享结果
         para_idx = request.paragraph_index
-        cache_step_name = f"layer2-step4-4-para{para_idx}"
+
+        # ================================================================
+        # STEP 1: PRE-CALCULATE STATISTICS using rule-based parsing
+        # 步骤1：使用规则解析预计算统计数据
+        # ================================================================
+        sentences = _identify_sentences_in_paragraph(document_text, para_idx)
+        sentence_count = len(sentences)
+
+        # Detect connectors in each sentence
+        connector_instances = []
+        connector_type_counts = {"addition": 0, "causal": 0, "contrast": 0, "sequence": 0, "summary": 0}
+        connector_word_counts = {}
+        repeated_connectors = []
+
+        for sent_idx, sent in enumerate(sentences):
+            connectors_found = _detect_explicit_connectors(sent.text)
+            for conn_info in connectors_found:
+                connector_instances.append({
+                    "sentence_index": sent_idx,
+                    "connector": conn_info["connector"],
+                    "connector_type": conn_info["type"],
+                    "position": conn_info["position"],
+                    "necessary": False,  # LLM will determine
+                    "context": sent.text[:80] + "..." if len(sent.text) > 80 else sent.text
+                })
+                # Count by type
+                ctype = conn_info["type"]
+                if ctype in connector_type_counts:
+                    connector_type_counts[ctype] += 1
+                # Count by word
+                cword = conn_info["connector"]
+                connector_word_counts[cword] = connector_word_counts.get(cword, 0) + 1
+
+        total_connectors = len(connector_instances)
+        connector_density = total_connectors / sentence_count if sentence_count > 0 else 0.0
+
+        # Find repeated connectors (used more than once)
+        for cword, count in connector_word_counts.items():
+            if count > 1:
+                indices = [ci["sentence_index"] for ci in connector_instances if ci["connector"] == cword]
+                repeated_connectors.append({
+                    "connector": cword,
+                    "count": count,
+                    "sentence_indices": indices
+                })
+
+        # Build pre-calculated statistics for LLM
+        parsed_statistics = {
+            "sentence_count": sentence_count,
+            "total_connectors": total_connectors,
+            "connector_density": round(connector_density, 3),
+            "connector_type_distribution": connector_type_counts,
+            "connector_instances": connector_instances[:10],  # Sample for LLM
+            "repeated_connectors": repeated_connectors
+        }
+        parsed_statistics_str = json.dumps(parsed_statistics, indent=2, ensure_ascii=False)
+        logger.info(f"Step 4.4 pre-calculated: total_connectors={total_connectors}, density={connector_density:.3f}")
+
+        # ================================================================
+        # STEP 2: Call LLM handler with pre-calculated statistics
+        # 步骤2：使用预计算统计数据调用LLM处理器
+        # ================================================================
+        cache_step_name = f"step4-4-para{para_idx}"
         logger.info(f"Calling Step4_4Handler for paragraph {para_idx}")
         result = await step4_4_handler.analyze(
             document_text=document_text,
             locked_terms=[],
             session_id=request.session_id if hasattr(request, 'session_id') else None,
             step_name=cache_step_name,
-            use_cache=True
+            use_cache=True,
+            parsed_statistics=parsed_statistics_str,
+            connector_density=f"{connector_density:.3f}"
         )
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
-        # Convert handler result to response model
-        # 将处理器结果转换为响应模型
+        # ================================================================
+        # STEP 3: Return PRE-CALCULATED statistics (not LLM's)
+        # 步骤3：返回预计算的统计数据（不是LLM的）
+        # ================================================================
+        # Build connector issues from pre-calculated data
         connector_issues = []
-        for issue_data in result.get("connector_issues", []):
-            if isinstance(issue_data, dict):
-                connector_issues.append(ConnectorIssue(
-                    sentence_index=issue_data.get("sentence_index", 0),
-                    connector=issue_data.get("connector", ""),
-                    connector_type=issue_data.get("connector_type", ""),
-                    position=issue_data.get("position", 0),
-                    risk_level=issue_data.get("risk_level", "medium"),
-                    context=issue_data.get("context", ""),
-                ))
+        for ci in connector_instances:
+            risk = "high" if ci["connector"] in ["Furthermore", "Moreover", "Additionally"] else "medium"
+            connector_issues.append(ConnectorIssue(
+                sentence_index=ci["sentence_index"],
+                connector=ci["connector"],
+                connector_type=ci["connector_type"],
+                position=ci["position"],
+                risk_level=risk,
+                context=ci["context"],
+            ))
 
+        # Use LLM suggestions for replacements (semantic task)
         replacement_suggestions = []
         for sugg_data in result.get("replacement_suggestions", []):
             if isinstance(sugg_data, dict):
@@ -1746,14 +2120,40 @@ async def optimize_connectors(request: ConnectorOptimizationRequest):
                     explanation_zh=sugg_data.get("explanation_zh", ""),
                 ))
 
+        # Perform actual rewrite to get optimized text
+        # 执行实际改写以获取优化后的文本
+        optimized_text = document_text
+        if connector_issues:
+            logger.info(f"Applying connector optimization for paragraph {para_idx}")
+            rewrite_result = await step4_4_handler.apply_rewrite(
+                document_text=document_text,
+                selected_issues=result.get("issues", []),
+                user_notes=f"Preserve these connectors: {', '.join(request.preserve_connectors)}" if request.preserve_connectors else "",
+                locked_terms=[]
+            )
+            optimized_text = rewrite_result.get("modified_text", document_text)
+
+        # Calculate risk based on pre-calculated density
+        risk_score = 0
+        if connector_density > 0.4:
+            risk_score += 40
+        elif connector_density > 0.3:
+            risk_score += 25
+        elif connector_density > 0.25:
+            risk_score += 10
+        risk_score = max(risk_score, result.get("risk_score", 0))
+        risk_score = min(risk_score, 100)
+        risk_level = "high" if risk_score >= 60 else "medium" if risk_score >= 30 else "low"
+
         return ConnectorOptimizationResponse(
             paragraph_index=request.paragraph_index,
-            connector_issues=connector_issues,
-            total_connectors=result.get("total_connectors", 0),
-            explicit_ratio=result.get("explicit_ratio", 0.0),
-            connector_type_distribution=result.get("connector_type_distribution", {}),
+            connector_issues=connector_issues,  # Pre-calculated
+            total_connectors=total_connectors,  # Pre-calculated
+            explicit_ratio=connector_density,  # Pre-calculated
+            connector_type_distribution=connector_type_counts,  # Pre-calculated
             replacement_suggestions=replacement_suggestions,
-            risk_level=result.get("risk_level", "low"),
+            optimized_text=optimized_text,
+            risk_level=risk_level,
             recommendations=result.get("recommendations", []),
             recommendations_zh=result.get("recommendations_zh", []),
             processing_time_ms=processing_time_ms,
@@ -1794,7 +2194,7 @@ async def diversify_patterns(request: DiversificationRequest):
         # Use paragraph-specific cache key to avoid sharing results between paragraphs
         # 使用段落特定的缓存键，避免段落间共享结果
         para_idx = request.paragraph_index
-        cache_step_name = f"layer2-step4-5-para{para_idx}"
+        cache_step_name = f"step4-5-para{para_idx}"
         logger.info(f"Calling Step4_5Handler for paragraph {para_idx}")
         result = await step4_5_handler.analyze(
             document_text=document_text,
@@ -1844,15 +2244,31 @@ async def diversify_patterns(request: DiversificationRequest):
             overall_score=after_raw.get("overall_score", 0.0),
         )
 
+        # Build improvement summary from LLM result
+        # 从LLM结果构建改进摘要
+        improvement_raw = result.get("improvement_summary", {})
+        improvement_summary = ImprovementSummary(
+            total_changes=improvement_raw.get("total_changes", 0),
+            score_improvement=float(improvement_raw.get("score_improvement", 0.0)),
+            key_improvements=improvement_raw.get("key_improvements", []),
+        )
+
+        # Use original text as fallback if diversified_text is missing
+        # 如果缺少diversified_text，使用原始文本作为备用
+        diversified_text = result.get("diversified_text", "")
+        if not diversified_text:
+            logger.warning(f"LLM did not return diversified_text for paragraph {para_idx}, using original")
+            diversified_text = request.paragraph_text
+
         return DiversificationResponse(
             paragraph_index=request.paragraph_index,
             original_text=request.paragraph_text,
-            diversified_text=result.get("diversified_text", ""),
+            diversified_text=diversified_text,
             changes=changes,
             applied_strategies=result.get("applied_strategies", {}),
             before_metrics=before_metrics,
             after_metrics=after_metrics,
-            improvement_summary=result.get("improvement_summary", {}),
+            improvement_summary=improvement_summary,
             risk_level=result.get("risk_level", "low"),
             recommendations=result.get("recommendations", []),
             recommendations_zh=result.get("recommendations_zh", []),

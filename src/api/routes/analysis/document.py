@@ -14,6 +14,7 @@ from typing import Optional, List
 import logging
 import time
 import re
+import json
 
 from src.api.routes.analysis.schemas import (
     DocumentAnalysisRequest,
@@ -45,6 +46,16 @@ from src.core.analyzer.layers import DocumentOrchestrator, LayerContext
 from src.core.analyzer.transition import TransitionAnalyzer
 from src.core.analyzer.structure_predictability import StructurePredictabilityAnalyzer
 import statistics
+
+# Import unified text parsing service
+# 导入统一文本解析服务
+from src.services.text_parsing_service import (
+    TextParsingService,
+    get_text_parsing_service,
+    get_statistics,
+    get_section_distribution,
+    get_body_paragraphs,
+)
 
 # Import new LLM handlers
 from src.api.routes.substeps.layer5.step1_1_handler import Step1_1Handler
@@ -85,33 +96,82 @@ async def analyze_document_structure(request: DocumentAnalysisRequest):
     Step 1.1: Structure Analysis (NOW WITH LLM!)
     步骤 1.1：结构分析（现在使用LLM！）
 
-    Uses LLM to detect AI-like structural patterns:
-    - Linear flow (First-Second-Third)
-    - Repetitive patterns
-    - Uniform length
-    - Predictable order
-    - Symmetry
-
-    Supports caching: Returns cached results if available for this session.
-    支持缓存：如果此会话有缓存结果，将直接返回。
+    Uses unified text parsing service + LLM analysis for accurate results.
+    使用统一文本解析服务 + LLM分析，确保结果准确。
     """
     start_time = time.time()
 
     try:
-        # Use new LLM handler for analysis (with caching support)
-        logger.info("Calling Step1_1Handler for LLM-based structure analysis")
+        # =====================================================================
+        # STEP 1: Get statistics from unified text parsing service (accurate data)
+        # 第一步：从统一文本解析服务获取统计数据（准确数据）
+        # =====================================================================
+        stats = get_statistics(request.text)
+
+        para_count = stats['paragraph_count']
+        total_word_count = stats['total_word_count']
+        lengths = stats['paragraph_lengths']
+        mean_len = stats['mean_length']
+        stdev_len = stats['stdev_length']
+        cv = stats['cv']
+        section_distribution = stats['section_distribution']
+
+        # Check for symmetry (all sections have same paragraph count)
+        # 检查对称性（所有章节段落数是否相同）
+        section_para_counts = [s.get("paragraphCount", 0) for s in section_distribution]
+        is_symmetric = len(set(section_para_counts)) == 1 if section_para_counts else False
+
+        logger.info(f"Parsed statistics (unified service): paragraphs={para_count}, sections={len(section_distribution)}, cv={cv:.3f}, symmetric={is_symmetric}")
+
+        # =====================================================================
+        # STEP 2: Pass parsed statistics to LLM for analysis/decision
+        # 第二步：将解析的统计数据传递给LLM进行分析/决策
+        # =====================================================================
+        parsed_statistics = {
+            **stats,
+            "is_symmetric": is_symmetric
+        }
+
+        logger.info("Calling Step1_1Handler with parsed statistics for LLM analysis")
         result = await step1_1_handler.analyze(
             document_text=request.text,
-            locked_terms=[],  # No locked terms yet in Step 1.1
-            session_id=request.session_id,  # Get session_id from request for caching
-            step_name="layer5-step1-1",  # Unique step identifier for caching
-            use_cache=True  # Enable caching
+            locked_terms=[],
+            session_id=request.session_id,
+            step_name="step1-1",
+            use_cache=True,
+            parsed_statistics=json.dumps(parsed_statistics, indent=2, ensure_ascii=False),
+            cv=round(cv, 3)
         )
 
-        # Calculate processing time
         processing_time_ms = int((time.time() - start_time) * 1000)
 
-        # Convert issues to API format
+        # =====================================================================
+        # STEP 3: Use CALCULATED section data (not LLM's)
+        # 第三步：使用计算的章节数据（而非LLM的）
+        # =====================================================================
+        sections = []
+        for idx, sec in enumerate(section_distribution):
+            sections.append(DocumentSection(
+                index=idx,
+                role=sec.get("role", "body"),
+                title=sec.get("title", f"Section {idx + 1}"),
+                paragraph_count=sec.get("paragraphCount", 0),
+                word_count=sec.get("wordCount", 0)
+            ))
+
+        # If no sections detected, create a simple body section
+        # 如果没有检测到章节，创建简单的body章节
+        if not sections:
+            sections = [DocumentSection(
+                index=0,
+                role="body",
+                title="Main Content",
+                paragraph_count=para_count,
+                word_count=total_word_count
+            )]
+
+        # Convert issues to API format (from LLM analysis)
+        # 将问题转换为API格式（来自LLM分析）
         issues_converted = []
         for issue in result.get("issues", []):
             issues_converted.append(DetectionIssue(
@@ -126,71 +186,20 @@ async def analyze_document_structure(request: DocumentAnalysisRequest):
                 details=issue,
             ))
 
-        # Extract sections from LLM analysis result (TASK A output)
-        # 从LLM分析结果中提取章节数据（任务A输出）
-        paragraphs = [p.strip() for p in request.text.split('\n\n') if p.strip()]
-        sections = []
-        structure_pattern = result.get("structure_pattern", "Unknown")
-
-        # Use LLM-detected sections if available
-        # 如果LLM返回了章节数据，则使用它
-        llm_sections = result.get("sections", [])
-        if llm_sections:
-            logger.info(f"Using LLM-detected sections: {len(llm_sections)} sections found")
-            for idx, sec in enumerate(llm_sections):
-                sections.append(DocumentSection(
-                    index=sec.get("index", idx),
-                    role=sec.get("role", "body"),
-                    title=sec.get("title", f"Section {idx + 1}"),
-                    paragraph_count=sec.get("paragraph_count", 1),
-                    word_count=sec.get("word_count", 0)
-                ))
-        else:
-            # Fallback: Simple section detection based on paragraph count
-            # 回退：基于段落数量的简单章节检测
-            logger.warning("LLM did not return sections, using fallback heuristic")
-            total_paras = len(paragraphs)
-
-            if total_paras <= 3:
-                # Small document - treat as single section
-                sections = [DocumentSection(
-                    index=0,
-                    role="body",
-                    title="Main Content",
-                    paragraph_count=total_paras,
-                    word_count=sum(len(p.split()) for p in paragraphs)
-                )]
-            else:
-                # Larger document - basic intro/body/conclusion split
-                intro_count = 1
-                conclusion_count = 1
-                body_count = total_paras - intro_count - conclusion_count
-
-                intro_words = len(paragraphs[0].split()) if paragraphs else 0
-                body_words = sum(len(paragraphs[i].split()) for i in range(intro_count, intro_count + body_count))
-                conclusion_words = len(paragraphs[-1].split()) if paragraphs else 0
-
-                sections = [
-                    DocumentSection(index=0, role="introduction", title="Introduction", paragraph_count=intro_count, word_count=intro_words),
-                    DocumentSection(index=1, role="body", title="Body", paragraph_count=body_count, word_count=body_words),
-                    DocumentSection(index=2, role="conclusion", title="Conclusion", paragraph_count=conclusion_count, word_count=conclusion_words),
-                ]
-
         return DocumentAnalysisResponse(
             risk_score=result.get("risk_score", 0),
             risk_level=RiskLevel(result.get("risk_level", "low")),
             issues=issues_converted,
             recommendations=result.get("recommendations", []),
             recommendations_zh=result.get("recommendations_zh", []),
-            details={"llm_analysis": result},
+            details={"llm_analysis": result, "parsed_statistics": parsed_statistics},
             processing_time_ms=processing_time_ms,
             structure={},
             predictability_score={},
-            paragraph_count=len(paragraphs),
-            word_count=len(request.text.split()),
-            # LLM-based section analysis / LLM章节分析
-            structure_pattern=structure_pattern,
-            sections=sections,
+            paragraph_count=para_count,  # Use calculated value
+            word_count=total_word_count,  # Use calculated value
+            structure_pattern=result.get("structure_pattern", "Unknown"),
+            sections=sections,  # Use calculated sections
         )
 
     except Exception as e:
@@ -411,69 +420,49 @@ async def get_document_context(request: DocumentAnalysisRequest):
 
 def _split_paragraphs(text: str, exclude_non_body: bool = True) -> List[str]:
     """
-    Split text into paragraphs by double newlines or single newlines
-    按双换行或单换行将文本分割为段落
+    Split text into paragraphs using unified text parsing service
+    使用统一文本解析服务将文本分割为段落
 
     Args:
         text: Document text to split
         exclude_non_body: If True, exclude titles, headers, figure captions, etc.
                          如果为True，排除标题、表头、图名等非正文内容
+
+    Note: This function now uses the unified TextParsingService for consistency.
+    注意：此函数现在使用统一的TextParsingService以确保一致性。
     """
-    # Try double newline first
-    paragraphs = re.split(r'\n\n+', text.strip())
-    # If only one paragraph, try single newline
-    if len(paragraphs) == 1:
-        paragraphs = re.split(r'\n', text.strip())
-    # Filter empty paragraphs
-    paragraphs = [p.strip() for p in paragraphs if p.strip()]
+    service = get_text_parsing_service()
 
-    if not exclude_non_body:
-        return paragraphs
+    if exclude_non_body:
+        # Get only processable body paragraphs
+        # 仅获取可处理的正文段落
+        body_paragraphs = service.get_body_paragraphs(text)
+        return [p.text for p in body_paragraphs]
+    else:
+        # Get all paragraphs including headers
+        # 获取所有段落（包括标题）
+        paragraphs, _, _ = service.parse_document(text)
+        return [p.text for p in paragraphs]
 
-    # Filter out non-body content
-    # 过滤非正文内容
-    filtered = []
-    for p in paragraphs:
-        # Skip if too short (likely title/header)
-        # 跳过太短的内容（可能是标题）
-        word_count = len(p.split())
-        if word_count < 5:
-            continue
 
-        # Skip common non-paragraph patterns
-        # 跳过常见的非段落模式
-        p_lower = p.lower().strip()
+def _calculate_section_distribution(text: str) -> List[dict]:
+    """
+    Calculate section distribution using unified text parsing service
+    使用统一文本解析服务计算章节分布
 
-        # Skip section headers (numbered or common titles)
-        # 跳过章节标题
-        if re.match(r'^(\d+\.?\s+|[ivxlcdm]+\.?\s+|chapter\s+\d|section\s+\d)', p_lower):
-            continue
-        if re.match(r'^(abstract|introduction|methodology|methods|results|discussion|conclusion|references|acknowledgment|appendix)s?\s*$', p_lower):
-            continue
+    This function identifies sections based on:
+    1. Explicit section headers (e.g., "1. Introduction", "Methods", etc.)
+    2. Common academic section titles
+    3. Paragraph grouping based on content
 
-        # Skip figure/table captions
-        # 跳过图表标题
-        if re.match(r'^(figure|fig\.?|table|tab\.?|图|表)\s*\d', p_lower):
-            continue
+    Note: This function now uses the unified TextParsingService for consistency.
+    注意：此函数现在使用统一的TextParsingService以确保一致性。
 
-        # Skip keywords line
-        # 跳过关键词行
-        if p_lower.startswith(('keywords:', 'key words:', '关键词', '关键字')):
-            continue
-
-        # Skip reference entries (usually start with [number] or author name followed by year)
-        # 跳过参考文献条目
-        if re.match(r'^\[\d+\]', p) or re.match(r'^[A-Z][a-z]+,?\s+[A-Z].*\(\d{4}\)', p):
-            continue
-
-        # Skip lines that are all caps (likely headers)
-        # 跳过全大写行（可能是标题）
-        if p.isupper() and word_count < 10:
-            continue
-
-        filtered.append(p)
-
-    return filtered
+    Returns a list of sections with paragraph_count and word_count.
+    """
+    sections = get_section_distribution(text)
+    logger.info(f"Section distribution: {[(s['title'], s['paragraphCount'], s['wordCount']) for s in sections]}")
+    return sections
 
 
 @router.post("/connectors", response_model=ConnectorAnalysisResponse)
@@ -482,17 +471,39 @@ async def analyze_connectors(request: ConnectorAnalysisRequest):
     Step 1.4: Connector & Transition Analysis (NOW WITH LLM!)
     步骤 1.4：连接词与衔接分析（现在使用LLM！）
 
-    Uses LLM to analyze paragraph transitions for AI-like patterns.
-    使用LLM分析段落衔接的AI风格模式。
+    Uses pre-calculated statistics + LLM analysis.
+    使用预计算的统计数据 + LLM分析。
     """
     start_time = time.time()
 
     try:
-        # Use LLM handler for analysis
+        # =====================================================================
+        # STEP 1: Calculate basic statistics
+        # 第一步：计算基本统计数据
+        # =====================================================================
+        paragraphs = _split_paragraphs(request.text, exclude_non_body=True)
+        para_count = len(paragraphs)
+        num_transitions = max(0, para_count - 1)
+
+        parsed_statistics = {
+            "paragraph_count": para_count,
+            "num_transitions": num_transitions
+        }
+
+        logger.info(f"Parsed statistics for Step 1.4: paragraphs={para_count}, transitions={num_transitions}")
+
+        # =====================================================================
+        # STEP 2: Pass to LLM for analysis
+        # 第二步：传递给LLM进行分析
+        # =====================================================================
         logger.info("Calling Step1_4Handler for LLM-based connector analysis")
         result = await step1_4_handler.analyze(
             document_text=request.text,
-            locked_terms=[]
+            locked_terms=[],
+            session_id=request.session_id,
+            step_name="step1-4",
+            use_cache=True,
+            parsed_statistics=json.dumps(parsed_statistics, indent=2, ensure_ascii=False)
         )
 
         processing_time_ms = int((time.time() - start_time) * 1000)
@@ -629,53 +640,56 @@ async def analyze_paragraph_length(request: ParagraphLengthAnalysisRequest):
     Step 1.2: Paragraph Length Regularity Analysis (NOW WITH LLM!)
     步骤 1.2：段落长度规律性分析（现在使用LLM！）
 
-    Uses LLM to analyze paragraph length distribution for AI-like uniformity.
-    使用LLM分析段落长度分布中的AI特征。
+    Uses unified text parsing service + LLM analysis for accurate results.
+    使用统一文本解析服务 + LLM分析，确保结果准确。
     """
     start_time = time.time()
 
     try:
-        # Use LLM handler for analysis with caching support
-        logger.info("Calling Step1_2Handler for LLM-based paragraph length analysis")
+        # =====================================================================
+        # STEP 1: Get statistics from unified text parsing service (accurate data)
+        # 第一步：从统一文本解析服务获取统计数据（准确数据）
+        # =====================================================================
+        stats = get_statistics(request.text)
+
+        para_count = stats['paragraph_count']
+        lengths = stats['paragraph_lengths']
+        total_word_count = stats['total_word_count']
+        mean_len = stats['mean_length']
+        stdev_len = stats['stdev_length']
+        cv = stats['cv']
+        min_len = stats['min_length']
+        max_len = stats['max_length']
+        section_distribution = stats['section_distribution']
+
+        logger.info(f"Parsed statistics (unified service): paragraphs={para_count}, mean={mean_len:.1f}, cv={cv:.3f}, sections={len(section_distribution)}")
+
+        # =====================================================================
+        # STEP 2: Pass parsed statistics to LLM for analysis/decision
+        # 第二步：将解析的统计数据传递给LLM进行分析/决策
+        # =====================================================================
+        parsed_statistics_dict = stats
+
+        # Format as readable JSON string for LLM prompt
+        # 格式化为可读的JSON字符串用于LLM prompt
+        parsed_statistics_str = json.dumps(parsed_statistics_dict, indent=2, ensure_ascii=False)
+
+        logger.info("Calling Step1_2Handler with parsed statistics for LLM analysis")
         result = await step1_2_handler.analyze(
             document_text=request.text,
             locked_terms=[],
-            session_id=request.session_id,  # Pass session_id for caching
-            step_name="layer5-step1-2",     # Unique step identifier
-            use_cache=True                   # Enable caching
+            session_id=request.session_id,
+            step_name="step1-2",
+            use_cache=True,
+            parsed_statistics=parsed_statistics_str,  # Pass as formatted JSON string
+            cv=round(cv, 3)  # Pass CV separately for placeholder in prompt
         )
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
-        # Extract LLM analysis data
-        # 提取LLM分析数据
+        # Extract LLM analysis results (issues, recommendations - NOT statistics)
+        # 提取LLM分析结果（问题、建议 - 不是统计数据）
         issues = result.get("issues", [])
-        statistics_data = result.get("statistics", {})
-        paragraph_analysis = result.get("paragraph_analysis", {})
-
-        # Use LLM statistics if available, otherwise calculate from text
-        # 优先使用LLM统计数据，否则从文本计算
-        if statistics_data:
-            mean_len = statistics_data.get("mean_length", 0)
-            stdev_len = statistics_data.get("stdev_length", 0)
-            cv = statistics_data.get("cv", 0)
-            min_len = statistics_data.get("min_length", 0)
-            max_len = statistics_data.get("max_length", 0)
-            para_count = paragraph_analysis.get("total_body_paragraphs", 0)
-            lengths = paragraph_analysis.get("paragraph_lengths", [])
-            total_word_count = sum(lengths) if lengths else 0
-        else:
-            # Fallback: Calculate from text (with filtering)
-            # 回退：从文本计算（带过滤）
-            paragraphs = _split_paragraphs(request.text, exclude_non_body=True)
-            lengths = [len(p.split()) for p in paragraphs] if paragraphs else [0]
-            para_count = len(paragraphs)
-            total_word_count = sum(lengths)
-            mean_len = statistics.mean(lengths) if lengths else 0
-            stdev_len = statistics.stdev(lengths) if len(lengths) > 1 else 0
-            cv = stdev_len / mean_len if mean_len > 0 else 0
-            min_len = min(lengths) if lengths else 0
-            max_len = max(lengths) if lengths else 0
 
         return ParagraphLengthAnalysisResponse(
             paragraph_count=para_count,
@@ -697,6 +711,9 @@ async def analyze_paragraph_length(request: ParagraphLengthAnalysisRequest):
             issues=issues,
             summary=result.get("summary", ""),
             summary_zh=result.get("summary_zh", ""),
+            # Section distribution calculated from current text
+            # 从当前文本计算的章节分布
+            section_distribution=section_distribution,
             recommendations=result.get("recommendations", []),
             recommendations_zh=result.get("recommendations_zh", []),
             processing_time_ms=processing_time_ms
@@ -718,49 +735,135 @@ async def analyze_progression_closure(request: ProgressionClosureRequest):
     Step 1.3: Progression & Closure Analysis (NOW WITH LLM!)
     步骤 1.3：推进模式与闭合分析（现在使用LLM！）
 
-    Uses LLM to analyze document progression patterns and closure strength.
-    使用LLM分析文档推进模式和闭合强度。
+    Uses pre-calculated statistics + LLM semantic analysis.
+    使用预计算的统计数据 + LLM语义分析。
     """
     start_time = time.time()
 
     try:
-        # Use LLM handler for analysis
+        # =====================================================================
+        # STEP 1: Calculate basic statistics for context
+        # 第一步：计算基本统计数据作为上下文
+        # =====================================================================
+        paragraphs = _split_paragraphs(request.text, exclude_non_body=True)
+        para_count = len(paragraphs)
+        section_distribution = _calculate_section_distribution(request.text)
+
+        # Get last paragraph for closure analysis
+        # 获取最后一段用于闭合分析
+        last_paragraph = paragraphs[-1] if paragraphs else ""
+
+        parsed_statistics = {
+            "paragraph_count": para_count,
+            "section_count": len(section_distribution),
+            "section_distribution": section_distribution,
+            "last_paragraph_preview": last_paragraph[:200] if last_paragraph else ""
+        }
+
+        logger.info(f"Parsed statistics for Step 1.3: paragraphs={para_count}, sections={len(section_distribution)}")
+
+        # =====================================================================
+        # STEP 2: Pass to LLM for semantic analysis
+        # 第二步：传递给LLM进行语义分析
+        # =====================================================================
         logger.info("Calling Step1_3Handler for LLM-based progression/closure analysis")
         result = await step1_3_handler.analyze(
             document_text=request.text,
-            locked_terms=[]
+            locked_terms=[],
+            session_id=request.session_id,
+            step_name="step1-3",
+            use_cache=True,
+            parsed_statistics=json.dumps(parsed_statistics, indent=2, ensure_ascii=False)
         )
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
-        # Extract issues and infer types
+        # Extract issues
+        # 提取问题列表
         issues = result.get("issues", [])
-        progression_type = ProgressionType.UNKNOWN
-        closure_type = ClosureType.MODERATE
-        progression_score = result.get("risk_score", 0)
-        closure_score = 0
 
-        for issue in issues:
-            if issue.get("type") == "monotonic_progression":
-                progression_type = ProgressionType.MONOTONIC
-            elif issue.get("type") == "too_strong_closure":
-                closure_type = ClosureType.STRONG
-                closure_score = 70
+        # =====================================================================
+        # STEP 3: Extract progression markers from LLM result
+        # 第三步：从LLM结果中提取推进标记
+        # =====================================================================
+        raw_markers = result.get("progression_markers", [])
+        progression_markers = []
 
+        for marker in raw_markers:
+            progression_markers.append(ProgressionMarker(
+                paragraph_index=marker.get("paragraph_index", 0),
+                marker=marker.get("marker", ""),
+                category=marker.get("category", "unknown"),
+                is_monotonic=marker.get("is_monotonic", True)
+            ))
+
+        # Count monotonic vs non-monotonic markers
+        # 统计单调和非单调标记数量
+        monotonic_count = sum(1 for m in progression_markers if m.is_monotonic)
+        non_monotonic_count = len(progression_markers) - monotonic_count
+
+        # Get progression type and score from LLM result
+        # 从LLM结果获取推进类型和分数
+        progression_type_str = result.get("progression_type", "unknown")
+        if progression_type_str == "monotonic":
+            progression_type = ProgressionType.MONOTONIC
+        elif progression_type_str == "non_monotonic":
+            progression_type = ProgressionType.NON_MONOTONIC
+        elif progression_type_str == "mixed":
+            progression_type = ProgressionType.MIXED
+        else:
+            progression_type = ProgressionType.UNKNOWN
+
+        # Get scores from LLM result
+        # 从LLM结果获取分数
+        progression_score = result.get("progression_score", 50)
+        closure_score = result.get("closure_score", 0)
+
+        # Get closure type from LLM result
+        # 从LLM结果获取闭合类型
+        closure_type_str = result.get("closure_type", "moderate")
+        if closure_type_str == "strong":
+            closure_type = ClosureType.STRONG
+        elif closure_type_str == "weak":
+            closure_type = ClosureType.WEAK
+        elif closure_type_str == "open":
+            closure_type = ClosureType.OPEN
+        else:
+            closure_type = ClosureType.MODERATE
+
+        # Fallback: infer from issues if LLM didn't provide direct values
+        # 后备：如果LLM没有提供直接值，从问题中推断
+        if progression_type == ProgressionType.UNKNOWN:
+            for issue in issues:
+                if issue.get("type") == "monotonic_progression":
+                    progression_type = ProgressionType.MONOTONIC
+                    if progression_score == 50:
+                        progression_score = 75
+                elif issue.get("type") == "too_strong_closure":
+                    closure_type = ClosureType.STRONG
+                    if closure_score == 0:
+                        closure_score = 70
+
+        # Calculate combined score
+        # 计算综合分数
         combined_score = (progression_score + closure_score) // 2
+
+        # Count sequential markers specifically
+        # 统计顺序标记
+        sequential_markers_found = sum(1 for m in progression_markers if m.category == "sequential")
 
         return ProgressionClosureResponse(
             progression_score=progression_score,
             progression_type=progression_type,
-            monotonic_count=sum(1 for i in issues if "monotonic" in i.get("type", "")),
-            non_monotonic_count=0,
-            sequential_markers_found=0,
-            progression_markers=[],
+            monotonic_count=monotonic_count,
+            non_monotonic_count=non_monotonic_count,
+            sequential_markers_found=sequential_markers_found,
+            progression_markers=progression_markers,
             closure_score=closure_score,
             closure_type=closure_type,
             strong_closure_patterns=[],
             weak_closure_patterns=[],
-            last_paragraph_preview="",
+            last_paragraph_preview=last_paragraph[:200] if last_paragraph else "",
             combined_score=combined_score,
             risk_level=RiskLevel(result.get("risk_level", "low")),
             recommendations=result.get("recommendations", []),
@@ -908,56 +1011,152 @@ def _analyze_paragraph_substantiality(para: str, idx: int) -> ParagraphSubstanti
 @router.post("/content-substantiality", response_model=ContentSubstantialityResponse)
 async def analyze_content_substantiality(request: ContentSubstantialityRequest):
     """
-    Step 1.5: Content Substantiality Analysis (NOW WITH LLM!)
-    步骤 1.5：内容实质性分析（现在使用LLM！）
+    Step 1.5: Content Substantiality Analysis (LOCAL + LLM HYBRID)
+    步骤 1.5：内容实质性分析（本地模型 + LLM混合）
 
-    Uses LLM to analyze content for specificity vs. generic AI-like patterns.
-    使用LLM分析内容的具体性与泛泛的AI风格模式。
+    Uses local analysis for generic phrases and anchor density,
+    then LLM for deeper content substantiality analysis.
+    使用本地分析检测泛化短语和锚点密度，然后用LLM进行更深入的内容实质性分析。
     """
     start_time = time.time()
 
     try:
-        # Use LLM handler for analysis
-        logger.info("Calling Step1_5Handler for LLM-based content substantiality analysis")
-        result = await step1_5_handler.analyze(
-            document_text=request.text,
-            locked_terms=[]
-        )
+        # Step 1: Local analysis using existing functions
+        # 步骤1：使用现有函数进行本地分析
+        paragraphs = _split_paragraphs(request.text, exclude_non_body=True)
+        logger.info(f"Analyzing {len(paragraphs)} paragraphs for content substantiality")
 
-        processing_time_ms = int((time.time() - start_time) * 1000)
+        # Analyze each paragraph locally
+        # 本地分析每个段落
+        paragraph_analyses = []
+        total_generic_count = 0
+        total_filler_count = 0
+        total_specific_count = 0
+        low_quality_indices = []
+        all_generic_phrases = []
 
-        # Extract issues
-        issues = result.get("issues", [])
+        for idx, para in enumerate(paragraphs):
+            analysis = _analyze_paragraph_substantiality(para, idx)
+            paragraph_analyses.append(analysis)
 
-        # Count from issues
-        total_generic = sum(1 for i in issues if "generic" in i.get("type", ""))
-        total_specific = 0
+            total_generic_count += analysis.generic_phrase_count
+            total_specific_count += analysis.specific_detail_count
+            all_generic_phrases.extend(analysis.generic_phrases)
 
-        # Determine overall level based on risk score
-        risk_score = result.get("risk_score", 0)
-        if risk_score < 35:
+            # Count filler words
+            # 统计填充词
+            words = para.lower().split()
+            filler_count = sum(1 for w in words if w.strip(".,!?;:") in FILLER_WORDS)
+            total_filler_count += filler_count
+
+            # Track low quality paragraphs
+            # 跟踪低质量段落
+            if analysis.substantiality_level == SubstantialityLevel.LOW:
+                low_quality_indices.append(idx)
+
+        # Calculate overall metrics
+        # 计算整体指标
+        total_words = sum(len(p.split()) for p in paragraphs)
+        avg_filler_ratio = total_filler_count / total_words if total_words > 0 else 0
+
+        # Calculate overall specificity score (weighted average)
+        # 计算整体具体性分数（加权平均）
+        if paragraph_analyses:
+            total_weight = sum(p.word_count for p in paragraph_analyses)
+            if total_weight > 0:
+                overall_specificity = sum(
+                    p.specificity_score * p.word_count for p in paragraph_analyses
+                ) / total_weight
+            else:
+                overall_specificity = 70  # Default
+        else:
+            overall_specificity = 70
+
+        # Determine overall substantiality level
+        # 确定整体实质性等级
+        if overall_specificity >= 60:
             overall_level = SubstantialityLevel.HIGH
-        elif risk_score < 60:
+        elif overall_specificity >= 35:
             overall_level = SubstantialityLevel.MEDIUM
         else:
             overall_level = SubstantialityLevel.LOW
 
-        # Calculate paragraph count
-        paragraphs = _split_paragraphs(request.text)
+        # Calculate risk score (inverse of specificity)
+        # 计算风险分数（具体性的反面）
+        local_risk_score = max(0, min(100, 100 - overall_specificity))
+
+        # Determine risk level
+        # 确定风险等级
+        if local_risk_score >= 60:
+            risk_level = RiskLevel.HIGH
+        elif local_risk_score >= 35:
+            risk_level = RiskLevel.MEDIUM
+        else:
+            risk_level = RiskLevel.LOW
+
+        # Step 2: Call LLM for deeper analysis (only if local analysis found issues)
+        # 步骤2：调用LLM进行更深入的分析（仅当本地分析发现问题时）
+        llm_issues = []
+        llm_recommendations = []
+        llm_recommendations_zh = []
+
+        if total_generic_count > 0 or len(low_quality_indices) > 0 or local_risk_score >= 35:
+            logger.info("Calling Step1_5Handler for LLM-based content substantiality analysis")
+            try:
+                llm_result = await step1_5_handler.analyze(
+                    document_text=request.text,
+                    locked_terms=[]
+                )
+                llm_issues = llm_result.get("issues", [])
+                llm_recommendations = llm_result.get("recommendations", [])
+                llm_recommendations_zh = llm_result.get("recommendations_zh", [])
+
+                # Update counts from LLM if available
+                # 如果LLM返回了数据则更新统计
+                llm_generic = llm_result.get("total_generic_phrases", 0)
+                llm_filler = llm_result.get("total_filler_words", 0)
+                if llm_generic > total_generic_count:
+                    total_generic_count = llm_generic
+                if llm_filler > total_filler_count:
+                    total_filler_count = llm_filler
+
+            except Exception as llm_error:
+                logger.warning(f"LLM analysis failed, using local results only: {llm_error}")
+                # Generate local recommendations
+                # 生成本地建议
+                if total_generic_count > 0:
+                    llm_recommendations.append(f"Found {total_generic_count} generic phrases. Replace with specific claims.")
+                    llm_recommendations_zh.append(f"发现{total_generic_count}个泛化短语，请用具体论述替换。")
+                if len(low_quality_indices) > 0:
+                    llm_recommendations.append(f"{len(low_quality_indices)} paragraphs lack specific content. Add data, examples, or citations.")
+                    llm_recommendations_zh.append(f"{len(low_quality_indices)}个段落缺乏具体内容，请添加数据、例子或引用。")
+        else:
+            # Good content, provide positive feedback
+            # 内容良好，提供正面反馈
+            llm_recommendations = ["Content substantiality is good. No major issues detected."]
+            llm_recommendations_zh = ["内容实质性良好，未检测到空洞表述或缺乏具体细节的问题。"]
+
+        processing_time_ms = int((time.time() - start_time) * 1000)
+
+        # Get most common generic phrases
+        # 获取最常见的泛化短语
+        from collections import Counter
+        phrase_counts = Counter(all_generic_phrases)
+        common_generic = [phrase for phrase, _ in phrase_counts.most_common(5)]
 
         return ContentSubstantialityResponse(
             paragraph_count=len(paragraphs),
-            overall_specificity_score=max(0, 100 - risk_score),
+            overall_specificity_score=round(overall_specificity, 1),
             overall_substantiality=overall_level,
-            risk_level=RiskLevel(result.get("risk_level", "low")),
-            total_generic_phrases=total_generic,
-            total_specific_details=total_specific,
-            average_filler_ratio=0,
-            low_substantiality_paragraphs=[],
-            paragraphs=[],
-            common_generic_phrases=[],
-            recommendations=result.get("recommendations", []),
-            recommendations_zh=result.get("recommendations_zh", []),
+            risk_level=risk_level,
+            total_generic_phrases=total_generic_count,
+            total_specific_details=total_specific_count,
+            average_filler_ratio=round(avg_filler_ratio, 3),
+            low_substantiality_paragraphs=low_quality_indices,
+            paragraphs=paragraph_analyses,
+            common_generic_phrases=common_generic,
+            recommendations=llm_recommendations,
+            recommendations_zh=llm_recommendations_zh,
             processing_time_ms=processing_time_ms
         )
 
@@ -985,15 +1184,41 @@ async def generate_step1_1_prompt(request: MergeModifyRequest):
     步骤 1.1：为结构问题生成修改提示词
     """
     try:
-        prompt = await step1_1_handler.generate_rewrite_prompt(
-            issues=request.selected_issues,
-            user_notes=request.user_notes
+        # Get document text: prefer direct text from request, fallback to DB lookup
+        # 获取文档文本：优先使用请求中直接提供的文本，后备方案从数据库查询
+        document_text = ""
+        locked_terms = []
+
+        # Priority 1: Use document_text directly from request
+        # 优先级1：直接使用请求中的document_text
+        if request.document_text:
+            document_text = request.document_text
+        # Priority 2: Fetch from database by document_id
+        # 优先级2：通过document_id从数据库获取
+        elif request.document_id:
+            document_text = await get_working_text(request.document_id)
+
+        # Get locked terms from step1_0
+        # 从step1_0获取锁定术语
+        if request.session_id:
+            from src.api.routes.substeps.layer5.step1_0 import get_session_locked_terms
+            locked_terms = get_session_locked_terms(request.session_id)
+
+        if not document_text:
+            logger.warning("Document text not found, generating prompt without context")
+            document_text = "[Document text not available - please paste your document here]"
+
+        result = await step1_1_handler.generate_rewrite_prompt(
+            document_text=document_text,
+            selected_issues=request.selected_issues,
+            user_notes=request.user_notes,
+            locked_terms=locked_terms
         )
         return MergeModifyPromptResponse(
-            prompt=prompt,
-            prompt_zh="根据选定的结构问题生成的修改提示词",
-            issues_summary_zh=f"选中了{len(request.selected_issues)}个问题",
-            estimated_changes=len(request.selected_issues)
+            prompt=result.get("prompt", ""),
+            prompt_zh=result.get("prompt_zh", "根据选定的结构问题生成的修改提示词"),
+            issues_summary_zh=result.get("issues_summary_zh", f"选中了{len(request.selected_issues)}个问题"),
+            estimated_changes=result.get("estimated_changes", len(request.selected_issues))
         )
     except Exception as e:
         logger.error(f"Step 1.1 prompt generation failed: {e}", exc_info=True)
@@ -1043,15 +1268,41 @@ async def generate_step1_2_prompt(request: MergeModifyRequest):
     步骤 1.2：为段落长度问题生成修改提示词
     """
     try:
-        prompt = await step1_2_handler.generate_rewrite_prompt(
-            issues=request.selected_issues,
-            user_notes=request.user_notes
+        # Get document text: prefer direct text from request, fallback to DB lookup
+        # 获取文档文本：优先使用请求中直接提供的文本，后备方案从数据库查询
+        document_text = ""
+        locked_terms = []
+
+        # Priority 1: Use document_text directly from request
+        # 优先级1：直接使用请求中的document_text
+        if request.document_text:
+            document_text = request.document_text
+        # Priority 2: Fetch from database by document_id
+        # 优先级2：通过document_id从数据库获取
+        elif request.document_id:
+            document_text = await get_working_text(request.document_id)
+
+        # Get locked terms from step1_0
+        # 从step1_0获取锁定术语
+        if request.session_id:
+            from src.api.routes.substeps.layer5.step1_0 import get_session_locked_terms
+            locked_terms = get_session_locked_terms(request.session_id)
+
+        if not document_text:
+            logger.warning("Document text not found, generating prompt without context")
+            document_text = "[Document text not available - please paste your document here]"
+
+        result = await step1_2_handler.generate_rewrite_prompt(
+            document_text=document_text,
+            selected_issues=request.selected_issues,
+            user_notes=request.user_notes,
+            locked_terms=locked_terms
         )
         return MergeModifyPromptResponse(
-            prompt=prompt,
-            prompt_zh="根据选定的段落长度问题生成的修改提示词",
-            issues_summary_zh=f"选中了{len(request.selected_issues)}个问题",
-            estimated_changes=len(request.selected_issues)
+            prompt=result.get("prompt", ""),
+            prompt_zh=result.get("prompt_zh", "根据选定的段落长度问题生成的修改提示词"),
+            issues_summary_zh=result.get("issues_summary_zh", f"选中了{len(request.selected_issues)}个问题"),
+            estimated_changes=result.get("estimated_changes", len(request.selected_issues))
         )
     except Exception as e:
         logger.error(f"Step 1.2 prompt generation failed: {e}", exc_info=True)
@@ -1100,15 +1351,41 @@ async def generate_step1_3_prompt(request: MergeModifyRequest):
     步骤 1.3：为推进/闭合问题生成修改提示词
     """
     try:
-        prompt = await step1_3_handler.generate_rewrite_prompt(
-            issues=request.selected_issues,
-            user_notes=request.user_notes
+        # Get document text: prefer direct text from request, fallback to DB lookup
+        # 获取文档文本：优先使用请求中直接提供的文本，后备方案从数据库查询
+        document_text = ""
+        locked_terms = []
+
+        # Priority 1: Use document_text directly from request
+        # 优先级1：直接使用请求中的document_text
+        if request.document_text:
+            document_text = request.document_text
+        # Priority 2: Fetch from database by document_id
+        # 优先级2：通过document_id从数据库获取
+        elif request.document_id:
+            document_text = await get_working_text(request.document_id)
+
+        # Get locked terms from step1_0
+        # 从step1_0获取锁定术语
+        if request.session_id:
+            from src.api.routes.substeps.layer5.step1_0 import get_session_locked_terms
+            locked_terms = get_session_locked_terms(request.session_id)
+
+        if not document_text:
+            logger.warning("Document text not found, generating prompt without context")
+            document_text = "[Document text not available - please paste your document here]"
+
+        result = await step1_3_handler.generate_rewrite_prompt(
+            document_text=document_text,
+            selected_issues=request.selected_issues,
+            user_notes=request.user_notes,
+            locked_terms=locked_terms
         )
         return MergeModifyPromptResponse(
-            prompt=prompt,
-            prompt_zh="根据选定的推进/闭合问题生成的修改提示词",
-            issues_summary_zh=f"选中了{len(request.selected_issues)}个问题",
-            estimated_changes=len(request.selected_issues)
+            prompt=result.get("prompt", ""),
+            prompt_zh=result.get("prompt_zh", "根据选定的推进/闭合问题生成的修改提示词"),
+            issues_summary_zh=result.get("issues_summary_zh", f"选中了{len(request.selected_issues)}个问题"),
+            estimated_changes=result.get("estimated_changes", len(request.selected_issues))
         )
     except Exception as e:
         logger.error(f"Step 1.3 prompt generation failed: {e}", exc_info=True)
@@ -1157,15 +1434,41 @@ async def generate_step1_4_prompt(request: MergeModifyRequest):
     步骤 1.4：为连接词问题生成修改提示词
     """
     try:
-        prompt = await step1_4_handler.generate_rewrite_prompt(
-            issues=request.selected_issues,
-            user_notes=request.user_notes
+        # Get document text: prefer direct text from request, fallback to DB lookup
+        # 获取文档文本：优先使用请求中直接提供的文本，后备方案从数据库查询
+        document_text = ""
+        locked_terms = []
+
+        # Priority 1: Use document_text directly from request
+        # 优先级1：直接使用请求中的document_text
+        if request.document_text:
+            document_text = request.document_text
+        # Priority 2: Fetch from database by document_id
+        # 优先级2：通过document_id从数据库获取
+        elif request.document_id:
+            document_text = await get_working_text(request.document_id)
+
+        # Get locked terms from step1_0
+        # 从step1_0获取锁定术语
+        if request.session_id:
+            from src.api.routes.substeps.layer5.step1_0 import get_session_locked_terms
+            locked_terms = get_session_locked_terms(request.session_id)
+
+        if not document_text:
+            logger.warning("Document text not found, generating prompt without context")
+            document_text = "[Document text not available - please paste your document here]"
+
+        result = await step1_4_handler.generate_rewrite_prompt(
+            document_text=document_text,
+            selected_issues=request.selected_issues,
+            user_notes=request.user_notes,
+            locked_terms=locked_terms
         )
         return MergeModifyPromptResponse(
-            prompt=prompt,
-            prompt_zh="根据选定的连接词问题生成的修改提示词",
-            issues_summary_zh=f"选中了{len(request.selected_issues)}个问题",
-            estimated_changes=len(request.selected_issues)
+            prompt=result.get("prompt", ""),
+            prompt_zh=result.get("prompt_zh", "根据选定的连接词问题生成的修改提示词"),
+            issues_summary_zh=result.get("issues_summary_zh", f"选中了{len(request.selected_issues)}个问题"),
+            estimated_changes=result.get("estimated_changes", len(request.selected_issues))
         )
     except Exception as e:
         logger.error(f"Step 1.4 prompt generation failed: {e}", exc_info=True)
@@ -1214,15 +1517,43 @@ async def generate_step1_5_prompt(request: MergeModifyRequest):
     步骤 1.5：为实质性问题生成修改提示词
     """
     try:
-        prompt = await step1_5_handler.generate_rewrite_prompt(
-            issues=request.selected_issues,
-            user_notes=request.user_notes
+        # Get document text: prefer direct text from request, fallback to DB lookup
+        # 获取文档文本：优先使用请求中直接提供的文本，后备方案从数据库查询
+        document_text = ""
+        locked_terms = []
+
+        # Priority 1: Use document_text directly from request
+        # 优先级1：直接使用请求中的document_text
+        if request.document_text:
+            document_text = request.document_text
+        # Priority 2: Fetch from database by document_id
+        # 优先级2：通过document_id从数据库获取
+        elif request.document_id:
+            document_text = await get_working_text(request.document_id)
+
+        # Get locked terms from step1_0
+        # 从step1_0获取锁定术语
+        if request.session_id:
+            from src.api.routes.substeps.layer5.step1_0 import get_session_locked_terms
+            locked_terms = get_session_locked_terms(request.session_id)
+
+        if not document_text:
+            # Fallback: generate prompt without document context
+            # 后备方案：生成不包含文档上下文的prompt
+            logger.warning("Document text not found, generating prompt without context")
+            document_text = "[Document text not available - please paste your document here]"
+
+        result = await step1_5_handler.generate_rewrite_prompt(
+            document_text=document_text,
+            selected_issues=request.selected_issues,
+            user_notes=request.user_notes,
+            locked_terms=locked_terms
         )
         return MergeModifyPromptResponse(
-            prompt=prompt,
-            prompt_zh="根据选定的实质性问题生成的修改提示词",
-            issues_summary_zh=f"选中了{len(request.selected_issues)}个问题",
-            estimated_changes=len(request.selected_issues)
+            prompt=result.get("prompt", ""),
+            prompt_zh=result.get("prompt_zh", "根据选定的实质性问题生成的修改提示词"),
+            issues_summary_zh=result.get("issues_summary_zh", f"选中了{len(request.selected_issues)}个问题"),
+            estimated_changes=result.get("estimated_changes", len(request.selected_issues))
         )
     except Exception as e:
         logger.error(f"Step 1.5 prompt generation failed: {e}", exc_info=True)
